@@ -155,16 +155,10 @@ function createBufferStressShaderMaterial(nMat4: 1 | 2): THREE.ShaderMaterial {
       uAmbient: { value: 0.38 },
       uDiffuse: { value: 0.62 },
     },
+    // Do not redeclare position/normal/instanceMatrix/uniforms — Three prepends them (ShaderMaterial).
     vertexShader: /* glsl */ `
-      attribute vec3 position;
-      attribute vec3 normal;
       attribute float vertexStressIndex;
-      attribute mat4 instanceMatrix;
       ${attrs}
-
-      uniform mat4 modelMatrix;
-      uniform mat4 modelViewMatrix;
-      uniform mat4 projectionMatrix;
 
       varying vec3 vNormalW;
       varying vec3 vAlbedo;
@@ -211,14 +205,8 @@ function createTextureStressShaderMaterial(stressTex: THREE.DataTexture, texW: n
       uDiffuse: { value: 0.62 },
     },
     vertexShader: /* glsl */ `
-      attribute vec3 position;
-      attribute vec3 normal;
       attribute float vertexStressIndex;
-      attribute mat4 instanceMatrix;
 
-      uniform mat4 modelMatrix;
-      uniform mat4 modelViewMatrix;
-      uniform mat4 projectionMatrix;
       uniform sampler2D uVertexStress;
       uniform vec2 uVertexStressSize;
 
@@ -415,7 +403,7 @@ function InstancedFemParticles(props: {
   useEffect(() => {
     const t = window.setTimeout(() => setUseShader(true), 0)
     return () => window.clearTimeout(t)
-  }, [geometry])
+  }, [geometry, simRunId])
 
   const snapA = useRef<Snapshot | null>(null)
   const snapB = useRef<Snapshot | null>(null)

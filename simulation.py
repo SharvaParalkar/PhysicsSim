@@ -72,7 +72,7 @@ gs = _GenesisLazy()
 # ── STEP 2: Parameter block ────────────────────────────────────────────────────  # parameters section
 # ── Input ──────────────────────────────────────────────────────────────────  # input settings
 PARTICLE_FILE        = "particle.obj"   # OBJ or STL path
-N_PARTICLES          = 100              # number of particle copies to drop
+N_PARTICLES          = 50               # number of particle copies to drop
 SCALE_FACTOR         = 1.0             # 0.001 converts mm mesh → metres
 # ── Material ───────────────────────────────────────────────────────────────  # material settings
 # YOUNGS_MODULUS: FEM jamming uses E ≤ 1e8; above 1e8 Genesis uses rigid particles (see spawn_particles).
@@ -94,16 +94,16 @@ WALL_THICKNESS       = 0.02            # m — plate slab thickness (too thin + 
 # Rim height for ENVIRONMENT_TYPE="plate" — keeps particles on the plate (0 = flat open plate).
 PLATE_WALL_HEIGHT    = 0.15            # m — vertical walls along the square perimeter
 # ── Drop ───────────────────────────────────────────────────────────────────  # drop settings
-DROP_HEIGHT          = 0.2             # metres above container top edge (plate / cylinder rim)
+DROP_HEIGHT          = 0.05            # metres above container top edge (plate / cylinder rim)
 # 0 = stack all particles in a vertical column at (0, ·, 0); >0 = Vogel disk on XZ up to this fraction of spread radius
-DROP_SPREAD          = 0.3
+DROP_SPREAD          = 0.5
 # ── Gravity ────────────────────────────────────────────────────────────────  # gravity settings
 GRAVITY              = (0, -9.81, 0)   # Y is up; change to (0,-1.62,0) for Moon
 # ── Simulation ─────────────────────────────────────────────────────────────  # simulation settings
 # Throughput-first defaults: larger outer dt, fewer substeps; implicit FEM + low Newton count (see FEMOptions).
 # For thin rigid plates, use Analytical Mode (large dt while falling, then rebuild at 500 Hz / 16 substeps).
 DT                   = 1 / 240       # s — outer step (with SUBSTEPS)
-SUBSTEPS             = 8              # inner substeps per dt (higher → less rigid/FEM tunneling)
+SUBSTEPS             = 4              # inner substeps per dt (higher → less rigid/FEM tunneling)
 SIM_DURATION         = 10.0            # max simulated time (s)
 SETTLE_THRESHOLD     = 1e-3            # m/s — stop early when all particles slow
 # ── Runtime / performance ───────────────────────────────────────────────────  # runtime settings
@@ -303,6 +303,11 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["SUBSTEPS"] = int(cfg["SUBSTEPS"])
     cfg["SIM_DURATION"] = float(cfg["SIM_DURATION"])
     cfg["SETTLE_THRESHOLD"] = float(cfg["SETTLE_THRESHOLD"])
+    _grav = cfg.get("GRAVITY", GRAVITY)
+    if isinstance(_grav, (list, tuple)) and len(_grav) == 3:
+        cfg["GRAVITY"] = tuple(float(x) for x in _grav)
+    else:
+        cfg["GRAVITY"] = tuple(float(x) for x in GRAVITY)
     cfg["CONTACT_EXTRACT_FALLING_EVERY"] = max(1, int(cfg.get("CONTACT_EXTRACT_FALLING_EVERY", CONTACT_EXTRACT_FALLING_EVERY)))
     cfg["SEQUENTIAL_DROP"] = bool(cfg.get("SEQUENTIAL_DROP", False))
     _ssd = cfg.get("SEQUENTIAL_STAGE_DURATION", None)
@@ -897,7 +902,7 @@ def spawn_particles(
     spawn_y0 = float(env_info["top_y"] + drop_height)
     spread = float(drop_spread)
     char = float(max(float(extents[0]), float(extents[1]), float(extents[2]), 1e-9))
-    stack_gap = max(char * 1.06, 1e-4)
+    stack_gap = max(char * 1.5, 1e-4)
 
     prior = prior_fem_snapshots or []
     if prior and len(prior) != n - 1:
@@ -1415,7 +1420,9 @@ def extract_contacts_geometric(
                     entity_a=a, entity_b=b,
                     is_particle_particle=True, is_particle_container=False,
                     position=contact_pos, normal=normal,
-                    depth=depth, force=depth * 1e6, contact_area=None,
+                    depth=depth,
+                    force=min(float(depth) * 1e4, 1.0),
+                    contact_area=None,
                 ))
     for e in container_entities:
         ceid = _entity_id(e)
@@ -1429,7 +1436,9 @@ def extract_contacts_geometric(
                     is_particle_particle=False, is_particle_container=True,
                     position=np.array([ppos[0], floor_y, ppos[2]]),
                     normal=np.array([0.0, 1.0, 0.0]),
-                    depth=depth, force=depth * 1e6, contact_area=None,
+                    depth=depth,
+                    force=min(float(depth) * 1e4, 1.0),
+                    contact_area=None,
                 ))
     return contacts
 

@@ -92,6 +92,10 @@ export interface SimulationConfig {
   POISSON_RATIO: number
   DT: number
   SUBSTEPS: number
+  /** Max particle speed (m/s) to declare settled (early stop). */
+  SETTLE_THRESHOLD: number
+  /** Gravity vector (m/s²); Y is up, so negative Y accelerates downward. */
+  GRAVITY: [number, number, number]
   /** When true: large dt while falling, no contact extraction until max_vel &lt; threshold, then rebuild at 500 Hz / 16 substeps. */
   ANALYTICAL_MODE?: boolean
   /** Rebuild scene per particle: simulate k bodies, snapshot FEM, add the next at drop height (FEM only; disables analytical handoff). */

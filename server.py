@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import sys
 
@@ -18,6 +19,45 @@ from fastapi.middleware.cors import CORSMiddleware
 import simulation
 
 logger = logging.getLogger(__name__)
+
+
+def _patch_uvicorn_h11_graceful_400() -> None:
+    """
+    During shutdown, stray TCP probes can trigger RemoteProtocolError → send_400_response while
+    h11 is already CLOSED, raising LocalProtocolError and noisy tracebacks. Swallow that case.
+    """
+    try:
+        import h11
+        from uvicorn.protocols.http import h11_impl
+
+        _orig = h11_impl.H11Protocol.send_400_response
+
+        def _send_400_safe(self, msg: str) -> None:
+            try:
+                _orig(self, msg)
+            except h11.LocalProtocolError:
+                try:
+                    if self.transport is not None and not self.transport.is_closing():
+                        self.transport.close()
+                except Exception:
+                    pass
+
+        h11_impl.H11Protocol.send_400_response = _send_400_safe  # type: ignore[method-assign]
+    except Exception:
+        pass
+
+
+_patch_uvicorn_h11_graceful_400()
+
+
+def _sanitize_floats(obj: Any) -> Any:
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_floats(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_floats(v) for v in obj]
+    return obj
 
 
 def _use_cpu_backend() -> bool:
@@ -352,11 +392,13 @@ def _build_graph_from_contact_pairs(contact_pairs: list[dict[str, Any]]) -> tupl
 @app.get("/results")
 def get_results():
     out_dir = Path(OUTPUT_DIR)
-    return {
-        "particles": _read_csv_records(out_dir / "particles.csv"),
-        "contact_pairs": _read_csv_records(out_dir / "contact_pairs.csv"),
-        "contact_points": _read_csv_records(out_dir / "contact_points.csv"),
-    }
+    return _sanitize_floats(
+        {
+            "particles": _read_csv_records(out_dir / "particles.csv"),
+            "contact_pairs": _read_csv_records(out_dir / "contact_pairs.csv"),
+            "contact_points": _read_csv_records(out_dir / "contact_points.csv"),
+        }
+    )
 
 
 @app.get("/metrics")
@@ -385,7 +427,7 @@ def get_metrics():
         graph_dict, graph_links = _build_graph_from_contact_pairs(pairs)
         out["contact_graph_dict"] = graph_dict
         out["contact_graph_links"] = graph_links
-        return out
+        return _sanitize_floats(out)
     try:
         with h5py.File(h5_path, "r") as f:
             attrs = f.attrs
@@ -395,9 +437,9 @@ def get_metrics():
             out["n_isolated"] = int(attrs.get("n_isolated", 0))
             out["n_container_touch"] = int(attrs.get("n_container_touch", 0))
             out["system_pressure"] = float(attrs.get("system_pressure", 0.0))
-            return out
+            return _sanitize_floats(out)
     except Exception:
-        return out
+        return _sanitize_floats(out)
 
 
 @app.get("/vertex-stress")
@@ -496,6 +538,7 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
         precision_phase = not analytical
         t_elapsed = 0.0
         last_ws_pct = -1.0
+        last_live_Z = 0.0
 
         def _force_skip_contacts(max_vel: Optional[float]) -> bool:
             if not analytical or precision_phase:
@@ -507,7 +550,7 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
             After a physics substep: metrics, frames, settle / analytical handoff.
             Returns True to stop the outer simulation (cancel, settle, or completed precision phase).
             """
-            nonlocal entities, particle_ids, container_ids, contact_cache, dt, precision_phase, t_elapsed, last_ws_pct, particle_mass_kg
+            nonlocal entities, particle_ids, container_ids, contact_cache, dt, precision_phase, t_elapsed, last_ws_pct, particle_mass_kg, last_live_Z
             if RUNTIME.cancel_requested:
                 sync_q.put({"type": "log", "line": "Simulation cancelled by user"})
                 sync_q.put({"type": "cancelled"})
@@ -532,8 +575,11 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                         }
                     )
 
-            if frame_step_idx % live_metrics_every == 0:
-                contacts_lm = simulation.extract_contacts_resampled(
+            need_contacts = (frame_step_idx % live_metrics_every == 0) or (
+                frame_step_idx % frame_every == 0
+            )
+            if need_contacts:
+                contacts_snapshot = simulation.extract_contacts_resampled(
                     RUNTIME.scene,
                     particle_ids,
                     container_ids,
@@ -545,14 +591,17 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                     cache=contact_cache,
                     force_skip=skip,
                 )
+
+            if frame_step_idx % live_metrics_every == 0:
                 lm = simulation.calculate_live_metrics(
-                    contacts_lm,
+                    contacts_snapshot,
                     particle_ids,
                     entities,
                     particle_mass_kg=particle_mass_kg,
                     surface_area_m2=surface_area_m2,
                 )
-                LATEST_Z_HISTORY.append({"t": t_now, "Z": float(lm["Z"])})
+                last_live_Z = float(lm["Z"])
+                LATEST_Z_HISTORY.append({"t": t_now, "Z": last_live_Z})
                 LATEST_RATTLERS_HISTORY.append({"t": t_now, "n_rattlers": float(lm["n_rattlers"])})
                 LATEST_KE_HISTORY.append({"t": t_now, "kinetic_energy": float(lm["kinetic_energy"])})
                 LATEST_PRESSURE_HISTORY.append({"t": t_now, "system_pressure": float(lm["system_pressure"])})
@@ -561,7 +610,7 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                         "type": "live_metrics",
                         "step": int(frame_step_idx),
                         "t": t_now,
-                        "Z": float(lm["Z"]),
+                        "Z": last_live_Z,
                         "n_rattlers": int(lm["n_rattlers"]),
                         "kinetic_energy": float(lm["kinetic_energy"]),
                         "system_pressure": float(lm["system_pressure"]),
@@ -569,23 +618,11 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                 )
 
             if frame_step_idx % frame_every == 0:
-                contacts_live = simulation.extract_contacts_resampled(
-                    RUNTIME.scene,
-                    particle_ids,
-                    container_ids,
-                    depth_tol,
-                    sim_step=frame_step_idx,
-                    max_vel=max_vel,
-                    settle_threshold=settle_threshold,
-                    falling_every=falling_contact_stride,
-                    cache=contact_cache,
-                    force_skip=skip,
-                )
-                stress_map = simulation.compute_particle_stress_map(contacts_live, particle_ids)
-                metrics_live = simulation.compute_metrics(
-                    contacts_live, particle_ids, container_surface_area_m2=surface_area_m2
-                )
-                fem_maps, gmax = simulation.compute_fem_vertex_force_stress(RUNTIME.scene, entities)
+                # Live frames: per-particle scalar stress from contacts (fast dict aggregate); full
+                # per-vertex Hertzian gradient replaces this when the sim completes.
+                stress_map = simulation.compute_particle_stress_map(contacts_snapshot, particle_ids)
+                fem_maps: dict = {}
+                gmax = 1.0
                 LATEST_MAX_VEL_HISTORY.append({"t": t_now, "max_vel": float(max_vel or 0.0)})
                 sync_q.put(
                     {
@@ -593,7 +630,7 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                         "step": int(frame_step_idx),
                         "t": t_now,
                         "max_vel": float(max_vel or 0.0),
-                        "Z": float(metrics_live.get("Z", 0.0)),
+                        "Z": last_live_Z,
                         "particles": simulation._collect_particle_transforms(
                             entities,
                             stress_map,
@@ -841,16 +878,18 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
         )
         mesh_vertex_count = len(RUNTIME._original_mesh.vertices) if RUNTIME._original_mesh else 0
         sync_q.put(
-            {
-                "type": "complete",
-                "metrics": {
-                    "Z": float(metrics.get("Z", 0.0)),
-                    "total_pp": int(metrics.get("total_pp_contacts", 0)),
-                    "system_pressure": float(metrics.get("system_pressure", 0.0)),
-                },
-                "vertex_stress": {str(eid): vals for eid, vals in vertex_stress.items()},
-                "mesh_vertex_count": mesh_vertex_count,
-            }
+            _sanitize_floats(
+                {
+                    "type": "complete",
+                    "metrics": {
+                        "Z": float(metrics.get("Z", 0.0)),
+                        "total_pp": int(metrics.get("total_pp_contacts", 0)),
+                        "system_pressure": float(metrics.get("system_pressure", 0.0)),
+                    },
+                    "vertex_stress": {str(eid): vals for eid, vals in vertex_stress.items()},
+                    "mesh_vertex_count": mesh_vertex_count,
+                }
+            )
         )
         sync_q.put({"type": "idle", "message": "Ready for next run"})
     except SimulationAborted:
@@ -944,6 +983,13 @@ async def websocket_endpoint(ws: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
+
+    # Proactor + graceful shutdown can hit asyncio assert / h11 races on Windows; selector is stabler.
+    if sys.platform == "win32":
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        except Exception:
+            pass
 
     # Pass `app` directly. Using "server:app" makes uvicorn import `server` again while
     # this file already ran as __main__, duplicating RUNTIME / genesis-worker / gs.init.

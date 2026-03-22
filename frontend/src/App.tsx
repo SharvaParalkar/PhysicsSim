@@ -8,6 +8,45 @@ type ResultsPayload = {
   particles: ParticleData[]
 }
 
+/** Default throughput tuning (matches prior UI baseline). */
+const STANDARD_PHYSICS_TUNING: Pick<
+  SimulationConfig,
+  'SETTLE_THRESHOLD' | 'DT' | 'SUBSTEPS' | 'ANALYTICAL_MODE' | 'DROP_HEIGHT' | 'DROP_SPREAD' | 'GRAVITY'
+> = {
+  SETTLE_THRESHOLD: 1e-3,
+  DT: 1 / 240,
+  SUBSTEPS: 4,
+  ANALYTICAL_MODE: true,
+  DROP_HEIGHT: 0.2,
+  DROP_SPREAD: 0,
+  GRAVITY: [0, -9.81, 0],
+}
+
+/** Faster settling for rigid-body runs: looser settle, coarser step, no analytical handoff, shorter drop + spread, higher |g|. */
+const FAST_PHYSICS_TUNING: Pick<
+  SimulationConfig,
+  'SETTLE_THRESHOLD' | 'DT' | 'SUBSTEPS' | 'ANALYTICAL_MODE' | 'DROP_HEIGHT' | 'DROP_SPREAD' | 'GRAVITY'
+> = {
+  SETTLE_THRESHOLD: 5e-3,
+  DT: 1 / 120,
+  SUBSTEPS: 2,
+  ANALYTICAL_MODE: false,
+  DROP_HEIGHT: 0.05,
+  DROP_SPREAD: 0.3,
+  GRAVITY: [0, -20.0, 0],
+}
+
+function matchesFastPhysicsPreset(c: SimulationConfig): boolean {
+  const f = FAST_PHYSICS_TUNING
+  if (Math.abs(c.SETTLE_THRESHOLD - f.SETTLE_THRESHOLD) >= 1e-9) return false
+  if (Math.abs(c.DT - f.DT) >= 1e-9) return false
+  if (c.SUBSTEPS !== f.SUBSTEPS) return false
+  if (c.ANALYTICAL_MODE !== false) return false
+  if (Math.abs(c.DROP_HEIGHT - f.DROP_HEIGHT) >= 1e-9) return false
+  if (Math.abs(c.DROP_SPREAD - f.DROP_SPREAD) >= 1e-9) return false
+  return c.GRAVITY.every((v, i) => Math.abs(v - f.GRAVITY[i]) < 1e-6)
+}
+
 export default function App() {
   const [mode, setMode] = useState<'idle' | 'falling' | 'settled'>('idle')
   const [logs, setLogs] = useState<string[]>([])
@@ -47,16 +86,12 @@ export default function App() {
     N_PARTICLES: 100,
     YOUNGS_MODULUS: 200e6,
     POISSON_RATIO: 0.45,
-    DT: 1 / 240,
-    SUBSTEPS: 4,
-    ANALYTICAL_MODE: true,
+    ...STANDARD_PHYSICS_TUNING,
     SEQUENTIAL_DROP: false,
     SEQUENTIAL_STAGE_DURATION: null,
     SIM_DURATION: 5.0,
     ENVIRONMENT_TYPE: 'plate',
     CYLINDER_DIAMETER: 0.2,
-    DROP_HEIGHT: 0.2,
-    DROP_SPREAD: 0,
     PLATE_SIZE: 0.6,
     WALL_THICKNESS: 0.02,
     PLATE_WALL_HEIGHT: 0.15,
@@ -271,7 +306,11 @@ export default function App() {
         if (done.vertex_stress && Object.keys(done.vertex_stress).length > 0) {
           setSettledVertexStress(done.vertex_stress)
         }
-        await onRunCompleteRef.current()
+        try {
+          await onRunCompleteRef.current()
+        } catch (e) {
+          onLogsRef.current(`[warn] metrics refresh failed: ${e}`)
+        }
         onModeChangeRef.current('settled')
         return
       }
@@ -327,8 +366,8 @@ export default function App() {
     const ws = getSharedSimulationSocket()
     const payload = JSON.stringify({
       type: 'start',
-      frame_every: 2,
-      live_metrics_every: 10,
+      frame_every: 30,
+      live_metrics_every: 60,
       config: simConfigRef.current,
     })
     setSimTime(0)
@@ -484,6 +523,23 @@ export default function App() {
 
             <div style={{ display: 'grid', gap: 8 }}>
               <div style={{ ...labelStyle, marginTop: 0 }}>Simulation Config</div>
+            <label style={{ ...labelStyle, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={matchesFastPhysicsPreset(simConfig)}
+                disabled={simConfig.SEQUENTIAL_DROP === true}
+                onChange={(e) =>
+                  setSimConfig((p) => ({
+                    ...p,
+                    ...(e.target.checked ? FAST_PHYSICS_TUNING : STANDARD_PHYSICS_TUNING),
+                  }))
+                }
+              />
+              <span>
+                Fast mode (rigid settling): looser settle threshold, dt 1/120, 2 substeps, analytical off, shorter drop,
+                Vogel spread, stronger gravity. Uncheck to restore standard throughput settings.
+              </span>
+            </label>
             <label style={labelStyle}>
               N_PARTICLES
               <input
@@ -585,7 +641,7 @@ export default function App() {
               SUBSTEPS: {simConfig.SUBSTEPS}
               <input
                 type="range"
-                min={4}
+                min={1}
                 max={20}
                 step={1}
                 value={simConfig.SUBSTEPS}
@@ -691,6 +747,39 @@ export default function App() {
                 onChange={(e) => setSimConfig((p) => ({ ...p, DROP_SPREAD: Number(e.target.value) }))}
                 style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
               />
+            </label>
+            <label style={labelStyle}>
+              SETTLE_THRESHOLD (m/s)
+              <input
+                type="number"
+                step={0.0005}
+                min={1e-6}
+                value={simConfig.SETTLE_THRESHOLD}
+                onChange={(e) => setSimConfig((p) => ({ ...p, SETTLE_THRESHOLD: Number(e.target.value) }))}
+                style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+              />
+            </label>
+            <label style={labelStyle}>
+              GRAVITY (m/s²) X, Y, Z
+              <div style={{ display: 'flex', gap: 6 }}>
+                {([0, 1, 2] as const).map((i) => (
+                  <input
+                    key={i}
+                    type="number"
+                    step={0.1}
+                    value={simConfig.GRAVITY[i]}
+                    onChange={(e) => {
+                      const v = Number(e.target.value)
+                      setSimConfig((p) => {
+                        const g: [number, number, number] = [p.GRAVITY[0], p.GRAVITY[1], p.GRAVITY[2]]
+                        g[i] = v
+                        return { ...p, GRAVITY: g }
+                      })
+                    }}
+                    style={{ flex: 1, border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                  />
+                ))}
+              </div>
             </label>
             </div>
           </div>
