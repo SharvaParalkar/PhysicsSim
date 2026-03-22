@@ -120,6 +120,32 @@ def _entity_id(e) -> int:
     return int(getattr(e, "idx"))
 
 
+def _particle_mass_kg_from_runtime(runtime: "SimulationRuntime", rho: float) -> float:
+    """Single particle mass from physics mesh volume × density; retries if first volume estimate is zero."""
+    pmesh = getattr(runtime, "physics_mesh", None)
+    if pmesh is None:
+        return 0.0
+    vol = 0.0
+    try:
+        vol = float(pmesh.volume) if pmesh.is_watertight else float(pmesh.convex_hull.volume)
+    except Exception:
+        vol = 0.0
+    mass = max(rho * vol, 0.0)
+    if mass <= 0.0:
+        vol_fb = 0.0
+        try:
+            vol_fb = float(pmesh.volume)
+        except Exception:
+            pass
+        if vol_fb <= 0.0:
+            try:
+                vol_fb = float(pmesh.convex_hull.volume)
+            except Exception:
+                pass
+        mass = max(rho * vol_fb, 0.0)
+    return mass
+
+
 class SimulationAborted(Exception):
     """User requested cancel during scene build or other cooperative checkpoints."""
 
@@ -208,7 +234,7 @@ class SimulationRuntime:
         sim_options = simulation.make_sim_options(simulation.gs, cfg)
         # Rigid container geometry uses the rigid solver; small dt/substeps => tiny
         # _substep_dt and a warning unless GJK is enabled (see rigid_solver.py).
-        rigid_options = simulation.gs.options.RigidOptions(use_gjk_collision=True)
+        rigid_options = simulation.make_rigid_options(simulation.gs, cfg)
         # Explicit FEM at E~1e8 Pa is unstable at typical dt; Genesis recommends implicit FEM.
         fem_options = simulation.make_fem_options(simulation.gs, cfg)
         self.scene = simulation.gs.Scene(
@@ -230,6 +256,7 @@ class SimulationRuntime:
             cfg["CYLINDER_HEIGHT"],
             cfg["CYLINDER_SEGMENTS"],
             cfg["WALL_THICKNESS"],
+            float(cfg.get("PLATE_WALL_HEIGHT", simulation.PLATE_WALL_HEIGHT)),
             env_restitution=float(cfg.get("ENV_RESTITUTION", 0.0)),
         )
         self.active_containers = list(containers)
@@ -442,12 +469,7 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
 
         if not sequential:
             container_ids, particle_ids, entities = RUNTIME.build_scene(cfg_run, on_progress=_on_build_progress)
-            try:
-                pmesh = RUNTIME.physics_mesh
-                vol = float(pmesh.volume) if pmesh.is_watertight else float(pmesh.convex_hull.volume)
-            except Exception:
-                vol = 0.0
-            particle_mass_kg = max(rho * vol, 0.0)
+            particle_mass_kg = _particle_mass_kg_from_runtime(RUNTIME, rho)
 
         dt = float(cfg_run["DT"])
 
@@ -455,6 +477,8 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
         # Otherwise each step pays full visualizer.update() cost even with show_viewer=False.
         def _step() -> None:
             RUNTIME.scene.step(update_visualizer=False)
+            if RUNTIME.active_entities and RUNTIME.physics_mesh is not None:
+                simulation.enforce_container_bounds(RUNTIME.active_entities, RUNTIME.physics_mesh, cfg_run)
 
         if not sequential:
             # Show spawn poses immediately so the UI is not blank until the first (slow) CPU step.
@@ -483,7 +507,7 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
             After a physics substep: metrics, frames, settle / analytical handoff.
             Returns True to stop the outer simulation (cancel, settle, or completed precision phase).
             """
-            nonlocal entities, particle_ids, container_ids, contact_cache, dt, precision_phase, t_elapsed, last_ws_pct
+            nonlocal entities, particle_ids, container_ids, contact_cache, dt, precision_phase, t_elapsed, last_ws_pct, particle_mass_kg
             if RUNTIME.cancel_requested:
                 sync_q.put({"type": "log", "line": "Simulation cancelled by user"})
                 sync_q.put({"type": "cancelled"})
@@ -608,6 +632,7 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                     cfg2["SUBSTEPS"] = int(cfg["ANALYTICAL_PRECISION_SUBSTEPS"])
                     cfg2["FEM_NEWTON_ITERATIONS"] = int(cfg.get("FEM_NEWTON_ITERATIONS_PRECISION", 8))
                     container_ids, particle_ids, entities = RUNTIME.build_scene(cfg2, on_progress=_on_build_progress)
+                    particle_mass_kg = _particle_mass_kg_from_runtime(RUNTIME, rho)
                     try:
                         simulation.restore_fem_entities(entities, snaps)
                     except Exception as exc:
@@ -676,12 +701,7 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                     prior_fem_snapshots=prior,
                 )
                 if particle_mass_kg <= 0.0:
-                    try:
-                        pmesh = RUNTIME.physics_mesh
-                        vol = float(pmesh.volume) if pmesh.is_watertight else float(pmesh.convex_hull.volume)
-                        particle_mass_kg = max(rho * vol, 0.0)
-                    except Exception:
-                        particle_mass_kg = 0.0
+                    particle_mass_kg = _particle_mass_kg_from_runtime(RUNTIME, rho)
                 contact_cache = simulation.ContactSampleCache()
                 dt = float(cfg_k["DT"])
                 sync_q.put(
@@ -780,15 +800,26 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
 
         sync_q.put({"type": "progress", "phase": "simulate", "pct": 1.0, "detail": "Finishing…"})
         contacts = simulation.extract_contacts(RUNTIME.scene, particle_ids, container_ids, depth_tol)
+        if len(contacts) == 0:
+            print("[INFO] falling back to geometric contact detection", flush=True)
+            contacts = simulation.extract_contacts_geometric(
+                entities,
+                particle_ids,
+                RUNTIME.active_containers,
+                RUNTIME._original_mesh,
+                depth_tol=depth_tol,
+            )
+        print(f"[DEBUG] final contact count={len(contacts)}", flush=True)
         metrics = simulation.compute_metrics(contacts, particle_ids, container_surface_area_m2=surface_area_m2)
-        original_mesh = RUNTIME._original_mesh
-        vertex_stress = simulation.compute_vertex_stress(
-            entities,
-            contacts,
-            original_mesh,
-            particle_ids,
-            sigma=float(cfg.get("STRESS_SIGMA", 0.4)),
-        )
+        vertex_stress: dict[int, list[float]] = {}
+        if RUNTIME._original_mesh is not None:
+            vertex_stress = simulation.compute_vertex_stress(
+                entities,
+                contacts,
+                RUNTIME._original_mesh,
+                particle_ids,
+                sigma=float(cfg.get("STRESS_SIGMA", 0.4)),
+            )
         LATEST_CONTACT_GRAPH_DICT = metrics.get("contact_graph_dict", {}) or {}
         LATEST_CONTACT_GRAPH_LINKS = [
             {
@@ -808,7 +839,7 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
             save_csv=bool(cfg["SAVE_CSV"]),
             vertex_stress=vertex_stress,
         )
-        mesh_vertex_count = len(original_mesh.vertices) if original_mesh is not None else 0
+        mesh_vertex_count = len(RUNTIME._original_mesh.vertices) if RUNTIME._original_mesh else 0
         sync_q.put(
             {
                 "type": "complete",

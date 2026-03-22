@@ -59,6 +59,7 @@ export default function App() {
     DROP_SPREAD: 0,
     PLATE_SIZE: 0.6,
     WALL_THICKNESS: 0.02,
+    PLATE_WALL_HEIGHT: 0.15,
     STRESS_SIGMA: 0.4,
   })
   const logBoxRef = useRef<HTMLPreElement | null>(null)
@@ -107,7 +108,17 @@ export default function App() {
   }, [logs])
 
   const handleRunComplete = useCallback(async () => {
-    await refreshResults()
+    const particles = await refreshResults()
+    setSettledVertexStress((prev) => {
+      if (prev && Object.keys(prev).length > 0) return prev
+      if (!particles?.length) return null
+      const maxC = Math.max(...particles.map((p) => p.n_contacts), 1)
+      const fallback: Record<string, number[]> = {}
+      for (const p of particles) {
+        fallback[String(p.id)] = [p.n_contacts / maxC]
+      }
+      return fallback
+    })
   }, [refreshResults])
 
   const handleFrameMetrics = useCallback((point: { t: number; max_vel: number }) => {
@@ -153,6 +164,20 @@ export default function App() {
   useEffect(() => {
     onRunCompleteRef.current = handleRunComplete
   }, [handleRunComplete])
+
+  useEffect(() => {
+    fetch('http://localhost:8000/metrics')
+      .then((r) => r.json())
+      .then((m: MetricsResponse) => {
+        if (m.kinetic_energy_history?.length) {
+          setKeSeries(m.kinetic_energy_history.map((p) => ({ t: p.t, kinetic_energy: p.kinetic_energy })))
+        }
+        if (m.pressure_history?.length) {
+          setPressureSeries(m.pressure_history.map((p) => ({ t: p.t, system_pressure: p.system_pressure })))
+        }
+      })
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     if (runSignal === 0) return
@@ -606,17 +631,44 @@ export default function App() {
                 <option value="cylinder">cylinder</option>
               </select>
             </label>
-            <label style={labelStyle}>
-              CYLINDER_DIAMETER (m)
-              <input
-                type="number"
-                step={0.01}
-                min={0.05}
-                value={simConfig.CYLINDER_DIAMETER}
-                onChange={(e) => setSimConfig((p) => ({ ...p, CYLINDER_DIAMETER: Number(e.target.value) }))}
-                style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
-              />
-            </label>
+            {simConfig.ENVIRONMENT_TYPE === 'plate' ? (
+              <>
+                <label style={labelStyle}>
+                  Plate size (PLATE_SIZE, m)
+                  <input
+                    type="number"
+                    step={0.05}
+                    min={0.1}
+                    value={simConfig.PLATE_SIZE}
+                    onChange={(e) => setSimConfig((p) => ({ ...p, PLATE_SIZE: Number(e.target.value) }))}
+                    style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                  />
+                </label>
+                <label style={labelStyle}>
+                  Plate wall height (PLATE_WALL_HEIGHT, m)
+                  <input
+                    type="number"
+                    step={0.01}
+                    min={0}
+                    value={simConfig.PLATE_WALL_HEIGHT}
+                    onChange={(e) => setSimConfig((p) => ({ ...p, PLATE_WALL_HEIGHT: Number(e.target.value) }))}
+                    style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                  />
+                </label>
+              </>
+            ) : (
+              <label style={labelStyle}>
+                CYLINDER_DIAMETER (m)
+                <input
+                  type="number"
+                  step={0.01}
+                  min={0.05}
+                  value={simConfig.CYLINDER_DIAMETER}
+                  onChange={(e) => setSimConfig((p) => ({ ...p, CYLINDER_DIAMETER: Number(e.target.value) }))}
+                  style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                />
+              </label>
+            )}
             <label style={labelStyle}>
               DROP_HEIGHT (m)
               <input
@@ -801,6 +853,7 @@ export default function App() {
                 environmentType={simConfig.ENVIRONMENT_TYPE}
                 plateSize={simConfig.PLATE_SIZE}
                 wallThickness={simConfig.WALL_THICKNESS}
+                plateWallHeight={simConfig.PLATE_WALL_HEIGHT}
                 cylinderDiameter={simConfig.CYLINDER_DIAMETER}
                 cylinderHeight={0.3}
                 cylinderSegments={32}

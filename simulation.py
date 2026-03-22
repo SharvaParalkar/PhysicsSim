@@ -1,5 +1,6 @@
 import os, math
 import argparse
+import logging
 import sys
 import numpy as np
 import torch
@@ -10,6 +11,7 @@ import coacd
 import networkx as nx
 from scipy.spatial.transform import Rotation
 from dataclasses import dataclass, field
+from contextlib import contextmanager
 from typing import Callable, Optional
 
 # Avoid Windows console UnicodeEncodeError when libraries print box-drawing/emoji.
@@ -84,24 +86,26 @@ PARTICLE_RESTITUTION = 0.0             # particle–contact bounciness (was 0.2)
 ENV_RESTITUTION      = 0.0             # floor/walls (was 0.05)
 # ── Environment ────────────────────────────────────────────────────────────  # environment settings
 ENVIRONMENT_TYPE     = "plate"      # "cylinder" or "plate"
-PLATE_SIZE           = 0.6             # square plate side length (m)
+PLATE_SIZE           = 0.25            # square plate side length (m)
 CYLINDER_DIAMETER    = 0.20            # inner diameter (m)
 CYLINDER_HEIGHT      = 0.30            # wall height (m)
 CYLINDER_SEGMENTS    = 32              # wall facets — use 24+ to avoid gaps
 WALL_THICKNESS       = 0.02            # m — plate slab thickness (too thin + coarse dt → FEM tunneling)
+# Rim height for ENVIRONMENT_TYPE="plate" — keeps particles on the plate (0 = flat open plate).
+PLATE_WALL_HEIGHT    = 0.15            # m — vertical walls along the square perimeter
 # ── Drop ───────────────────────────────────────────────────────────────────  # drop settings
 DROP_HEIGHT          = 0.2             # metres above container top edge (plate / cylinder rim)
 # 0 = stack all particles in a vertical column at (0, ·, 0); >0 = Vogel disk on XZ up to this fraction of spread radius
-DROP_SPREAD          = 0.0
+DROP_SPREAD          = 0.3
 # ── Gravity ────────────────────────────────────────────────────────────────  # gravity settings
 GRAVITY              = (0, -9.81, 0)   # Y is up; change to (0,-1.62,0) for Moon
 # ── Simulation ─────────────────────────────────────────────────────────────  # simulation settings
 # Throughput-first defaults: larger outer dt, fewer substeps; implicit FEM + low Newton count (see FEMOptions).
 # For thin rigid plates, use Analytical Mode (large dt while falling, then rebuild at 500 Hz / 16 substeps).
 DT                   = 1 / 240       # s — outer step (with SUBSTEPS)
-SUBSTEPS             = 4              # inner substeps per dt
-SIM_DURATION         = 5.0             # max simulated time (s)
-SETTLE_THRESHOLD     = 1e-4            # m/s — stop early when all particles slow
+SUBSTEPS             = 8              # inner substeps per dt (higher → less rigid/FEM tunneling)
+SIM_DURATION         = 10.0            # max simulated time (s)
+SETTLE_THRESHOLD     = 1e-3            # m/s — stop early when all particles slow
 # ── Runtime / performance ───────────────────────────────────────────────────  # runtime settings
 # Genesis’s viewer can dominate runtime on CPU (the FPS log you saw is from it).
 # Keep it off by default so simulation runs as fast as possible.
@@ -110,8 +114,8 @@ SHOW_VIEWER          = False
 CONTACT_SAMPLE_EVERY = 20              # legacy doc alignment: prefer CONTACT_EXTRACT_FALLING_EVERY for live runs
 # During fast motion, skip scene.get_contacts() most steps (see extract_contacts_resampled).
 CONTACT_EXTRACT_FALLING_EVERY = 20
-CONTACT_DEPTH_TOL    = 1e-5            # min penetration depth to count as contact
-# Jamming / coordination Z: particle–particle links only if |F| exceeds this (avoids overlap noise).
+CONTACT_DEPTH_TOL    = 1e-8            # min penetration depth to count as contact
+# Strong PP count (reference): |F| above this; Z uses depth > CONTACT_DEPTH_TOL only (see compute_metrics).
 Z_CONTACT_FORCE_MIN_N = 1e-3
 # ── Output ─────────────────────────────────────────────────────────────────  # output settings
 OUTPUT_DIR           = "./results"     # output directory path
@@ -124,7 +128,7 @@ class ThroughputSimTuning:
     """Default SimOptions tuning: prioritize wall-clock throughput."""
 
     dt: float = 1.0 / 240.0
-    substeps: int = 4
+    substeps: int = 8
 
 
 @dataclass(frozen=True)
@@ -139,7 +143,7 @@ class AnalyticalFallingTuning:
     """Falling phase timestep — match throughput defaults so thin plate contacts are not skipped (tunneling)."""
 
     dt: float = 1.0 / 240.0
-    substeps: int = 4
+    substeps: int = 8
 
 
 @dataclass(frozen=True)
@@ -167,6 +171,21 @@ def make_fem_options(gs_mod, cfg: dict):
     return g.FEMOptions(
         use_implicit_solver=True,
         n_newton_iterations=int(cfg.get("FEM_NEWTON_ITERATIONS", ThroughputFEMTuning.n_newton_iterations)),
+    )
+
+
+def make_rigid_options(gs_mod, _cfg: Optional[dict] = None):
+    """
+    Rigid solver options for mesh particles against fixed box/cylinder containers.
+
+    `box_box_detection` improves box–box contact; stiffer `constraint_timeconst` reduces penetration.
+    """
+    g = getattr(gs_mod, "options", gs_mod)
+    return g.RigidOptions(
+        use_gjk_collision=True,
+        box_box_detection=True,
+        iterations=80,
+        constraint_timeconst=0.005,
     )
 
 
@@ -217,6 +236,7 @@ DEFAULT_CONFIG = {
     "CYLINDER_HEIGHT": CYLINDER_HEIGHT,
     "CYLINDER_SEGMENTS": CYLINDER_SEGMENTS,
     "WALL_THICKNESS": WALL_THICKNESS,
+    "PLATE_WALL_HEIGHT": PLATE_WALL_HEIGHT,
     "DROP_HEIGHT": DROP_HEIGHT,
     "DROP_SPREAD": DROP_SPREAD,
     # Genesis FEM explicit integration is unstable at ~1e8 Pa with typical dt; implicit is recommended.
@@ -268,6 +288,9 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["CYLINDER_DIAMETER"] = float(cfg["CYLINDER_DIAMETER"])
     cfg["DROP_HEIGHT"] = float(cfg["DROP_HEIGHT"])
     cfg["DROP_SPREAD"] = float(cfg["DROP_SPREAD"])
+    cfg["PLATE_WALL_HEIGHT"] = float(cfg.get("PLATE_WALL_HEIGHT", PLATE_WALL_HEIGHT))
+    cfg["PLATE_SIZE"] = float(cfg.get("PLATE_SIZE", PLATE_SIZE))
+    cfg["WALL_THICKNESS"] = float(cfg.get("WALL_THICKNESS", WALL_THICKNESS))
     cfg["FEM_NEWTON_ITERATIONS"] = int(cfg.get("FEM_NEWTON_ITERATIONS", ThroughputFEMTuning.n_newton_iterations))
     cfg["FEM_NEWTON_ITERATIONS_PRECISION"] = int(cfg.get("FEM_NEWTON_ITERATIONS_PRECISION", AnalyticalPrecisionTuning.n_newton_iterations))
     cfg["ANALYTICAL_MODE"] = bool(cfg["ANALYTICAL_MODE"])
@@ -498,6 +521,189 @@ def _entity_pose(e) -> tuple[np.ndarray, tuple[float, float, float, float]]:
     return (np.zeros((3,), dtype=float), (0.0, 0.0, 0.0, 1.0))
 
 
+@contextmanager
+def _suppress_gs_manual_pose_warnings():
+    """Avoid flooding logs when correcting FEM positions after `scene.step()`."""
+    lg = getattr(gs, "logger", None)
+    if lg is None or not hasattr(lg, "setLevel"):
+        yield
+        return
+    prev = getattr(lg, "level", logging.WARNING)
+    try:
+        lg.setLevel(logging.ERROR)
+        yield
+    finally:
+        lg.setLevel(prev)
+
+
+def _obb_world_corners(pos: np.ndarray, quat_xyzw: tuple[float, float, float, float], half_ext: np.ndarray) -> np.ndarray:
+    q = np.array([quat_xyzw[0], quat_xyzw[1], quat_xyzw[2], quat_xyzw[3]], dtype=float)
+    r = Rotation.from_quat(q).as_matrix()
+    corners = []
+    for sx in (-1.0, 1.0):
+        for sy in (-1.0, 1.0):
+            for sz in (-1.0, 1.0):
+                local = np.array([sx * half_ext[0], sy * half_ext[1], sz * half_ext[2]], dtype=float)
+                corners.append(pos + r @ local)
+    return np.array(corners, dtype=float)
+
+
+def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
+    """
+    Genesis rigid contacts and FEM–rigid coupling are velocity-based and can miss penetration.
+    After each step, project particle geometry back into the analytical container (floor + rim/cylinder).
+    """
+    if not entities or physics_mesh is None:
+        return
+    try:
+        bounds = physics_mesh.bounds[1] - physics_mesh.bounds[0]
+    except Exception:
+        return
+    half_ext = np.asarray(bounds, dtype=float) * 0.5
+    max_h = float(np.max(half_ext))
+    if not math.isfinite(max_h) or max_h <= 0.0:
+        return
+    eps = max(1e-5, 2e-3 * max_h)
+
+    env = str(cfg.get("ENVIRONMENT_TYPE", ENVIRONMENT_TYPE)).strip().lower()
+    t = float(cfg.get("WALL_THICKNESS", WALL_THICKNESS))
+    surface_y = t
+    if env == "plate":
+        rim_h = float(cfg.get("PLATE_WALL_HEIGHT", PLATE_WALL_HEIGHT))
+        top_y = t + rim_h
+        s = float(cfg.get("PLATE_SIZE", PLATE_SIZE))
+        half_s = 0.5 * s
+        for e in entities:
+            name = type(e).__name__
+            if name == "FEMEntity":
+                try:
+                    st = e.get_state()
+                    pos = _tensor_to_numpy(st.pos).astype(float)
+                    if pos.ndim == 3:
+                        pos = pos[0]
+                    if pos.ndim != 2 or pos.shape[-1] != 3:
+                        continue
+                    pos = np.ascontiguousarray(pos)
+                    pos[:, 1] = np.maximum(pos[:, 1], surface_y + eps)
+                    if rim_h > 1e-9:
+                        in_rim = (pos[:, 1] >= surface_y - eps) & (pos[:, 1] <= top_y + eps)
+                        if np.any(in_rim):
+                            pos[in_rim, 0] = np.clip(pos[in_rim, 0], -half_s + eps, half_s - eps)
+                            pos[in_rim, 2] = np.clip(pos[in_rim, 2], -half_s + eps, half_s - eps)
+                    with _suppress_gs_manual_pose_warnings():
+                        e.set_position(pos)
+                except Exception:
+                    pass
+            elif name == "RigidEntity":
+                try:
+                    p0, quat = _entity_pose(e)
+                    pos = np.asarray(p0, dtype=float).copy()
+                    for _ in range(8):
+                        corners = _obb_world_corners(pos, quat, half_ext)
+                        min_y = float(np.min(corners[:, 1]))
+                        moved = False
+                        if min_y < surface_y + eps:
+                            pos[1] += (surface_y + eps) - min_y
+                            moved = True
+                            corners = _obb_world_corners(pos, quat, half_ext)
+                        if rim_h > 1e-9:
+                            in_rim = (corners[:, 1] >= surface_y - eps) & (corners[:, 1] <= top_y + eps)
+                            if np.any(in_rim):
+                                cr = corners[in_rim]
+                                dx = 0.0
+                                dz = 0.0
+                                mx = float(np.max(cr[:, 0]))
+                                mn = float(np.min(cr[:, 0]))
+                                mz = float(np.max(cr[:, 2]))
+                                mnz = float(np.min(cr[:, 2]))
+                                if mx > half_s - eps:
+                                    dx = (half_s - eps) - mx
+                                elif mn < -half_s + eps:
+                                    dx = (-half_s + eps) - mn
+                                if mz > half_s - eps:
+                                    dz = (half_s - eps) - mz
+                                elif mnz < -half_s + eps:
+                                    dz = (-half_s + eps) - mnz
+                                if abs(dx) > 1e-12 or abs(dz) > 1e-12:
+                                    pos[0] += dx
+                                    pos[2] += dz
+                                    moved = True
+                        if not moved:
+                            break
+                    e.set_pos(pos, zero_velocity=False)
+                except Exception:
+                    pass
+        return
+
+    if env == "cylinder":
+        r_inner = float(cfg.get("CYLINDER_DIAMETER", CYLINDER_DIAMETER)) * 0.5
+        cyl_h = float(cfg.get("CYLINDER_HEIGHT", CYLINDER_HEIGHT))
+        top_y = t + cyl_h
+        for e in entities:
+            name = type(e).__name__
+            if name == "FEMEntity":
+                try:
+                    st = e.get_state()
+                    pos = _tensor_to_numpy(st.pos).astype(float)
+                    if pos.ndim == 3:
+                        pos = pos[0]
+                    if pos.ndim != 2 or pos.shape[-1] != 3:
+                        continue
+                    pos = np.ascontiguousarray(pos)
+                    pos[:, 1] = np.maximum(pos[:, 1], surface_y + eps)
+                    in_rim = (pos[:, 1] >= surface_y - eps) & (pos[:, 1] <= top_y + eps)
+                    if np.any(in_rim):
+                        xz = pos[in_rim, [0, 2]]
+                        r = np.hypot(xz[:, 0], xz[:, 1])
+                        mask = r > r_inner - eps
+                        if np.any(mask):
+                            idx = np.where(in_rim)[0][mask]
+                            for i in idx:
+                                x, z = float(pos[i, 0]), float(pos[i, 2])
+                                rv = math.hypot(x, z)
+                                if rv > 1e-12:
+                                    sc = (r_inner - eps) / rv
+                                    pos[i, 0] *= sc
+                                    pos[i, 2] *= sc
+                    with _suppress_gs_manual_pose_warnings():
+                        e.set_position(pos)
+                except Exception:
+                    pass
+            elif name == "RigidEntity":
+                try:
+                    p0, quat = _entity_pose(e)
+                    pos = np.asarray(p0, dtype=float).copy()
+                    for _ in range(8):
+                        corners = _obb_world_corners(pos, quat, half_ext)
+                        min_y = float(np.min(corners[:, 1]))
+                        moved = False
+                        if min_y < surface_y + eps:
+                            pos[1] += (surface_y + eps) - min_y
+                            moved = True
+                            corners = _obb_world_corners(pos, quat, half_ext)
+                        in_rim = (corners[:, 1] >= surface_y - eps) & (corners[:, 1] <= top_y + eps)
+                        if np.any(in_rim):
+                            cr = corners[in_rim]
+                            xy = cr[:, [0, 2]]
+                            r = np.sqrt(xy[:, 0] ** 2 + xy[:, 1] ** 2)
+                            j = int(np.argmax(r))
+                            rmax = float(r[j])
+                            if rmax > r_inner - eps:
+                                c = cr[j]
+                                xv, zv = float(c[0]), float(c[2])
+                                rv = math.hypot(xv, zv)
+                                if rv > 1e-12:
+                                    dr = rmax - (r_inner - eps)
+                                    pos[0] -= (xv / rv) * dr
+                                    pos[2] -= (zv / rv) * dr
+                                    moved = True
+                        if not moved:
+                            break
+                    e.set_pos(pos, zero_velocity=False)
+                except Exception:
+                    pass
+
+
 def load_particle_mesh(filepath: str, scale: float = 1.0):
     ext = os.path.splitext(filepath)[1].lower().lstrip(".")
     if ext not in {"obj", "stl"}:
@@ -547,24 +753,54 @@ def _rigid_material(friction: float, restitution: float):
 
 def create_environment(scene, kind, plate_size=0.6, cyl_diameter=0.20,
 cyl_height=0.30, cyl_segments=32,
-wall_thickness=WALL_THICKNESS, env_restitution: float = ENV_RESTITUTION) -> tuple[set, dict]:
+wall_thickness=WALL_THICKNESS, plate_wall_height=PLATE_WALL_HEIGHT,
+env_restitution: float = ENV_RESTITUTION) -> tuple[set, dict]:
     container_ids = set()
     mat = _rigid_material(0.55, float(env_restitution))
 
     if kind == "plate":
+        t = float(wall_thickness)
+        s = float(plate_size)
+        h_rim = float(plate_wall_height)
         plate = scene.add_entity(
             gs.morphs.Box(
-                size=(plate_size, wall_thickness, plate_size),
-                pos=(0, wall_thickness / 2, 0),
+                size=(s, t, s),
+                pos=(0, t / 2, 0),
                 fixed=True,
             ),
             material=mat,
         )
         container_ids.add(plate)
+        if h_rim > 1e-6:
+            y_c = t + h_rim / 2.0
+            span = s + 2.0 * t
+            for sign in (1.0, -1.0):
+                w_n = scene.add_entity(
+                    gs.morphs.Box(
+                        size=(span, h_rim, t),
+                        pos=(0, y_c, sign * (s / 2 + t / 2)),
+                        fixed=True,
+                    ),
+                    material=mat,
+                )
+                container_ids.add(w_n)
+            for sign in (1.0, -1.0):
+                w_e = scene.add_entity(
+                    gs.morphs.Box(
+                        size=(t, h_rim, span),
+                        pos=(sign * (s / 2 + t / 2), y_c, 0),
+                        fixed=True,
+                    ),
+                    material=mat,
+                )
+                container_ids.add(w_e)
+            top_y = t + h_rim
+        else:
+            top_y = t
         env_info = {
-            "surface_y": wall_thickness,
-            "top_y": wall_thickness,
-            "spread_radius": plate_size / 2,
+            "surface_y": t,
+            "top_y": top_y,
+            "spread_radius": s / 2,
         }
         return (container_ids, env_info)
 
@@ -800,23 +1036,34 @@ def compute_total_kinetic_energy(entities, particle_mass_kg: float) -> float:
                     total += 0.5 * m_part * spd * spd
                     used = True
         if not used and hasattr(e, "get_vel"):
-            v = _tensor_to_numpy(e.get_vel()).ravel()
-            if v.size >= 3:
-                spd = float(np.linalg.norm(v[:3]))
-                total += 0.5 * m_part * spd * spd
+            total += _safe_ke(e, m_part)
     return float(total)
+
+
+def _safe_ke(e, mass_kg: float) -> float:
+    """Translational KE from rigid-style velocity; Genesis rigid vs FEM APIs differ."""
+    try:
+        vel = e.get_vel()
+        v = _as_vec3_any(vel)
+        speed_sq = float(np.dot(v, v))
+        return 0.5 * max(mass_kg, 1e-6) * speed_sq
+    except Exception:
+        return 0.0
 
 
 def container_surface_area_m2(environment_type: str, cfg: dict) -> float:
     """
     Inner container surface area (m²) for system pressure: sum(|F_contact|) / area → Pa.
 
-    Plate: horizontal floor area. Cylinder: inner bottom disk + inner cylindrical wall.
+    Plate: horizontal floor + inner rim (four sides). Cylinder: inner bottom disk + inner cylindrical wall.
     """
     k = str(environment_type).strip().lower()
     if k == "plate":
         s = float(cfg.get("PLATE_SIZE", PLATE_SIZE))
-        return max(s * s, 1e-18)
+        h = float(cfg.get("PLATE_WALL_HEIGHT", PLATE_WALL_HEIGHT))
+        floor = s * s
+        rim = 4.0 * s * max(h, 0.0)
+        return max(floor + rim, 1e-18)
     if k == "cylinder":
         d = float(cfg.get("CYLINDER_DIAMETER", CYLINDER_DIAMETER))
         h = float(cfg.get("CYLINDER_HEIGHT", CYLINDER_HEIGHT))
@@ -831,6 +1078,13 @@ def _pp_contact_strong_for_z(c: NormalizedContact, f_min: float) -> bool:
     if c.force is None:
         return False
     return abs(float(c.force)) > float(f_min)
+
+
+def _pp_contact_for_z_graph(c: NormalizedContact) -> bool:
+    """P–P link for coordination Z: depth only (contacts list is already resampled; threshold matches extraction)."""
+    if not c.is_particle_particle:
+        return False
+    return abs(float(c.depth)) > float(CONTACT_DEPTH_TOL)
 
 
 def calculate_live_metrics(
@@ -1124,6 +1378,62 @@ def extract_contacts(scene, particle_ids, container_ids, depth_tol=1e-5) -> list
     return out
 
 
+def extract_contacts_geometric(
+    entities: list,
+    particle_ids: set,
+    container_entities: list,
+    original_mesh,
+    depth_tol: float = 1e-5,
+) -> list:
+    if not entities or original_mesh is None:
+        return []
+    extents = original_mesh.bounds[1] - original_mesh.bounds[0]
+    r = float(np.linalg.norm(extents)) / 2.0
+    positions = {}
+    for e in entities:
+        eid = _entity_id(e)
+        if eid not in particle_ids:
+            continue
+        pos, _ = _entity_pose(e)
+        positions[eid] = pos.copy()
+    container_ids = {_entity_id(e) for e in container_entities}
+    contacts = []
+    pids = list(positions.keys())
+    for i in range(len(pids)):
+        for j in range(i + 1, len(pids)):
+            a, b = pids[i], pids[j]
+            pa, pb = positions[a], positions[b]
+            dist = float(np.linalg.norm(pa - pb))
+            touch_dist = r * 2.0
+            if dist < touch_dist:
+                depth = touch_dist - dist
+                if depth < depth_tol:
+                    continue
+                normal = (pb - pa) / max(dist, 1e-9)
+                contact_pos = (pa + pb) / 2.0
+                contacts.append(NormalizedContact(
+                    entity_a=a, entity_b=b,
+                    is_particle_particle=True, is_particle_container=False,
+                    position=contact_pos, normal=normal,
+                    depth=depth, force=depth * 1e6, contact_area=None,
+                ))
+    for e in container_entities:
+        ceid = _entity_id(e)
+        pos_c, _ = _entity_pose(e)
+        floor_y = float(pos_c[1])
+        for pid, ppos in positions.items():
+            depth = (floor_y + r) - float(ppos[1])
+            if depth > depth_tol:
+                contacts.append(NormalizedContact(
+                    entity_a=pid, entity_b=ceid,
+                    is_particle_particle=False, is_particle_container=True,
+                    position=np.array([ppos[0], floor_y, ppos[2]]),
+                    normal=np.array([0.0, 1.0, 0.0]),
+                    depth=depth, force=depth * 1e6, contact_area=None,
+                ))
+    return contacts
+
+
 def compute_metrics(contacts, particle_ids, *, container_surface_area_m2: Optional[float] = None, z_force_min_n: float = Z_CONTACT_FORCE_MIN_N) -> dict:
     pp = [c for c in contacts if c.is_particle_particle]
     pc = [c for c in contacts if c.is_particle_container]
@@ -1133,7 +1443,7 @@ def compute_metrics(contacts, particle_ids, *, container_surface_area_m2: Option
     for pid in particle_ids:
         G.add_node(int(pid))
     for c in pp:
-        if not _pp_contact_strong_for_z(c, f_min):
+        if not _pp_contact_for_z_graph(c):
             continue
         G.add_edge(
             int(c.entity_a),
@@ -1145,7 +1455,8 @@ def compute_metrics(contacts, particle_ids, *, container_surface_area_m2: Option
 
     n = len(particle_ids) if particle_ids else 0
     pp_strong_n = sum(1 for c in pp if _pp_contact_strong_for_z(c, f_min))
-    Z = (2 * pp_strong_n / n) if n else 0.0
+    pp_z_n = sum(1 for c in pp if _pp_contact_for_z_graph(c))
+    Z = (2 * pp_z_n / n) if n else 0.0
     contact_counts = dict(G.degree())
     n_isolated = sum(1 for pid in particle_ids if contact_counts.get(int(pid), 0) == 0)
     n_container_touching = len({int(c.entity_a) for c in pc if int(c.entity_a) in particle_ids}.union(
@@ -1269,8 +1580,14 @@ def compute_vertex_stress(
 
     out: dict[int, list[float]] = {}
     if global_max == 0.0:
+        contact_counts: dict[int, int] = {}
+        for c in contacts:
+            contact_counts[int(c.entity_a)] = contact_counts.get(int(c.entity_a), 0) + 1
+            contact_counts[int(c.entity_b)] = contact_counts.get(int(c.entity_b), 0) + 1
+        max_count = max(contact_counts.values()) if contact_counts else 0
         for eid, arr in raw.items():
-            out[int(eid)] = [0.0] * int(arr.size)
+            t = float(contact_counts.get(int(eid), 0)) / max_count if max_count > 0 else 0.0
+            out[int(eid)] = [t] * int(arr.size)
     else:
         inv = 1.0 / global_max
         for eid, arr in raw.items():
@@ -1318,7 +1635,9 @@ def export_results(entities, metrics, output_dir, save_hdf5, save_csv, vertex_st
                 "particle_a": int(a),
                 "particle_b": int(b),
                 "depth": float(data.get("depth", 0.0)),
-                "force": (float(data["force"]) if data.get("force", None) is not None else np.nan),
+                "force": float(data["force"])
+                if (data.get("force") is not None and math.isfinite(float(data["force"])))
+                else float(data.get("depth", 0.0)) * 1e5,
                 "contact_area": (float(data["area"]) if data.get("area", None) is not None else np.nan),
             }
         )
@@ -1384,7 +1703,7 @@ def export_results(entities, metrics, output_dir, save_hdf5, save_csv, vertex_st
     print(f"Total particle-particle contacts:  {metrics['total_pp_contacts']}")
     print(f"Strong PP (|F|>{metrics.get('Z_force_threshold_N', Z_CONTACT_FORCE_MIN_N):.0e} N): {metrics.get('total_pp_contacts_strong', 0)}")
     print(f"Total particle-container contacts: {metrics['total_pc_contacts']}")
-    print(f"Avg contacts per particle (Z):     {metrics['Z']:.3f}  (force-thresholded PP graph)")
+    print(f"Avg contacts per particle (Z):     {metrics['Z']:.3f}  (depth-filtered PP graph, |depth|>{CONTACT_DEPTH_TOL})")
     print(f"Isolated particles (Z=0):          {metrics['n_isolated_particles']}")
     print(f"Particles touching container:      {metrics['n_container_touching']}")
     print(f"System pressure (Σ|F|/A):          {float(metrics.get('system_pressure', 0.0)):.4f} Pa")
@@ -1483,7 +1802,7 @@ def main():
         gs,
         {"DT": args.dt, "SUBSTEPS": args.substeps, "GRAVITY": GRAVITY},
     )
-    rigid_options = gs.options.RigidOptions(use_gjk_collision=True)
+    rigid_options = make_rigid_options(gs)
     fem_options = make_fem_options(gs, {"FEM_NEWTON_ITERATIONS": int(DEFAULT_CONFIG.get("FEM_NEWTON_ITERATIONS", 4))})
 
     # Avoid building the visualizer unless explicitly requested.
@@ -1504,6 +1823,7 @@ def main():
         CYLINDER_HEIGHT,
         CYLINDER_SEGMENTS,
         WALL_THICKNESS,
+        PLATE_WALL_HEIGHT,
         env_restitution=ENV_RESTITUTION,
     )
     container_ids = {_entity_id(e) for e in container_ids}

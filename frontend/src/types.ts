@@ -104,9 +104,11 @@ export interface SimulationConfig {
   DROP_HEIGHT: number
   /** 0 = vertical stack at origin; &gt;0 = Vogel-disk spread (fraction of container radius) */
   DROP_SPREAD: number
-  /** Matches simulation `PLATE_SIZE` / `WALL_THICKNESS` for 3D floor preview */
+  /** Matches simulation `PLATE_SIZE` / `WALL_THICKNESS` / `PLATE_WALL_HEIGHT` for 3D preview */
   PLATE_SIZE: number
   WALL_THICKNESS: number
+  /** Rim height (m) — plate mode only; keeps particles on the plate in the solver. */
+  PLATE_WALL_HEIGHT: number
   /** Radians — Hertzian angular falloff for post-process vertex stress (backend STRESS_SIGMA). */
   STRESS_SIGMA?: number
 }

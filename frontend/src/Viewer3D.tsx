@@ -1,6 +1,6 @@
 import { Canvas, useFrame, useLoader } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
-import { useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import * as THREE from 'three'
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import type { LivePhysicsFrame, WsFrameParticle } from './types'
@@ -303,8 +303,9 @@ function InstancedFemParticles(props: {
   liveFrameRef: MutableRefObject<LivePhysicsFrame>
   simRunId: number
   settledVertexStress: Record<string, number[]> | null
+  onMeshVertexCount?: (verts: number, sphereFallback?: boolean) => void
 }) {
-  const { count, radius, liveFrameRef, simRunId, settledVertexStress } = props
+  const { count, radius, liveFrameRef, simRunId, settledVertexStress, onMeshVertexCount } = props
   const meshRef = useRef<THREE.InstancedMesh | null>(null)
   const obj = useLoader(OBJLoader, '/particle.obj')
 
@@ -314,6 +315,7 @@ function InstancedFemParticles(props: {
   const {
     geometry,
     verts,
+    sphereFallback,
     stressPath,
     stressInterleaved,
     stressNMat4,
@@ -322,6 +324,7 @@ function InstancedFemParticles(props: {
     stressData,
     stressTexture,
   } = useMemo(() => {
+    let sphereFallback = false
     const base: THREE.BufferGeometry = (() => {
       let g: THREE.BufferGeometry | undefined
       obj.traverse((child) => {
@@ -329,7 +332,14 @@ function InstancedFemParticles(props: {
         const mesh = child as THREE.Mesh
         if (mesh?.isMesh && mesh.geometry) g = mesh.geometry
       })
-      return g ? g.clone() : new THREE.SphereGeometry(radius, 5, 4)
+      if (!g) {
+        sphereFallback = true
+        console.warn(
+          '[Viewer3D] particle.obj not found in /public — falling back to sphere. Vertex stress colors will not align correctly.',
+        )
+        g = new THREE.SphereGeometry(radius, 5, 4)
+      }
+      return g.clone()
     })()
     base.computeVertexNormals()
     const vCount = base.getAttribute('position').count
@@ -371,6 +381,7 @@ function InstancedFemParticles(props: {
     return {
       geometry: base,
       verts: vCount,
+      sphereFallback,
       stressPath: useBuffer ? ('buffer' as const) : ('texture' as const),
       stressInterleaved,
       stressNMat4: nMat4,
@@ -380,6 +391,10 @@ function InstancedFemParticles(props: {
       stressTexture,
     }
   }, [obj, radius, count])
+
+  useEffect(() => {
+    onMeshVertexCount?.(verts, sphereFallback)
+  }, [verts, sphereFallback, onMeshVertexCount])
 
   const bootstrapMat = useMemo(() => createBootstrapMaterial(), [])
   const shaderMat = useMemo(() => {
@@ -627,9 +642,11 @@ function Scene(props: {
   liveFrameRef: MutableRefObject<LivePhysicsFrame>
   simRunId: number
   settledVertexStress: Record<string, number[]> | null
+  onMeshVertexCount?: (verts: number, sphereFallback?: boolean) => void
   environmentType: 'plate' | 'cylinder'
   plateSize: number
   wallThickness: number
+  plateWallHeight: number
   cylinderDiameter: number
   cylinderHeight: number
   cylinderSegments: number
@@ -640,15 +657,59 @@ function Scene(props: {
     liveFrameRef,
     simRunId,
     settledVertexStress,
+    onMeshVertexCount,
     environmentType,
     plateSize,
     wallThickness,
+    plateWallHeight,
     cylinderDiameter,
     cylinderHeight,
     cylinderSegments,
     transparentContainer,
   } = props
   const py = wallThickness / 2
+  const s = plateSize
+  const t = wallThickness
+  const h = plateWallHeight
+  const span = s + 2 * t
+  const yWall = t + h / 2
+
+  const plateBaseMat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: '#b8c4d4',
+        roughness: 0.55,
+        metalness: 0.12,
+      }),
+    [],
+  )
+
+  /** Rim walls: nearly invisible glass (geometry stays for depth / collisions in scene). */
+  const plateWallMat = useMemo(
+    () =>
+      new THREE.MeshPhysicalMaterial({
+        color: '#9eb6d4',
+        roughness: 0.2,
+        metalness: 0,
+        transparent: true,
+        opacity: 0.04,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        transmission: 0.98,
+        thickness: 0.12,
+        ior: 1.45,
+        clearcoat: 0,
+      }),
+    [],
+  )
+
+  useEffect(() => {
+    return () => {
+      plateBaseMat.dispose()
+      plateWallMat.dispose()
+    }
+  }, [plateBaseMat, plateWallMat])
+
   return (
     <>
       <color attach="background" args={['#dfeaf7']} />
@@ -657,10 +718,27 @@ function Scene(props: {
       <directionalLight position={[1.6, 2.6, 1.2]} intensity={1.25} />
       <OrbitControls makeDefault enableDamping dampingFactor={0.08} />
       {environmentType === 'plate' ? (
-        <mesh position={[0, py, 0]} receiveShadow>
-          <boxGeometry args={[plateSize, wallThickness, plateSize]} />
-          <meshStandardMaterial color="#b8c4d4" roughness={0.55} metalness={0.12} />
-        </mesh>
+        <group>
+          <mesh position={[0, py, 0]} receiveShadow material={plateBaseMat}>
+            <boxGeometry args={[plateSize, wallThickness, plateSize]} />
+          </mesh>
+          {h > 1e-6 ? (
+            <>
+              <mesh position={[0, yWall, s / 2 + t / 2]} receiveShadow material={plateWallMat}>
+                <boxGeometry args={[span, h, t]} />
+              </mesh>
+              <mesh position={[0, yWall, -(s / 2 + t / 2)]} receiveShadow material={plateWallMat}>
+                <boxGeometry args={[span, h, t]} />
+              </mesh>
+              <mesh position={[s / 2 + t / 2, yWall, 0]} receiveShadow material={plateWallMat}>
+                <boxGeometry args={[t, h, span]} />
+              </mesh>
+              <mesh position={[-(s / 2 + t / 2), yWall, 0]} receiveShadow material={plateWallMat}>
+                <boxGeometry args={[t, h, span]} />
+              </mesh>
+            </>
+          ) : null}
+        </group>
       ) : (
         <ShallowBasket
           diameter={cylinderDiameter}
@@ -676,6 +754,7 @@ function Scene(props: {
         liveFrameRef={liveFrameRef}
         simRunId={simRunId}
         settledVertexStress={settledVertexStress}
+        onMeshVertexCount={onMeshVertexCount}
       />
     </>
   )
@@ -686,9 +765,11 @@ type Viewer3DProps = {
   liveFrameRef: MutableRefObject<LivePhysicsFrame>
   simRunId: number
   settledVertexStress: Record<string, number[]> | null
+  onMeshVertexCount?: (verts: number, sphereFallback?: boolean) => void
   environmentType: 'plate' | 'cylinder'
   plateSize: number
   wallThickness: number
+  plateWallHeight: number
   cylinderDiameter: number
   cylinderHeight: number
   cylinderSegments: number
@@ -702,29 +783,101 @@ export default function Viewer3D(props: Viewer3DProps) {
     liveFrameRef,
     simRunId,
     settledVertexStress,
+    onMeshVertexCount,
     environmentType,
     plateSize,
     wallThickness,
+    plateWallHeight,
     cylinderDiameter,
     cylinderHeight,
     cylinderSegments,
     transparentContainer,
   } = props
+  const [meshVerts, setMeshVerts] = useState<number | null>(null)
+  const [sphereFallbackMesh, setSphereFallbackMesh] = useState(false)
+  useEffect(() => {
+    setMeshVerts(null)
+    setSphereFallbackMesh(false)
+  }, [simRunId])
+  const reportMeshVerts = useCallback(
+    (verts: number, sphereFallback?: boolean) => {
+      setMeshVerts(verts)
+      setSphereFallbackMesh(!!sphereFallback)
+      onMeshVertexCount?.(verts, sphereFallback)
+    },
+    [onMeshVertexCount],
+  )
   return (
-    <Canvas style={{ width: '100%', height: '100%' }} camera={{ position: [0.55, 0.85, 0.85], fov: 50 }} gl={{ alpha: false }}>
-      <Scene
-        count={particleCount}
-        liveFrameRef={liveFrameRef}
-        simRunId={simRunId}
-        settledVertexStress={settledVertexStress}
-        environmentType={environmentType}
-        plateSize={plateSize}
-        wallThickness={wallThickness}
-        cylinderDiameter={cylinderDiameter}
-        cylinderHeight={cylinderHeight}
-        cylinderSegments={cylinderSegments}
-        transparentContainer={transparentContainer}
-      />
-    </Canvas>
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      {settledVertexStress !== null ? (
+        <div
+          style={{
+            position: 'absolute',
+            top: 10,
+            left: 10,
+            zIndex: 2,
+            background: 'rgba(255,255,255,0.88)',
+            border: '1px solid #d4dfec',
+            borderRadius: 10,
+            padding: '8px 12px',
+            fontSize: 11,
+            color: '#1d3553',
+            pointerEvents: 'none',
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>Contact stress</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ color: '#2255aa' }}>low</span>
+            <div
+              style={{
+                width: 80,
+                height: 10,
+                borderRadius: 3,
+                background: 'linear-gradient(90deg, #0000ff, #00ff00, #ff0000)',
+              }}
+            />
+            <span style={{ color: '#aa2222' }}>high</span>
+          </div>
+          <div style={{ marginTop: 4, color: '#55779f' }}>blue = no contact · red = max stress</div>
+        </div>
+      ) : null}
+      {settledVertexStress !== null && (sphereFallbackMesh || (meshVerts !== null && meshVerts <= 25)) ? (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 10,
+            left: 10,
+            zIndex: 2,
+            background: 'rgba(255, 248, 220, 0.95)',
+            border: '1px solid #e6c35c',
+            borderRadius: 10,
+            padding: '8px 12px',
+            fontSize: 11,
+            color: '#7a5a00',
+            pointerEvents: 'none',
+            maxWidth: 280,
+          }}
+        >
+          ⚠ particle.obj not found — stress colors may be misaligned
+        </div>
+      ) : null}
+      <Canvas style={{ width: '100%', height: '100%' }} camera={{ position: [0.55, 0.85, 0.85], fov: 50 }} gl={{ alpha: false }}>
+        <Scene
+          count={particleCount}
+          liveFrameRef={liveFrameRef}
+          simRunId={simRunId}
+          settledVertexStress={settledVertexStress}
+          onMeshVertexCount={reportMeshVerts}
+          environmentType={environmentType}
+          plateSize={plateSize}
+          wallThickness={wallThickness}
+          plateWallHeight={plateWallHeight}
+          cylinderDiameter={cylinderDiameter}
+          cylinderHeight={cylinderHeight}
+          cylinderSegments={cylinderSegments}
+          transparentContainer={transparentContainer}
+        />
+      </Canvas>
+    </div>
   )
 }

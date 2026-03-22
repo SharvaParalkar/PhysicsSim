@@ -3,6 +3,9 @@ import * as d3 from 'd3'
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import type { ContactGraphLink, MetricsResponse } from './types'
 
+const getForce = (l: ContactGraphLink) =>
+  typeof l.force === 'number' && Number.isFinite(l.force) ? Math.abs(l.force) : Math.abs(l.depth) * 1e5
+
 function normalizeGraphLinks(metrics: MetricsResponse): ContactGraphLink[] {
   if (metrics.contact_graph_links?.length) return metrics.contact_graph_links
   const links: ContactGraphLink[] = []
@@ -32,10 +35,7 @@ export default function Dashboard(props: {
   const [open, setOpen] = useState({ ke: true, pressure: true, chains: false })
   const graphRef = useRef<SVGSVGElement | null>(null)
   const links = useMemo(() => normalizeGraphLinks(metrics), [metrics])
-  const forceValues = useMemo(
-    () => links.map((l) => (typeof l.force === 'number' ? Math.abs(l.force) : NaN)).filter((v) => Number.isFinite(v)),
-    [links]
-  )
+  const forceValues = useMemo(() => links.map(getForce).filter((v) => Number.isFinite(v) && v >= 0), [links])
   const minForce = forceValues.length ? Math.min(...forceValues) : 0
   const maxForce = forceValues.length ? Math.max(...forceValues) : 1
 
@@ -60,9 +60,9 @@ export default function Dashboard(props: {
       return
     }
 
-    const forceDomainMax = maxForce > minForce ? maxForce : minForce + 1e-6
-    const forceToColor = d3.scaleSequential(d3.interpolateTurbo).domain([minForce, forceDomainMax])
-    const forceToWidth = d3.scaleLinear().domain([minForce, forceDomainMax]).range([1.0, 4.0]).clamp(true)
+    const forceDomainMax = Math.max(...links.map(getForce), 1e-6)
+    const forceToColor = d3.scaleSequential(d3.interpolateTurbo).domain([0, forceDomainMax])
+    const forceToWidth = d3.scaleLinear().domain([0, forceDomainMax]).range([1.0, 4.0]).clamp(true)
     const simulation = d3
       .forceSimulation(nodes)
       .force('link', d3.forceLink(simLinks).id((d) => String((d as { id: number }).id)).distance(24))
@@ -75,17 +75,9 @@ export default function Dashboard(props: {
       .data(simLinks)
       .enter()
       .append('line')
-      .attr('stroke', (d) => {
-        const f = Number((d as ContactGraphLink).force)
-        if (Number.isFinite(f)) return forceToColor(Math.abs(f))
-        return '#6e7b9c'
-      })
+      .attr('stroke', (d) => forceToColor(getForce(d as ContactGraphLink)))
       .attr('stroke-opacity', 0.75)
-      .attr('stroke-width', (d) => {
-        const f = Number((d as ContactGraphLink).force)
-        if (Number.isFinite(f)) return forceToWidth(Math.abs(f))
-        return Math.max(1, Math.min(3.5, Number((d as ContactGraphLink).depth || 0) * 2000))
-      })
+      .attr('stroke-width', (d) => forceToWidth(getForce(d as ContactGraphLink)))
 
     const node = svg.append('g').selectAll('circle').data(nodes).enter().append('circle').attr('r', 4).attr('fill', '#3a86ff')
     simulation.on('tick', () => {
@@ -97,7 +89,7 @@ export default function Dashboard(props: {
       node.attr('cx', (d) => (d as { x?: number }).x ?? width / 2).attr('cy', (d) => (d as { y?: number }).y ?? height / 2)
     })
     return () => simulation.stop()
-  }, [links, minForce, maxForce])
+  }, [links])
 
   const cardStyle: React.CSSProperties = { background: '#f8fbff', border: '1px solid #d4dfec', borderRadius: 10, padding: 10 }
   const panelHeader = (title: string, key: keyof typeof open) => (
