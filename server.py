@@ -1,7 +1,10 @@
+import io
+import json
 import logging
 import math
 import os
 import sys
+import zipfile
 
 import asyncio
 import queue
@@ -15,6 +18,7 @@ import pandas as pd
 from tqdm import tqdm
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response, StreamingResponse
 
 import simulation
 
@@ -152,6 +156,9 @@ LATEST_KE_HISTORY: list[dict[str, float]] = []
 LATEST_PRESSURE_HISTORY: list[dict[str, float]] = []
 LATEST_CONTACT_GRAPH_DICT: dict[str, dict[str, dict[str, float | None]]] = {}
 LATEST_CONTACT_GRAPH_LINKS: list[dict[str, Any]] = []
+# Populated after each completed simulation run; used by /export and /download/obj
+LATEST_EXPORT_SUMMARY: dict[str, Any] = {}
+LATEST_SIM_TIMESTAMP: str = ""
 
 
 def _entity_id(e) -> int:
@@ -442,6 +449,194 @@ def get_metrics():
         return _sanitize_floats(out)
 
 
+@app.get("/export")
+def get_export():
+    """Full post-simulation payload for the results overlay."""
+    out_dir = Path(OUTPUT_DIR)
+    particles_raw = _read_csv_records(out_dir / "particles.csv")
+    contact_pairs_raw = _read_csv_records(out_dir / "contact_pairs.csv")
+    contact_points_raw = _read_csv_records(out_dir / "contact_points.csv")
+
+    # Build neighbor lists from contact pairs
+    neighbors: dict[int, list[int]] = {}
+    for row in contact_pairs_raw:
+        try:
+            a, b = int(row["particle_a"]), int(row["particle_b"])
+        except Exception:
+            continue
+        neighbors.setdefault(a, []).append(b)
+        neighbors.setdefault(b, []).append(a)
+
+    particles: list[dict[str, Any]] = []
+    for p in particles_raw:
+        pid = int(p.get("id", 0))
+        particles.append({
+            "id": pid,
+            "x": p.get("x"),
+            "y": p.get("y"),
+            "z": p.get("z"),
+            "qx": p.get("qx"),
+            "qy": p.get("qy"),
+            "qz": p.get("qz"),
+            "qw": p.get("qw"),
+            "n_contacts": p.get("n_contacts"),
+            "neighbors": neighbors.get(pid, []),
+        })
+
+    # Merge contact points into contact pairs (best-effort by index)
+    contacts: list[dict[str, Any]] = []
+    for i, row in enumerate(contact_pairs_raw):
+        entry: dict[str, Any] = {
+            "particle_a": row.get("particle_a"),
+            "particle_b": row.get("particle_b"),
+            "depth": row.get("depth"),
+            "force": row.get("force"),
+            "px": None, "py": None, "pz": None,
+            "nx": None, "ny": None, "nz": None,
+        }
+        if i < len(contact_points_raw):
+            pt = contact_points_raw[i]
+            entry.update(px=pt.get("x"), py=pt.get("y"), pz=pt.get("z"),
+                         nx=pt.get("nx"), ny=pt.get("ny"), nz=pt.get("nz"))
+        contacts.append(entry)
+
+    summary: dict[str, Any] = dict(LATEST_EXPORT_SUMMARY)
+    if not summary:
+        # Fall back to reading from files if globals not yet populated
+        h5_path = out_dir / "simulation.h5"
+        if not h5_path.exists():
+            h5_path = out_dir / "results.h5"
+        try:
+            if h5_path.exists():
+                with h5py.File(h5_path, "r") as f:
+                    summary = {
+                        "Z": float(f.attrs.get("Z", 0.0)),
+                        "total_pp": int(f.attrs.get("total_pp", 0)),
+                        "total_pc": int(f.attrs.get("total_pc", 0)),
+                        "n_isolated": int(f.attrs.get("n_isolated", 0)),
+                        "n_container_touch": int(f.attrs.get("n_container_touch", 0)),
+                        "system_pressure": float(f.attrs.get("system_pressure", 0.0)),
+                        "contact_efficiency": 0.0,
+                        "total_particle_volume": 0.0,
+                        "n_particles": len(particles),
+                    }
+        except Exception:
+            summary = {}
+
+    summary["timestamp"] = LATEST_SIM_TIMESTAMP or ""
+
+    return _sanitize_floats({
+        "summary": summary,
+        "particles": particles,
+        "contacts": contacts,
+    })
+
+
+@app.get("/download/particles-csv")
+def download_particles_csv():
+    path = Path(OUTPUT_DIR) / "particles.csv"
+    if not path.exists():
+        return Response(content="", media_type="text/csv",
+                        headers={"Content-Disposition": "attachment; filename=particles.csv"})
+    return Response(content=path.read_bytes(), media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=particles.csv"})
+
+
+@app.get("/download/contacts-csv")
+def download_contacts_csv():
+    path = Path(OUTPUT_DIR) / "contact_pairs.csv"
+    if not path.exists():
+        return Response(content="", media_type="text/csv",
+                        headers={"Content-Disposition": "attachment; filename=contact_pairs.csv"})
+    return Response(content=path.read_bytes(), media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=contact_pairs.csv"})
+
+
+@app.get("/download/contact-points-csv")
+def download_contact_points_csv():
+    path = Path(OUTPUT_DIR) / "contact_points.csv"
+    if not path.exists():
+        return Response(content="", media_type="text/csv",
+                        headers={"Content-Disposition": "attachment; filename=contact_points.csv"})
+    return Response(content=path.read_bytes(), media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=contact_points.csv"})
+
+
+@app.get("/download/summary-json")
+def download_summary_json():
+    path = Path(OUTPUT_DIR) / "summary.json"
+    if path.exists():
+        content = path.read_bytes()
+    elif LATEST_EXPORT_SUMMARY:
+        content = json.dumps(LATEST_EXPORT_SUMMARY, indent=2).encode("utf-8")
+    else:
+        content = b"{}"
+    return Response(content=content, media_type="application/json",
+                    headers={"Content-Disposition": "attachment; filename=summary.json"})
+
+
+@app.get("/download/obj")
+def download_obj():
+    """Return a ZIP containing settled_particles.obj, contact_network.obj, README.txt."""
+    entities = list(RUNTIME.active_entities)
+    original_mesh = RUNTIME._original_mesh
+
+    if not entities or original_mesh is None:
+        # Try to return whatever CSVs exist with a helpful message
+        return Response(
+            content="No settled simulation data available. Run a simulation first.",
+            status_code=404,
+        )
+
+    try:
+        particles_obj = simulation.export_settled_obj(entities, original_mesh)
+    except Exception as exc:
+        logger.error("export_settled_obj failed: %s", exc)
+        return Response(content=f"OBJ export failed: {exc}", status_code=500)
+
+    try:
+        network_obj = simulation.export_contact_network_obj(entities, LATEST_CONTACT_GRAPH_LINKS)
+    except Exception as exc:
+        logger.error("export_contact_network_obj failed: %s", exc)
+        network_obj = "# Contact network export failed\n"
+
+    n = len(entities)
+    readme = (
+        "GRANULAR JAMMING SIMULATION — SETTLED GEOMETRY\n"
+        "================================================\n\n"
+        "Coordinate system : Y-up, metres\n"
+        f"Particle count    : {n}\n\n"
+        "Files\n"
+        "-----\n"
+        "settled_particles.obj\n"
+        f"  {n} named mesh groups (o particle_0 … o particle_{n - 1}).\n"
+        "  Each group is one particle in world-space coordinates.\n\n"
+        "contact_network.obj\n"
+        "  Line segments (l commands) connecting the centres of contacting\n"
+        "  particle pairs.  Import as a separate layer.\n\n"
+        "How to import into Rhino\n"
+        "------------------------\n"
+        "  1. File > Import > settled_particles.obj\n"
+        "     Each particle arrives as a separate mesh object.\n"
+        "  2. File > Import > contact_network.obj\n"
+        "     Lines land on a new layer; use as a reference network.\n\n"
+        "Units: metres.  Scale by 1000 to convert to millimetres.\n"
+    )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("settled_particles.obj", particles_obj)
+        zf.writestr("contact_network.obj", network_obj)
+        zf.writestr("README.txt", readme)
+    buf.seek(0)
+
+    return Response(
+        content=buf.read(),
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=settled_geometry.zip"},
+    )
+
+
 @app.get("/vertex-stress")
 def get_vertex_stress():
     h5_path = Path(OUTPUT_DIR) / "results.h5"
@@ -464,6 +659,7 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
     """Blocking Genesis loop (runs in a worker thread). Puts dict messages on sync_q; ends with None."""
     global LATEST_Z_HISTORY, LATEST_CONTACT_GRAPH_DICT, LATEST_CONTACT_GRAPH_LINKS, LATEST_MAX_VEL_HISTORY
     global LATEST_RATTLERS_HISTORY, LATEST_KE_HISTORY, LATEST_PRESSURE_HISTORY
+    global LATEST_EXPORT_SUMMARY, LATEST_SIM_TIMESTAMP
     frame_every = int(payload.get("frame_every", 30))
     frame_every = max(1, frame_every)
     live_metrics_every = max(1, int(payload.get("live_metrics_every", 10)))
@@ -876,6 +1072,16 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
             save_csv=bool(cfg["SAVE_CSV"]),
             vertex_stress=vertex_stress,
         )
+        # Build and persist summary.json; store in global for /export endpoint
+        try:
+            LATEST_EXPORT_SUMMARY = simulation.export_summary_json(
+                entities, metrics, cfg["OUTPUT_DIR"], RUNTIME._original_mesh
+            )
+        except Exception as _exc_sum:
+            logger.warning("export_summary_json failed: %s", _exc_sum)
+            LATEST_EXPORT_SUMMARY = {}
+        import datetime
+        LATEST_SIM_TIMESTAMP = datetime.datetime.now().isoformat(timespec="seconds")
         mesh_vertex_count = len(RUNTIME._original_mesh.vertices) if RUNTIME._original_mesh else 0
         sync_q.put(
             _sanitize_floats(

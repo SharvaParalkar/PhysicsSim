@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Viewer3D from './Viewer3D'
 import Dashboard from './Dashboard'
+import ResultsOverlay from './ResultsOverlay'
+import type { ExportPayload } from './ResultsOverlay'
 import { getSharedSimulationSocket } from './simulationSocket'
 import type { LivePhysicsFrame, MetricsResponse, ParticleData, SimMetrics, SimulationConfig } from './types'
 
@@ -105,6 +107,10 @@ export default function App() {
     PLATE_WALL_HEIGHT: 0.15,
     STRESS_SIGMA: 0.4,
   })
+  const [showResults, setShowResults] = useState(false)
+  const [screenshotDataUrl, setScreenshotDataUrl] = useState<string | null>(null)
+  const [exportData, setExportData] = useState<ExportPayload | null>(null)
+
   const logBoxRef = useRef<HTMLPreElement | null>(null)
   const liveFrameRef = useRef<LivePhysicsFrame>({ step: -99999, t: 0, particles: [], serial: 0 })
   const liveFrameSerialRef = useRef(0)
@@ -230,7 +236,34 @@ export default function App() {
   useEffect(() => {
     if (runSignal === 0) return
     setSettledVertexStress(null)
+    // Reset overlay state when a new run starts
+    setShowResults(false)
+    setScreenshotDataUrl(null)
+    setExportData(null)
   }, [runSignal])
+
+  useEffect(() => {
+    if (mode !== 'settled') return
+    // Capture the Three.js canvas immediately
+    const canvas = document.querySelector('canvas')
+    if (canvas) {
+      try {
+        setScreenshotDataUrl(canvas.toDataURL('image/png'))
+      } catch {
+        // canvas may be cross-origin tainted; ignore
+      }
+    }
+    // Fetch full export payload
+    fetch('http://localhost:8000/export')
+      .then((r) => r.json())
+      .then((data: ExportPayload) => {
+        setExportData(data)
+        setShowResults(true)
+      })
+      .catch((err) => {
+        appendLog(`[warn] Could not load results overlay: ${err}`)
+      })
+  }, [mode, appendLog])
 
   useEffect(() => {
     const ws = getSharedSimulationSocket()
@@ -1117,6 +1150,14 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {showResults && exportData && (
+        <ResultsOverlay
+          screenshot={screenshotDataUrl}
+          data={exportData}
+          onClose={() => setShowResults(false)}
+        />
+      )}
     </div>
   )
 }

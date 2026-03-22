@@ -1726,6 +1726,135 @@ def export_results(entities, metrics, output_dir, save_hdf5, save_csv, vertex_st
     print("────────────────────────────────────────────────────────────")
 
 
+def export_settled_obj(entities, original_mesh) -> str:
+    """
+    Export all settled particles as a single OBJ string.
+
+    Each particle is written as a named group (o particle_0 … o particle_N).
+    Vertex positions and normals are transformed to world space using each
+    particle's settled pose.  Face indices use a cumulative 1-based offset so
+    the file can be imported as a single mesh or split per group.
+
+    Units: metres, Y-up coordinate system.
+    """
+    lines = [
+        "# Granular jamming simulation – settled particle geometry",
+        "# Coordinate system: Y-up, metres",
+        "# Groups: one named group per particle (particle_0, particle_1, …)",
+        "",
+    ]
+
+    verts_base = np.asarray(original_mesh.vertices, dtype=float)
+    faces_base = np.asarray(original_mesh.faces, dtype=int)
+
+    has_normals = hasattr(original_mesh, "vertex_normals") and original_mesh.vertex_normals is not None
+    normals_base = np.asarray(original_mesh.vertex_normals, dtype=float) if has_normals else np.zeros_like(verts_base)
+
+    v_offset = 0
+    for i, e in enumerate(entities):
+        pos, (qx, qy, qz, qw) = _entity_pose(e)
+        R = Rotation.from_quat([qx, qy, qz, qw]).as_matrix()
+        world_verts = (R @ verts_base.T).T + pos
+        world_normals = (R @ normals_base.T).T if has_normals else normals_base
+
+        lines.append(f"o particle_{i}")
+        for vx, vy, vz in world_verts:
+            lines.append(f"v {vx:.8f} {vy:.8f} {vz:.8f}")
+        if has_normals:
+            for nx, ny, nz in world_normals:
+                lines.append(f"vn {nx:.8f} {ny:.8f} {nz:.8f}")
+        for face in faces_base:
+            i0 = face[0] + 1 + v_offset
+            i1 = face[1] + 1 + v_offset
+            i2 = face[2] + 1 + v_offset
+            if has_normals:
+                lines.append(f"f {i0}//{i0} {i1}//{i1} {i2}//{i2}")
+            else:
+                lines.append(f"f {i0} {i1} {i2}")
+        v_offset += len(verts_base)
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def export_contact_network_obj(entities, contact_graph_links: list[dict]) -> str:
+    """
+    Export the PP contact network as OBJ line segments.
+
+    Each vertex is a particle centre; each 'l' line connects two contacting
+    particle centres.  Import as a separate layer in Rhino or Blender.
+
+    Units: metres, Y-up coordinate system.
+    """
+    lines = [
+        "# Granular jamming simulation – particle–particle contact network",
+        "# Coordinate system: Y-up, metres",
+        "# l edges connect centres of contacting particles",
+        "",
+        "o contact_network",
+    ]
+
+    # Map entity id → 1-based OBJ vertex index
+    id_to_idx: dict[int, int] = {}
+    for idx, e in enumerate(entities, start=1):
+        eid = _entity_id(e)
+        pos, _ = _entity_pose(e)
+        lines.append(f"v {pos[0]:.8f} {pos[1]:.8f} {pos[2]:.8f}")
+        id_to_idx[eid] = idx
+
+    lines.append("")
+    for link in contact_graph_links:
+        a = int(link.get("source", -1))
+        b = int(link.get("target", -1))
+        if a in id_to_idx and b in id_to_idx:
+            lines.append(f"l {id_to_idx[a]} {id_to_idx[b]}")
+
+    return "\n".join(lines)
+
+
+def export_summary_json(entities, metrics: dict, output_dir: str, original_mesh=None) -> dict:
+    """
+    Build and persist a summary.json containing scalar simulation metrics.
+
+    Returns the dict so the caller can also stream it directly.
+    """
+    n = len(entities)
+    total_pp = int(metrics.get("total_pp_contacts", 0))
+    total_pc = int(metrics.get("total_pc_contacts", 0))
+
+    vol_m3 = 0.0
+    if original_mesh is not None:
+        try:
+            vol_m3 = float(original_mesh.volume) if original_mesh.is_watertight else float(original_mesh.convex_hull.volume)
+        except Exception:
+            vol_m3 = 0.0
+
+    contact_eff = 0.0
+    if vol_m3 > 0 and n > 0:
+        contact_eff = total_pp / (vol_m3 * n)
+
+    summary = {
+        "n_particles": n,
+        "Z": float(metrics.get("Z", 0.0)),
+        "total_pp": total_pp,
+        "total_pc": total_pc,
+        "n_isolated": int(metrics.get("n_isolated_particles", 0)),
+        "n_container_touch": int(metrics.get("n_container_touching", 0)),
+        "system_pressure": float(metrics.get("system_pressure", 0.0)),
+        "contact_efficiency": float(contact_eff),
+        "total_particle_volume": float(vol_m3 * n),
+        "single_particle_volume_m3": float(vol_m3),
+    }
+
+    os.makedirs(output_dir, exist_ok=True)
+    import json
+    summary_path = os.path.join(output_dir, "summary.json")
+    with open(summary_path, "w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=2)
+
+    return summary
+
+
 def visualize_results(entities, metrics, original_mesh):
     try:
         import pyvista as pv
