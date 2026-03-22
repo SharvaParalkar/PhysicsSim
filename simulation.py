@@ -2,12 +2,14 @@ import os, math
 import argparse
 import sys
 import numpy as np
+import torch
 import pandas as pd
 import h5py
 import trimesh
 import coacd
 import networkx as nx
-from dataclasses import dataclass
+from scipy.spatial.transform import Rotation
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 # Avoid Windows console UnicodeEncodeError when libraries print box-drawing/emoji.
@@ -20,19 +22,50 @@ try:
 except Exception:
     pass
 
-# Optional: hide CUDA before importing Torch when forcing CPU (`--backend cpu` or GENESIS_USE_CPU=1).
-_use_cpu_cli = False
+# Default Genesis backend for `python simulation.py`, `server.py`, and GENESIS_USE_CPU.
+# "auto" → prefer GPU; "cpu" / "gpu" force that backend unless GENESIS_USE_CPU=0|1 overrides.
+BACKEND = "cpu"
+
+# Optional: hide CUDA before importing Torch when the effective backend is CPU.
+_cli_backend = None
 if "--backend" in sys.argv:
     try:
         i = sys.argv.index("--backend")
-        if i + 1 < len(sys.argv) and str(sys.argv[i + 1]).strip().lower() == "cpu":
-            _use_cpu_cli = True
+        if i + 1 < len(sys.argv):
+            _cli_backend = str(sys.argv[i + 1]).strip().lower()
     except ValueError:
         pass
-if _use_cpu_cli or os.environ.get("GENESIS_USE_CPU", "").strip().lower() in ("1", "true", "yes"):
+_gc = os.environ.get("GENESIS_USE_CPU", "").strip().lower()
+if _gc in ("1", "true", "yes"):
+    _effective_cpu = True
+elif _gc in ("0", "false", "no"):
+    _effective_cpu = False
+elif _cli_backend in ("cpu", "gpu", "auto"):
+    _effective_cpu = _cli_backend == "cpu"
+else:
+    _effective_cpu = BACKEND.strip().lower() == "cpu"
+if _effective_cpu:
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
-import genesis as gs
+
+class _GenesisLazy:
+    """Lazy `genesis` import so Taichi/LLVM bind to the thread that first imports (server worker)."""
+
+    _mod = None
+
+    @classmethod
+    def _load(cls):
+        if cls._mod is None:
+            import genesis as g
+
+            cls._mod = g
+        return cls._mod
+
+    def __getattr__(self, name):
+        return getattr(self._load(), name)
+
+
+gs = _GenesisLazy()
 
 # ── STEP 2: Parameter block ────────────────────────────────────────────────────  # parameters section
 # ── Input ──────────────────────────────────────────────────────────────────  # input settings
@@ -40,10 +73,9 @@ PARTICLE_FILE        = "particle.obj"   # OBJ or STL path
 N_PARTICLES          = 100              # number of particle copies to drop
 SCALE_FACTOR         = 1.0             # 0.001 converts mm mesh → metres
 # ── Material ───────────────────────────────────────────────────────────────  # material settings
-# YOUNGS_MODULUS: high-stiffness FEM jamming (E ≤ 1e8 Pa → FEM in Genesis).
-# E > 1e8 Pa → Rigid (avoid unless needed). Server/UI clamp to FEM_JAMMING_E_MAX for jamming runs.
+# YOUNGS_MODULUS: FEM jamming uses E ≤ 1e8; above 1e8 Genesis uses rigid particles (see spawn_particles).
 FEM_JAMMING_E_MAX  = 100_000_000.0   # Pa — upper FEM bound (1e8)
-YOUNGS_MODULUS       = 100_000_000.0  # Pa — high-stiffness FEM (≈1e8)
+YOUNGS_MODULUS       = 200_000_000.0  # Pa — forces Rigid solver path (E > 1e8)
 POISSON_RATIO        = 0.45            # 0.5 = fully incompressible; use 0.45+ to limit volume loss
 DENSITY              = 1200            # kg/m³
 # Rigid-body restitution (Genesis maps this to internal coupling restitution).
@@ -56,29 +88,118 @@ PLATE_SIZE           = 0.6             # square plate side length (m)
 CYLINDER_DIAMETER    = 0.20            # inner diameter (m)
 CYLINDER_HEIGHT      = 0.30            # wall height (m)
 CYLINDER_SEGMENTS    = 32              # wall facets — use 24+ to avoid gaps
-WALL_THICKNESS       = 0.008           # m
+WALL_THICKNESS       = 0.02            # m — plate slab thickness (too thin + coarse dt → FEM tunneling)
 # ── Drop ───────────────────────────────────────────────────────────────────  # drop settings
-DROP_HEIGHT          = 0.15            # metres above container top edge
-DROP_SPREAD          = 0.85            # fraction of inner radius used for XZ spread
+DROP_HEIGHT          = 0.2             # metres above container top edge (plate / cylinder rim)
+# 0 = stack all particles in a vertical column at (0, ·, 0); >0 = Vogel disk on XZ up to this fraction of spread radius
+DROP_SPREAD          = 0.0
 # ── Gravity ────────────────────────────────────────────────────────────────  # gravity settings
 GRAVITY              = (0, -9.81, 0)   # Y is up; change to (0,-1.62,0) for Moon
 # ── Simulation ─────────────────────────────────────────────────────────────  # simulation settings
-DT                   = 1 / 400        # timestep (s) — smaller dt for stiff FEM contacts
-SUBSTEPS             = 10               # substeps per timestep — stability for jamming
+# Throughput-first defaults: larger outer dt, fewer substeps; implicit FEM + low Newton count (see FEMOptions).
+# For thin rigid plates, use Analytical Mode (large dt while falling, then rebuild at 500 Hz / 16 substeps).
+DT                   = 1 / 240       # s — outer step (with SUBSTEPS)
+SUBSTEPS             = 4              # inner substeps per dt
 SIM_DURATION         = 5.0             # max simulated time (s)
 SETTLE_THRESHOLD     = 1e-4            # m/s — stop early when all particles slow
 # ── Runtime / performance ───────────────────────────────────────────────────  # runtime settings
 # Genesis’s viewer can dominate runtime on CPU (the FPS log you saw is from it).
 # Keep it off by default so simulation runs as fast as possible.
 SHOW_VIEWER          = False
-BACKEND              = "auto"           # "auto" → GPU if available; "cpu" or "gpu"
 # ── Contact analysis ───────────────────────────────────────────────────────  # contact analysis settings
-CONTACT_SAMPLE_EVERY = 10              # extract contacts every N steps
+CONTACT_SAMPLE_EVERY = 20              # legacy doc alignment: prefer CONTACT_EXTRACT_FALLING_EVERY for live runs
+# During fast motion, skip scene.get_contacts() most steps (see extract_contacts_resampled).
+CONTACT_EXTRACT_FALLING_EVERY = 20
 CONTACT_DEPTH_TOL    = 1e-5            # min penetration depth to count as contact
+# Jamming / coordination Z: particle–particle links only if |F| exceeds this (avoids overlap noise).
+Z_CONTACT_FORCE_MIN_N = 1e-3
 # ── Output ─────────────────────────────────────────────────────────────────  # output settings
 OUTPUT_DIR           = "./results"     # output directory path
 SAVE_HDF5            = True            # enable HDF5 output
 SAVE_CSV             = True            # enable CSV output
+
+# ── Genesis option bundles (throughput vs analytical phases) ───────────────
+@dataclass(frozen=True)
+class ThroughputSimTuning:
+    """Default SimOptions tuning: prioritize wall-clock throughput."""
+
+    dt: float = 1.0 / 240.0
+    substeps: int = 4
+
+
+@dataclass(frozen=True)
+class ThroughputFEMTuning:
+    """Default FEMOptions tuning: fewer Newton iterations per implicit step."""
+
+    n_newton_iterations: int = 4
+
+
+@dataclass(frozen=True)
+class AnalyticalFallingTuning:
+    """Falling phase timestep — match throughput defaults so thin plate contacts are not skipped (tunneling)."""
+
+    dt: float = 1.0 / 240.0
+    substeps: int = 4
+
+
+@dataclass(frozen=True)
+class AnalyticalPrecisionTuning:
+    """Settling phase once max speed drops below ANALYTICAL_VEL_THRESHOLD: 500 Hz, 16 substeps."""
+
+    dt: float = 1.0 / 500.0
+    substeps: int = 16
+    n_newton_iterations: int = 8
+
+
+def make_sim_options(gs_mod, cfg: dict):
+    """Build `gs.options.SimOptions` from a runtime config dict."""
+    g = getattr(gs_mod, "options", gs_mod)
+    return g.SimOptions(
+        dt=float(cfg["DT"]),
+        substeps=int(cfg["SUBSTEPS"]),
+        gravity=cfg.get("GRAVITY", (0, -9.81, 0)),
+    )
+
+
+def make_fem_options(gs_mod, cfg: dict):
+    """Build `gs.options.FEMOptions` from a runtime config dict."""
+    g = getattr(gs_mod, "options", gs_mod)
+    return g.FEMOptions(
+        use_implicit_solver=True,
+        n_newton_iterations=int(cfg.get("FEM_NEWTON_ITERATIONS", ThroughputFEMTuning.n_newton_iterations)),
+    )
+
+
+def snapshot_fem_entities(entities) -> list[dict]:
+    """Per-vertex pos/vel for FEM entities (for scene rebuild handoff). Skips non-FEM."""
+    out: list[dict] = []
+    for e in entities:
+        if type(e).__name__ != "FEMEntity":
+            continue
+        st = e.get_state()
+        pos = _tensor_to_numpy(st.pos).astype(float)
+        vel = _tensor_to_numpy(st.vel).astype(float)
+        if pos.ndim == 3:
+            pos = pos[0]
+        if vel.ndim == 3:
+            vel = vel[0]
+        out.append({"pos": np.ascontiguousarray(pos), "vel": np.ascontiguousarray(vel)})
+    return out
+
+
+def restore_fem_entities(entities, snapshots: list[dict]) -> None:
+    """Apply `snapshot_fem_entities` output to a fresh scene's FEM entities (same spawn order)."""
+    i = 0
+    for e in entities:
+        if type(e).__name__ != "FEMEntity":
+            continue
+        if i >= len(snapshots):
+            break
+        snap = snapshots[i]
+        i += 1
+        e.set_position(snap["pos"])
+        e.set_velocity(snap["vel"])
+
 
 DEFAULT_CONFIG = {
     "PARTICLE_FILE": PARTICLE_FILE,
@@ -98,15 +219,32 @@ DEFAULT_CONFIG = {
     "WALL_THICKNESS": WALL_THICKNESS,
     "DROP_HEIGHT": DROP_HEIGHT,
     "DROP_SPREAD": DROP_SPREAD,
+    # Genesis FEM explicit integration is unstable at ~1e8 Pa with typical dt; implicit is recommended.
+    "FEM_USE_IMPLICIT": True,
+    "FEM_NEWTON_ITERATIONS": 4,
+    "FEM_NEWTON_ITERATIONS_PRECISION": 8,
+    "ANALYTICAL_MODE": True,
+    "ANALYTICAL_FALLING_DT": AnalyticalFallingTuning.dt,
+    "ANALYTICAL_FALLING_SUBSTEPS": AnalyticalFallingTuning.substeps,
+    "ANALYTICAL_PRECISION_DT": AnalyticalPrecisionTuning.dt,
+    "ANALYTICAL_PRECISION_SUBSTEPS": AnalyticalPrecisionTuning.substeps,
+    "ANALYTICAL_VEL_THRESHOLD": 0.1,
     "GRAVITY": GRAVITY,
     "DT": DT,
     "SUBSTEPS": SUBSTEPS,
     "SIM_DURATION": SIM_DURATION,
     "SETTLE_THRESHOLD": SETTLE_THRESHOLD,
+    "CONTACT_EXTRACT_FALLING_EVERY": CONTACT_EXTRACT_FALLING_EVERY,
     "CONTACT_DEPTH_TOL": CONTACT_DEPTH_TOL,
     "OUTPUT_DIR": OUTPUT_DIR,
     "SAVE_HDF5": SAVE_HDF5,
     "SAVE_CSV": SAVE_CSV,
+    "STRESS_SIGMA": 0.4,  # radians — Hertzian angular falloff width (vertex stress post-process)
+    # When True: rebuild scene repeatedly — simulate k particles, snapshot FEM state, add one more at the drop height.
+    # Disables analytical handoff in the server (stages conflict with mid-run scene rebuilds).
+    "SEQUENTIAL_DROP": True,
+    # Max simulated time per staging step (s). None → max(SIM_DURATION / N_PARTICLES, 0.25).
+    "SEQUENTIAL_STAGE_DURATION": None,
 }
 
 
@@ -120,19 +258,35 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["N_PARTICLES"] = int(cfg["N_PARTICLES"])
     cfg["FEM_JAMMING_E_MAX"] = float(cfg["FEM_JAMMING_E_MAX"])
     cfg["YOUNGS_MODULUS"] = float(cfg["YOUNGS_MODULUS"])
-    # Clamp Young's modulus to FEM jamming band (avoids accidental Rigid regime when E > 1e8).
-    if cfg["YOUNGS_MODULUS"] > cfg["FEM_JAMMING_E_MAX"]:
+    # Clamp to FEM band only when staying in FEM/MPM (E ≤ 1e8). Larger E selects rigid particles in spawn_particles.
+    if cfg["YOUNGS_MODULUS"] <= 1e8 and cfg["YOUNGS_MODULUS"] > cfg["FEM_JAMMING_E_MAX"]:
         cfg["YOUNGS_MODULUS"] = cfg["FEM_JAMMING_E_MAX"]
+    cfg["STRESS_SIGMA"] = float(cfg.get("STRESS_SIGMA", 0.4))
     cfg["POISSON_RATIO"] = float(cfg["POISSON_RATIO"])
     cfg["PARTICLE_RESTITUTION"] = float(cfg["PARTICLE_RESTITUTION"])
     cfg["ENV_RESTITUTION"] = float(cfg["ENV_RESTITUTION"])
     cfg["CYLINDER_DIAMETER"] = float(cfg["CYLINDER_DIAMETER"])
     cfg["DROP_HEIGHT"] = float(cfg["DROP_HEIGHT"])
+    cfg["DROP_SPREAD"] = float(cfg["DROP_SPREAD"])
+    cfg["FEM_NEWTON_ITERATIONS"] = int(cfg.get("FEM_NEWTON_ITERATIONS", ThroughputFEMTuning.n_newton_iterations))
+    cfg["FEM_NEWTON_ITERATIONS_PRECISION"] = int(cfg.get("FEM_NEWTON_ITERATIONS_PRECISION", AnalyticalPrecisionTuning.n_newton_iterations))
+    cfg["ANALYTICAL_MODE"] = bool(cfg["ANALYTICAL_MODE"])
+    cfg["ANALYTICAL_FALLING_DT"] = float(cfg.get("ANALYTICAL_FALLING_DT", AnalyticalFallingTuning.dt))
+    cfg["ANALYTICAL_FALLING_SUBSTEPS"] = max(1, int(cfg.get("ANALYTICAL_FALLING_SUBSTEPS", AnalyticalFallingTuning.substeps)))
+    cfg["ANALYTICAL_PRECISION_DT"] = float(cfg.get("ANALYTICAL_PRECISION_DT", AnalyticalPrecisionTuning.dt))
+    cfg["ANALYTICAL_PRECISION_SUBSTEPS"] = max(1, int(cfg.get("ANALYTICAL_PRECISION_SUBSTEPS", AnalyticalPrecisionTuning.substeps)))
+    cfg["ANALYTICAL_VEL_THRESHOLD"] = float(cfg.get("ANALYTICAL_VEL_THRESHOLD", 0.1))
     cfg["DT"] = float(cfg["DT"])
     cfg["SUBSTEPS"] = int(cfg["SUBSTEPS"])
     cfg["SIM_DURATION"] = float(cfg["SIM_DURATION"])
     cfg["SETTLE_THRESHOLD"] = float(cfg["SETTLE_THRESHOLD"])
+    cfg["CONTACT_EXTRACT_FALLING_EVERY"] = max(1, int(cfg.get("CONTACT_EXTRACT_FALLING_EVERY", CONTACT_EXTRACT_FALLING_EVERY)))
+    cfg["SEQUENTIAL_DROP"] = bool(cfg.get("SEQUENTIAL_DROP", False))
+    _ssd = cfg.get("SEQUENTIAL_STAGE_DURATION", None)
+    cfg["SEQUENTIAL_STAGE_DURATION"] = None if _ssd is None else float(_ssd)
     cfg["ENVIRONMENT_TYPE"] = str(cfg["ENVIRONMENT_TYPE"]).strip().lower()
+    # Jamming / packed FEM: implicit stepper is required at high E; do not allow config to disable it.
+    cfg["FEM_USE_IMPLICIT"] = True
     return cfg
 
 
@@ -149,6 +303,50 @@ class NormalizedContact:
     contact_area: Optional[float]
 
 
+@dataclass
+class ContactSampleCache:
+    """Stores the last `extract_contacts` result when throttling `scene.get_contacts()`."""
+
+    contacts: list = field(default_factory=list)
+    primed: bool = False
+
+
+def contact_extract_stride(max_vel: Optional[float], settle_threshold: float, falling_every: int) -> int:
+    fe = max(1, int(falling_every))
+    if max_vel is None:
+        return fe
+    if float(max_vel) >= float(settle_threshold):
+        return fe
+    return 1
+
+
+def extract_contacts_resampled(
+    scene,
+    particle_ids,
+    container_ids,
+    depth_tol: float,
+    *,
+    sim_step: int,
+    max_vel: Optional[float],
+    settle_threshold: float,
+    cache: ContactSampleCache,
+    falling_every: Optional[int] = None,
+    force_skip: bool = False,
+) -> list:
+    """
+    Cheap when particles are still falling: only calls `get_contacts` every `falling_every` steps.
+    After speeds drop below `settle_threshold`, samples every step so jammed contact metrics stay fresh.
+    """
+    if force_skip:
+        return []
+    fe = CONTACT_EXTRACT_FALLING_EVERY if falling_every is None else int(falling_every)
+    stride = contact_extract_stride(max_vel, settle_threshold, fe)
+    if (not cache.primed) or (int(sim_step) % stride == 0):
+        cache.contacts = extract_contacts(scene, particle_ids, container_ids, depth_tol)
+        cache.primed = True
+    return cache.contacts
+
+
 def _entity_id(e) -> int:
     # Genesis versions use either `.id` or `.idx`.
     if hasattr(e, "id"):
@@ -156,11 +354,53 @@ def _entity_id(e) -> int:
     return int(getattr(e, "idx"))
 
 
+def _tensor_to_numpy(x) -> np.ndarray:
+    """Convert torch.Tensor or array-like to numpy float64 on CPU (Genesis may return CUDA tensors)."""
+    if x is None:
+        return np.zeros((0,), dtype=float)
+    if hasattr(x, "detach"):
+        x = x.detach().cpu().numpy()
+    return np.asarray(x, dtype=float)
+
+
+def _vec3_from_xyz(x, y, z) -> np.ndarray:
+    return np.array(
+        [
+            float(_tensor_to_numpy(x).reshape(-1)[0]),
+            float(_tensor_to_numpy(y).reshape(-1)[0]),
+            float(_tensor_to_numpy(z).reshape(-1)[0]),
+        ],
+        dtype=float,
+    )
+
+
+def _quat_tuple_xyzw(qw, qx, qy, qz) -> tuple[float, float, float, float]:
+    """Genesis get_quat is (w,x,y,z); visualization uses (x,y,z,w)."""
+    return (
+        float(_tensor_to_numpy(qx).reshape(-1)[0]),
+        float(_tensor_to_numpy(qy).reshape(-1)[0]),
+        float(_tensor_to_numpy(qz).reshape(-1)[0]),
+        float(_tensor_to_numpy(qw).reshape(-1)[0]),
+    )
+
+
 def _contact_pos(c):
     # Genesis versions use either `.pos` or `.position`.
     if hasattr(c, "pos"):
         return c.pos
     return c.position
+
+
+def _as_vec3_any(x) -> np.ndarray:
+    """Contact / pose data may be numpy, CUDA tensors, or (x,y,z) tuples of tensors."""
+    if x is None:
+        return np.zeros(3, dtype=float)
+    if isinstance(x, (tuple, list)) and len(x) >= 3:
+        return _vec3_from_xyz(x[0], x[1], x[2])
+    v = _tensor_to_numpy(x).astype(float).ravel()
+    if v.size < 3:
+        v = np.pad(v, (0, 3 - int(v.size)))
+    return v[:3]
 
 
 def _entity_pose(e) -> tuple[np.ndarray, tuple[float, float, float, float]]:
@@ -179,24 +419,25 @@ def _entity_pose(e) -> tuple[np.ndarray, tuple[float, float, float, float]]:
     # Prefer explicit pose getters when available (rigid-like entities).
     if (not force_state_pose) and hasattr(e, "get_pos"):
         x, y, z = e.get_pos()
+        pos_try = _vec3_from_xyz(x, y, z)
         # If pose getters return something clearly not in world space (e.g.
         # very large magnitudes), fall back to state-based heuristics below.
-        if np.isfinite([x, y, z]).all() and float(max(abs(x), abs(y), abs(z))) <= 10.0:
+        if np.isfinite(pos_try).all() and float(np.abs(pos_try).max()) <= 10.0:
             if hasattr(e, "get_quat"):
                 qw, qx, qy, qz = e.get_quat()  # (w,x,y,z) -> (x,y,z,w)
-                quat = (float(qx), float(qy), float(qz), float(qw))
+                quat = _quat_tuple_xyzw(qw, qx, qy, qz)
             else:
                 quat = (0.0, 0.0, 0.0, 1.0)
-            return (np.asarray([x, y, z], dtype=float), quat)
+            return (pos_try, quat)
         # else: fall through to fallback extraction
         if hasattr(e, "get_quat"):
             qw, qx, qy, qz = e.get_quat()  # (w,x,y,z) -> (x,y,z,w)
-            quat = (float(qx), float(qy), float(qz), float(qw))
+            quat = _quat_tuple_xyzw(qw, qx, qy, qz)
         else:
             quat = (0.0, 0.0, 0.0, 1.0)
         # Keep the existing return for completeness; most callers will hit
         # the magnitude guard above.
-        return (np.asarray([x, y, z], dtype=float), quat)
+        return (pos_try, quat)
 
     # Fallback: try entity state (post scene.build()) and compute centroid.
     try:
@@ -206,7 +447,7 @@ def _entity_pose(e) -> tuple[np.ndarray, tuple[float, float, float, float]]:
             for attr in ("pos", "x", "p"):
                 if not hasattr(st, attr):
                     continue
-                arr = np.asarray(getattr(st, attr), dtype=float)
+                arr = _tensor_to_numpy(getattr(st, attr))
                 # Common shapes: (N,3) or (B,N,3).
                 if arr.ndim == 3:
                     arr = arr[0]
@@ -221,9 +462,38 @@ def _entity_pose(e) -> tuple[np.ndarray, tuple[float, float, float, float]]:
             # data, its magnitude can be wildly larger and break visualization.
             if candidate_positions:
                 best_pos = min(candidate_positions, key=lambda p: float(np.abs(p).sum()))
+                if float(np.abs(best_pos).max()) > 500.0 and hasattr(e, "get_pos"):
+                    try:
+                        x, y, z = e.get_pos()
+                        pos_try = _vec3_from_xyz(x, y, z)
+                        if np.isfinite(pos_try).all() and float(np.abs(pos_try).max()) <= 500.0:
+                            if hasattr(e, "get_quat"):
+                                qw, qx, qy, qz = e.get_quat()
+                                quat = _quat_tuple_xyzw(qw, qx, qy, qz)
+                            else:
+                                quat = (0.0, 0.0, 0.0, 1.0)
+                            return (pos_try, quat)
+                    except Exception:
+                        pass
                 return (best_pos, (0.0, 0.0, 0.0, 1.0))
     except Exception:
         pass
+
+    # FEM/MPM: state tensors may use different field names across Genesis versions.
+    # If centroid extraction failed, try rigid-style getters so the viewer still receives poses.
+    if force_state_pose and hasattr(e, "get_pos"):
+        try:
+            x, y, z = e.get_pos()
+            pos_try = _vec3_from_xyz(x, y, z)
+            if np.isfinite(pos_try).all():
+                if hasattr(e, "get_quat"):
+                    qw, qx, qy, qz = e.get_quat()
+                    quat = _quat_tuple_xyzw(qw, qx, qy, qz)
+                else:
+                    quat = (0.0, 0.0, 0.0, 1.0)
+                return (pos_try, quat)
+        except Exception:
+            pass
 
     return (np.zeros((3,), dtype=float), (0.0, 0.0, 0.0, 1.0))
 
@@ -277,7 +547,7 @@ def _rigid_material(friction: float, restitution: float):
 
 def create_environment(scene, kind, plate_size=0.6, cyl_diameter=0.20,
 cyl_height=0.30, cyl_segments=32,
-wall_thickness=0.008, env_restitution: float = ENV_RESTITUTION) -> tuple[set, dict]:
+wall_thickness=WALL_THICKNESS, env_restitution: float = ENV_RESTITUTION) -> tuple[set, dict]:
     container_ids = set()
     mat = _rigid_material(0.55, float(env_restitution))
 
@@ -343,89 +613,147 @@ wall_thickness=0.008, env_restitution: float = ENV_RESTITUTION) -> tuple[set, di
     raise ValueError(f"Unknown environment kind: {kind!r}")
 
 
-def spawn_particles(scene, physics_mesh, n, env_info, drop_height,
-drop_spread, E, nu, rho, particle_file=PARTICLE_FILE, scale_factor=SCALE_FACTOR,
-particle_restitution: float = PARTICLE_RESTITUTION) -> list:
-    if E > 1e8:
-        material = _rigid_material(0.4, float(particle_restitution))
-    elif E > 1e3:
-        try:
-            material = gs.materials.FEM(E=E, nu=nu, rho=rho)
-        except TypeError:
-            material = gs.materials.FEM.Elastic(E=E, nu=nu, rho=rho)
+def spawn_particles(
+    scene,
+    physics_mesh,
+    n,
+    env_info,
+    drop_height,
+    drop_spread,
+    E,
+    nu,
+    rho,
+    particle_file=PARTICLE_FILE,
+    scale_factor=SCALE_FACTOR,
+    particle_restitution: float = PARTICLE_RESTITUTION,
+    e_fem_max: float = FEM_JAMMING_E_MAX,
+    prior_fem_snapshots: Optional[list[dict]] = None,
+) -> list:
+    E_in = float(E)
+    if E_in > 1e8:
+        print(
+            "Genesis particle solver: Rigid (friction=0.4, restitution=0.0); "
+            f"YOUNGS_MODULUS={E_in:.6g} Pa > 1e8 (FEM/MPM path skipped)"
+        )
+        material = _rigid_material(0.4, 0.0)
     else:
-        try:
-            material = gs.materials.MPM(E=E, nu=nu, rho=rho)
-        except TypeError:
-            material = gs.materials.MPM.Elastic(E=E, nu=nu, rho=rho)
+        E = E_in
+        if E > float(e_fem_max):
+            E = float(e_fem_max)
+        if E > 1e3:
+            try:
+                material = gs.materials.FEM(E=E, nu=nu, rho=rho, use_implicit_solver=True)
+            except TypeError:
+                try:
+                    material = gs.materials.FEM(E=E, nu=nu, rho=rho)
+                except TypeError:
+                    try:
+                        material = gs.materials.FEM.Elastic(E=E, nu=nu, rho=rho, use_implicit_solver=True)
+                    except TypeError:
+                        material = gs.materials.FEM.Elastic(E=E, nu=nu, rho=rho)
+        else:
+            try:
+                material = gs.materials.MPM(E=E, nu=nu, rho=rho)
+            except TypeError:
+                material = gs.materials.MPM.Elastic(E=E, nu=nu, rho=rho)
 
     extents = physics_mesh.bounds[1] - physics_mesh.bounds[0]
-    p_radius = float(np.linalg.norm(extents) / 2)
-    spacing = p_radius * 2.4
-    spawn_r = float(env_info["spread_radius"] * drop_spread)
     spawn_y0 = float(env_info["top_y"] + drop_height)
-    cols = int(math.ceil(math.sqrt(n)))
+    spread = float(drop_spread)
+    char = float(max(float(extents[0]), float(extents[1]), float(extents[2]), 1e-9))
+    stack_gap = max(char * 1.06, 1e-4)
+
+    prior = prior_fem_snapshots or []
+    if prior and len(prior) != n - 1:
+        raise ValueError(f"prior_fem_snapshots must have length n-1 ({n - 1}), got {len(prior)}")
+
+    def _centroid_from_snapshot(snap: dict) -> tuple[float, float, float]:
+        p = snap["pos"]
+        arr = np.asarray(p, dtype=float)
+        if arr.ndim == 3:
+            arr = arr[0]
+        if arr.ndim != 2 or arr.shape[-1] != 3:
+            return (0.0, float(spawn_y0), 0.0)
+        c = arr.mean(axis=0)
+        return (float(c[0]), float(c[1]), float(c[2]))
 
     entities = []
-    ys = []
-    for i in range(n):
-        row, col = divmod(i, cols)
-        x = (col - cols / 2 + 0.5) * spacing
-        z = (row - cols / 2 + 0.5) * spacing
-        dist = math.sqrt(x * x + z * z)
-        if dist > spawn_r and dist > 1e-12:
-            scale = (spawn_r / dist) * float(np.random.uniform(0.7, 1.0))
-            x *= scale
-            z *= scale
-        x += float(np.random.uniform(-p_radius * 0.2, p_radius * 0.2))
-        z += float(np.random.uniform(-p_radius * 0.2, p_radius * 0.2))
-        y = spawn_y0 + (i % cols) * p_radius * 0.3
-        ys.append(y)
-        R = trimesh.transformations.random_rotation_matrix()[:3, :3]
-        quat = gs.utils.geom.R_to_quat(R)
-        ent = scene.add_entity(
-            gs.morphs.Mesh(
-                file=particle_file,
-                scale=float(scale_factor),
-                pos=(x, y, z),
-                quat=quat,
-            ),
-            material=material,
+    if spread <= 1e-9:
+        # Single column above the plate: stack along +Y so bodies do not share one point (that breaks FEM contact).
+        for i in range(n):
+            if i < len(prior):
+                x, y, z = _centroid_from_snapshot(prior[i])
+                quat = gs.utils.geom.R_to_quat(np.eye(3, dtype=float))
+            else:
+                x, z = 0.0, 0.0
+                # Stagger each new particle above the previous; overlap at one (x,z) caused tunneling / blow-ups.
+                y = spawn_y0 + float(i) * stack_gap
+                R = trimesh.transformations.random_rotation_matrix()[:3, :3]
+                quat = gs.utils.geom.R_to_quat(R)
+            ent = scene.add_entity(
+                gs.morphs.Mesh(
+                    file=particle_file,
+                    scale=float(scale_factor),
+                    pos=(x, y, z),
+                    quat=quat,
+                ),
+                material=material,
+            )
+            entities.append(ent)
+        print(
+            f"Spawned {len(entities)} particles (column at x=z=0, Δy={stack_gap:.4g} m between centers) | "
+            f"drop_height={drop_height} | mesh_char={char:.6g} | y0={spawn_y0:.6g}"
+            + (" | sequential_restore" if prior else "")
         )
-        entities.append(ent)
+    else:
+        if "spread_radius" in env_info:
+            r_max = float(env_info["spread_radius"]) * spread
+        elif "inner_radius" in env_info:
+            r_max = float(env_info["inner_radius"]) * spread
+        else:
+            r_max = 0.15 * spread
+        r_max = max(r_max, 1e-6)
 
-    y_min = float(min(ys)) if ys else spawn_y0
-    y_max = float(max(ys)) if ys else spawn_y0
-    print(f"Spawned {len(entities)} particles | drop_height={drop_height} | y_range=({y_min:.6g}, {y_max:.6g})")
+        # Vogel disk on the horizontal plane — loose pack that settles into contacts.
+        golden = math.pi * (3.0 - math.sqrt(5.0))
+
+        for i in range(n):
+            if i < len(prior):
+                x, y, z = _centroid_from_snapshot(prior[i])
+                quat = gs.utils.geom.R_to_quat(np.eye(3, dtype=float))
+            else:
+                ri = r_max * math.sqrt((i + 0.5) / max(n, 1))
+                th = i * golden
+                x = ri * math.cos(th)
+                z = ri * math.sin(th)
+                y = spawn_y0
+                R = trimesh.transformations.random_rotation_matrix()[:3, :3]
+                quat = gs.utils.geom.R_to_quat(R)
+            ent = scene.add_entity(
+                gs.morphs.Mesh(
+                    file=particle_file,
+                    scale=float(scale_factor),
+                    pos=(x, y, z),
+                    quat=quat,
+                ),
+                material=material,
+            )
+            entities.append(ent)
+
+        print(
+            f"Spawned {len(entities)} particles (Vogel disk, r≤{r_max:.4g} m) | drop_height={drop_height} | "
+            f"mesh_char={char:.6g} | y={spawn_y0:.6g}"
+            + (" | sequential_restore" if prior else "")
+        )
     return entities
 
 
-def run_simulation(scene, entities, dt, substeps, duration, settle_threshold) -> int:
+def run_simulation(scene, entities, dt, substeps, duration, settle_threshold, *, update_visualizer: bool = False) -> int:
     total_steps = int(duration / dt)
     for step in range(total_steps):
-        scene.step()
+        scene.step(update_visualizer=update_visualizer)
         if step % 60 == 0:
-            max_vel = None
-            if entities:
-                speeds: list[float] = []
-                for e in entities:
-                    if hasattr(e, "get_vel"):
-                        v = np.asarray(e.get_vel(), dtype=float)
-                        speeds.append(float(np.linalg.norm(v)))
-                        continue
-
-                    if hasattr(e, "get_state"):
-                        st = e.get_state()
-                        if hasattr(st, "vel"):
-                            v = np.asarray(st.vel, dtype=float)
-                            if v.size == 0:
-                                continue
-                            if v.ndim == 1:
-                                speeds.append(float(np.linalg.norm(v)))
-                            else:
-                                speeds.append(float(np.linalg.norm(v, axis=-1).max()))
-                        continue
-                max_vel = max(speeds) if speeds else None
+            max_vel = compute_max_velocity(entities) if entities else None
             print(
                 f"t={step * dt:.2f}s  max_vel={(max_vel if max_vel is not None else 0.0):.5f} m/s  step={step}/{total_steps}",
                 end="\r",
@@ -440,53 +768,158 @@ def run_simulation(scene, entities, dt, substeps, duration, settle_threshold) ->
     return total_steps
 
 
+def compute_total_kinetic_energy(entities, particle_mass_kg: float) -> float:
+    """
+    Total translational kinetic energy (J) summed over particles.
+
+    FEM / MPM: if entity state exposes per-node velocities (N,3), uses uniform nodal mass M/N.
+    Otherwise falls back to rigid-style get_vel with full particle mass M.
+    """
+    m_part = float(particle_mass_kg)
+    if m_part <= 0.0 or not entities:
+        return 0.0
+    total = 0.0
+    for e in entities:
+        used = False
+        if hasattr(e, "get_state"):
+            st = e.get_state()
+            if hasattr(st, "vel"):
+                v = _tensor_to_numpy(st.vel).astype(float)
+                if v.size == 0:
+                    continue
+                if v.ndim == 3:
+                    v = v[0]
+                if v.ndim == 2 and v.shape[-1] == 3 and v.shape[0] > 0:
+                    nv = int(v.shape[0])
+                    mn = m_part / max(nv, 1)
+                    s2 = np.sum(v * v, axis=-1)
+                    total += float(0.5 * mn * np.sum(s2))
+                    used = True
+                elif v.ndim == 1 and v.size >= 3:
+                    spd = float(np.linalg.norm(v[:3]))
+                    total += 0.5 * m_part * spd * spd
+                    used = True
+        if not used and hasattr(e, "get_vel"):
+            v = _tensor_to_numpy(e.get_vel()).ravel()
+            if v.size >= 3:
+                spd = float(np.linalg.norm(v[:3]))
+                total += 0.5 * m_part * spd * spd
+    return float(total)
+
+
+def container_surface_area_m2(environment_type: str, cfg: dict) -> float:
+    """
+    Inner container surface area (m²) for system pressure: sum(|F_contact|) / area → Pa.
+
+    Plate: horizontal floor area. Cylinder: inner bottom disk + inner cylindrical wall.
+    """
+    k = str(environment_type).strip().lower()
+    if k == "plate":
+        s = float(cfg.get("PLATE_SIZE", PLATE_SIZE))
+        return max(s * s, 1e-18)
+    if k == "cylinder":
+        d = float(cfg.get("CYLINDER_DIAMETER", CYLINDER_DIAMETER))
+        h = float(cfg.get("CYLINDER_HEIGHT", CYLINDER_HEIGHT))
+        r = d * 0.5
+        return max(math.pi * r * r + 2.0 * math.pi * r * h, 1e-18)
+    return 1.0
+
+
+def _pp_contact_strong_for_z(c: NormalizedContact, f_min: float) -> bool:
+    if not c.is_particle_particle:
+        return False
+    if c.force is None:
+        return False
+    return abs(float(c.force)) > float(f_min)
+
+
+def calculate_live_metrics(
+    contacts,
+    particle_ids,
+    entities,
+    *,
+    particle_mass_kg: float,
+    surface_area_m2: Optional[float] = None,
+) -> dict:
+    """
+    Lightweight metrics for high-frequency WebSocket updates (jamming / rattlers / energy).
+
+    ``n_rattlers`` counts particles with no particle–particle contacts (isolated in the PP graph),
+    matching ``compute_metrics``'s ``n_isolated_particles``.
+    """
+    m = compute_metrics(contacts, particle_ids, container_surface_area_m2=surface_area_m2)
+    ke = compute_total_kinetic_energy(entities, particle_mass_kg)
+    return {
+        "Z": float(m.get("Z", 0.0)),
+        "n_rattlers": int(m.get("n_isolated_particles", 0)),
+        "kinetic_energy": float(ke),
+        "system_pressure": float(m.get("system_pressure", 0.0)),
+    }
+
+
 def compute_max_velocity(entities) -> Optional[float]:
     speeds: list[float] = []
     for e in entities:
         if hasattr(e, "get_vel"):
-            v = np.asarray(e.get_vel(), dtype=float)
-            speeds.append(float(np.linalg.norm(v)))
+            v = _tensor_to_numpy(e.get_vel())
+            s = float(np.linalg.norm(v))
+            if math.isfinite(s):
+                speeds.append(s)
             continue
         if hasattr(e, "get_state"):
             st = e.get_state()
             if hasattr(st, "vel"):
-                v = np.asarray(st.vel, dtype=float)
+                v = _tensor_to_numpy(st.vel)
                 if v.size == 0:
                     continue
                 if v.ndim == 1:
-                    speeds.append(float(np.linalg.norm(v)))
+                    s = float(np.linalg.norm(v))
                 else:
-                    speeds.append(float(np.linalg.norm(v, axis=-1).max()))
+                    s = float(np.nanmax(np.linalg.norm(v, axis=-1)))
+                if math.isfinite(s):
+                    speeds.append(s)
+            continue
     if not speeds:
         return None
     return max(speeds)
 
 
-def _tensor_to_numpy(x) -> np.ndarray:
-    if x is None:
-        return np.zeros((0,), dtype=float)
-    if hasattr(x, "detach"):
-        x = x.detach().cpu().numpy()
-    return np.asarray(x, dtype=float)
-
-
-def compute_fem_vertex_force_stress(scene, entities) -> tuple[dict[int, np.ndarray], float]:
+def compute_fem_vertex_force_stress(
+    scene, entities, *, subsample_frac: float = 0.2
+) -> tuple[dict[int, tuple[np.ndarray, np.ndarray]], float]:
     """
-    Per-vertex |F| from FEM nodal forces (proxy for contact / internal loading).
-    Returns (entity_id -> array shape (n_vertices,)), global max for normalization.
+    Per-vertex "stress proxy" from FEM nodal forces: ||F_i|| on a random nodal subsample.
+
+    Only a fraction of vertices per FEM body are sampled each frame (default 20%) to limit
+    CPU/GPU sync and payload size. Norms are normalized to [0, 1] as ||F_i|| / G_max using
+    G_max = max sampled ||F|| across all FEM bodies (torch, on the force tensor's device).
+
+    Returns (entity_id -> (local_vertex_indices int32, normalized float32 array)), and 1.0
+    for fem_norm_global_max (values are already scaled).
     """
     fs = getattr(scene.sim, "fem_solver", None)
     if fs is None or not getattr(fs, "is_active", False):
         return {}, 1.0
-    forces = fs.get_forces()
-    if forces is None:
+    node_forces = fs.get_forces()
+    if node_forces is None:
         return {}, 1.0
-    forces = _tensor_to_numpy(forces)
-    if forces.ndim != 3 or forces.shape[0] < 1:
+    if hasattr(node_forces, "detach"):
+        F = node_forces.detach()
+    else:
+        F = torch.from_numpy(np.asarray(node_forces, dtype=np.float32))
+    if F.ndim != 3 or int(F.shape[0]) < 1:
         return {}, 1.0
-    forces_b = forces[0]
-    per_entity: dict[int, np.ndarray] = {}
-    all_norms: list[float] = []
+    forces_b = F[0]
+    if forces_b.ndim != 2 or int(forces_b.shape[1]) != 3:
+        return {}, 1.0
+    device = forces_b.device
+    dtype = forces_b.dtype
+    sampled_blocks: list[torch.Tensor] = []
+    meta: list[tuple[int, torch.Tensor, torch.Tensor]] = []
+    frac = float(subsample_frac)
+    if not math.isfinite(frac) or frac <= 0.0:
+        frac = 0.2
+
     for e in entities:
         if type(e).__name__ != "FEMEntity":
             continue
@@ -494,16 +927,34 @@ def compute_fem_vertex_force_stress(scene, entities) -> tuple[dict[int, np.ndarr
             continue
         vs = int(e.v_start)
         nv = int(e.n_vertices)
-        if vs + nv > forces_b.shape[0]:
+        if nv < 1 or vs + nv > int(forces_b.shape[0]):
             continue
-        sub = forces_b[vs : vs + nv, :]
-        norms = np.linalg.norm(sub, axis=1)
-        per_entity[int(_entity_id(e))] = norms.astype(float)
-        all_norms.extend(float(x) for x in norms.tolist())
-    gmax = max(all_norms) if all_norms else 1.0
-    if gmax <= 1e-18:
-        gmax = 1.0
-    return per_entity, float(gmax)
+        slab = forces_b[vs : vs + nv, :]
+        k = max(1, int(nv * frac))
+        pick = torch.randperm(nv, device=device)[:k]
+        f_k = slab[pick, :]
+        norms_k = torch.linalg.norm(f_k, dim=1)
+        norms_k = torch.nan_to_num(norms_k, nan=0.0, posinf=0.0, neginf=0.0).to(dtype)
+        sampled_blocks.append(norms_k)
+        meta.append((int(_entity_id(e)), pick.to(dtype=torch.int64), norms_k))
+
+    if not sampled_blocks:
+        return {}, 1.0
+    all_norms = torch.cat(sampled_blocks)
+    gmax = torch.max(all_norms)
+    if not torch.isfinite(gmax) or float(gmax.item()) <= 1e-18:
+        gmax_t = torch.tensor(1.0, device=device, dtype=dtype)
+    else:
+        gmax_t = torch.clamp(gmax, min=1e-18)
+
+    per_entity: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    for eid, pick_i, norms_k in meta:
+        scaled = (norms_k / gmax_t).clamp(0.0, 1.0)
+        per_entity[eid] = (
+            pick_i.cpu().numpy().astype(np.int32, copy=False),
+            scaled.cpu().numpy().astype(np.float32, copy=False),
+        )
+    return per_entity, 1.0
 
 
 def compute_particle_stress_map(contacts, particle_ids: set[int]) -> dict[int, float]:
@@ -526,13 +977,14 @@ def _collect_particle_transforms(
     entities,
     stress_map: Optional[dict[int, float]] = None,
     *,
-    fem_vertex_norms: Optional[dict[int, np.ndarray]] = None,
+    fem_vertex_norms: Optional[dict[int, tuple[np.ndarray, np.ndarray] | np.ndarray]] = None,
     fem_norm_global_max: float = 1.0,
-    max_vertex_stress_floats: int = 8,
 ) -> list[dict]:
     out: list[dict] = []
     smap = stress_map or {}
-    gmax = float(fem_norm_global_max) if fem_norm_global_max > 1e-18 else 1.0
+    gmax = float(fem_norm_global_max)
+    if not math.isfinite(gmax) or gmax <= 1e-18:
+        gmax = 1.0
     for e in entities:
         pos, (qx, qy, qz, qw) = _entity_pose(e)
         if not (np.isfinite(pos).all() and all(np.isfinite([qx, qy, qz, qw]))):
@@ -540,15 +992,24 @@ def _collect_particle_transforms(
             qx, qy, qz, qw = 0.0, 0.0, 0.0, 1.0
         eid = int(_entity_id(e))
         contact_s = float(smap.get(eid, 0.0))
-        vertex_stress: Optional[list[float]] = None
+        vertex_intensities: Optional[list[float]] = None
+        vertex_stress_indices: Optional[list[int]] = None
         stress_intensity = contact_s
         if fem_vertex_norms and eid in fem_vertex_norms:
-            arr = np.clip(np.asarray(fem_vertex_norms[eid], dtype=float) / gmax, 0.0, 1.0)
-            stress_intensity = float(np.mean(arr)) if arr.size else contact_s
-            n = min(int(arr.shape[0]), int(max_vertex_stress_floats))
-            padded = np.zeros((max_vertex_stress_floats,), dtype=float)
-            padded[:n] = arr[:n]
-            vertex_stress = [float(x) for x in padded.tolist()]
+            entry = fem_vertex_norms[eid]
+            if isinstance(entry, tuple) and len(entry) == 2:
+                idx_a, raw = entry
+                idx_a = np.asarray(idx_a, dtype=np.int64)
+                raw = np.nan_to_num(np.asarray(raw, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+                arr = np.clip(raw / gmax, 0.0, 1.0).astype(np.float32, copy=False)
+                stress_intensity = float(np.mean(arr)) if arr.size else contact_s
+                vertex_stress_indices = idx_a.astype(np.int64, copy=False).tolist()
+                vertex_intensities = arr.tolist()
+            else:
+                raw = np.nan_to_num(np.asarray(entry, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+                arr = np.clip(raw / gmax, 0.0, 1.0).astype(np.float32, copy=False)
+                stress_intensity = float(np.mean(arr)) if arr.size else contact_s
+                vertex_intensities = arr.tolist()
         row = {
             "id": eid,
             "x": float(pos[0]),
@@ -560,8 +1021,10 @@ def _collect_particle_transforms(
             "qw": float(qw),
             "stress_intensity": stress_intensity,
         }
-        if vertex_stress is not None:
-            row["vertex_stress"] = vertex_stress
+        if vertex_intensities is not None:
+            row["vertex_intensities"] = vertex_intensities
+        if vertex_stress_indices is not None:
+            row["vertex_stress_indices"] = vertex_stress_indices
         out.append(row)
     return out
 
@@ -575,6 +1038,7 @@ def run_simulation_stream(
     *,
     frame_every: int = 10,
     log_every: int = 60,
+    update_visualizer: bool = False,
     on_log: Optional[Callable[[str], None]] = None,
     on_frame: Optional[Callable[[dict], None]] = None,
 ) -> int:
@@ -602,33 +1066,13 @@ def run_simulation_stream(
                 }
             )
 
-        scene.step()
+        scene.step(update_visualizer=update_visualizer)
         current_t = float((step + 1) * dt)
 
         if (step % log_every == 0) or (step == total_steps - 1):
-            max_vel: Optional[float] = None
-            if entities:
-                speeds: list[float] = []
-                for e in entities:
-                    if hasattr(e, "get_vel"):
-                        v = np.asarray(e.get_vel(), dtype=float)
-                        speeds.append(float(np.linalg.norm(v)))
-                        continue
+            max_vel = compute_max_velocity(entities) if entities else None
 
-                    if hasattr(e, "get_state"):
-                        st = e.get_state()
-                        if hasattr(st, "vel"):
-                            v = np.asarray(st.vel, dtype=float)
-                            if v.size == 0:
-                                continue
-                            if v.ndim == 1:
-                                speeds.append(float(np.linalg.norm(v)))
-                            else:
-                                speeds.append(float(np.linalg.norm(v, axis=-1).max()))
-                        continue
-                max_vel = max(speeds) if speeds else None
-
-            line = f"t={step * dt:.2f}s  max_vel={(max_vel if max_vel is not None else 0.0):.5f} m/s  step={step}/{total_steps}"
+            line = f"t={current_t:.2f}s  max_vel={(max_vel if max_vel is not None else 0.0):.5f} m/s  step={step + 1}/{total_steps}"
             if on_log:
                 on_log(line)
 
@@ -670,8 +1114,8 @@ def extract_contacts(scene, particle_ids, container_ids, depth_tol=1e-5) -> list
                 entity_b=b,
                 is_particle_particle=is_pp,
                 is_particle_container=is_pc,
-                position=np.asarray(_contact_pos(c), dtype=float),
-                normal=np.asarray(c.normal, dtype=float),
+                position=_as_vec3_any(_contact_pos(c)),
+                normal=_as_vec3_any(c.normal),
                 depth=float(c.depth),
                 force=force,
                 contact_area=area,
@@ -680,14 +1124,17 @@ def extract_contacts(scene, particle_ids, container_ids, depth_tol=1e-5) -> list
     return out
 
 
-def compute_metrics(contacts, particle_ids) -> dict:
+def compute_metrics(contacts, particle_ids, *, container_surface_area_m2: Optional[float] = None, z_force_min_n: float = Z_CONTACT_FORCE_MIN_N) -> dict:
     pp = [c for c in contacts if c.is_particle_particle]
     pc = [c for c in contacts if c.is_particle_container]
+    f_min = float(z_force_min_n)
 
     G = nx.Graph()
     for pid in particle_ids:
         G.add_node(int(pid))
     for c in pp:
+        if not _pp_contact_strong_for_z(c, f_min):
+            continue
         G.add_edge(
             int(c.entity_a),
             int(c.entity_b),
@@ -697,26 +1144,40 @@ def compute_metrics(contacts, particle_ids) -> dict:
         )
 
     n = len(particle_ids) if particle_ids else 0
-    Z = (2 * len(pp) / n) if n else 0.0
+    pp_strong_n = sum(1 for c in pp if _pp_contact_strong_for_z(c, f_min))
+    Z = (2 * pp_strong_n / n) if n else 0.0
     contact_counts = dict(G.degree())
     n_isolated = sum(1 for pid in particle_ids if contact_counts.get(int(pid), 0) == 0)
     n_container_touching = len({int(c.entity_a) for c in pc if int(c.entity_a) in particle_ids}.union(
         {int(c.entity_b) for c in pc if int(c.entity_b) in particle_ids}
     ))
 
-    contact_points = [np.asarray(c.position, dtype=float) for c in contacts]
-    contact_normals = [np.asarray(c.normal, dtype=float) for c in contacts]
+    contact_points = [_as_vec3_any(c.position) for c in contacts]
+    contact_normals = [_as_vec3_any(c.normal) for c in contacts]
     contact_depths = [float(c.depth) for c in contacts]
     contact_forces = [float(c.force) for c in contacts if c.force is not None]
     contact_areas = [float(c.contact_area) for c in contacts if c.contact_area is not None]
 
+    total_contact_force_sum = 0.0
+    for c in contacts:
+        if c.force is None:
+            continue
+        total_contact_force_sum += abs(float(c.force))
+    area = float(container_surface_area_m2) if container_surface_area_m2 is not None else 0.0
+    system_pressure = (total_contact_force_sum / area) if (area > 0.0 and math.isfinite(area)) else 0.0
+
     return {
         "total_pp_contacts": len(pp),
+        "total_pp_contacts_strong": pp_strong_n,
         "total_pc_contacts": len(pc),
         "avg_contacts_per_particle": Z,
         "Z": Z,
+        "Z_force_threshold_N": f_min,
         "n_isolated_particles": n_isolated,
         "n_container_touching": n_container_touching,
+        "total_contact_force_sum": float(total_contact_force_sum),
+        "container_surface_area_m2": float(area) if area > 0.0 else None,
+        "system_pressure": float(system_pressure),
         "contact_points": contact_points,
         "contact_normals": contact_normals,
         "contact_depths": contact_depths,
@@ -728,6 +1189,95 @@ def compute_metrics(contacts, particle_ids) -> dict:
     }
 
 
+def compute_vertex_stress(
+    entities: list,
+    contacts: list,
+    original_mesh,
+    particle_ids: set,
+    sigma: float = 0.4,
+) -> dict[int, list[float]]:
+    """
+    Per-vertex Hertzian-style stress proxy from contact positions and forces, globally normalized to [0, 1].
+    """
+    if original_mesh is None or len(original_mesh.vertices) == 0:
+        return {}
+
+    verts_local = np.asarray(original_mesh.vertices, dtype=np.float64)
+    n_verts = int(verts_local.shape[0])
+    vn = np.asarray(original_mesh.vertex_normals, dtype=np.float64)
+    if vn.shape != (n_verts, 3):
+        m = original_mesh.copy()
+        vn = np.asarray(m.vertex_normals, dtype=np.float64)
+    if vn.shape != (n_verts, 3):
+        vn = np.zeros((n_verts, 3), dtype=np.float64)
+        vn[:, 1] = 1.0
+
+    sig = float(sigma)
+    if not math.isfinite(sig) or sig <= 0.0:
+        sig = 0.4
+    denom = 2.0 * sig**2
+
+    raw: dict[int, np.ndarray] = {}
+    for e in entities:
+        eid = _entity_id(e)
+        if eid not in particle_ids:
+            continue
+        pos, quat_xyzw = _entity_pose(e)
+        qx, qy, qz, qw = quat_xyzw
+        R = Rotation.from_quat(np.array([qx, qy, qz, qw], dtype=np.float64)).as_matrix()
+        world_verts = (R @ verts_local.T).T + pos.reshape(1, 3)
+        n_world = (R @ vn.T).T
+        norms = np.linalg.norm(n_world, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-12)
+        n_world = n_world / norms
+
+        rel = [
+            c
+            for c in contacts
+            if (int(c.entity_a) == eid or int(c.entity_b) == eid)
+            and (bool(c.is_particle_particle) or bool(c.is_particle_container))
+        ]
+
+        stress = np.zeros(n_verts, dtype=np.float64)
+        if not rel:
+            raw[eid] = stress
+            continue
+
+        for c in rel:
+            p_w = np.asarray(c.position, dtype=np.float64).ravel()[:3]
+            if c.force is not None:
+                fm = abs(float(c.force))
+            else:
+                fm = float(c.depth) * 1e6
+            if not math.isfinite(fm):
+                fm = 0.0
+            vec = p_w.reshape(1, 3) - world_verts
+            dist = np.linalg.norm(vec, axis=1)
+            dist = np.maximum(dist, 1e-6)
+            vec_n = vec / dist.reshape(-1, 1)
+            cos_t = np.sum(vec_n * n_world, axis=1)
+            cos_t = np.clip(cos_t, -1.0, 1.0)
+            angle = np.arccos(cos_t)
+            stress += fm * np.exp(-(angle**2) / denom)
+
+        raw[eid] = stress
+
+    global_max = 0.0
+    for arr in raw.values():
+        if arr.size:
+            global_max = max(global_max, float(np.max(arr)))
+
+    out: dict[int, list[float]] = {}
+    if global_max == 0.0:
+        for eid, arr in raw.items():
+            out[int(eid)] = [0.0] * int(arr.size)
+    else:
+        inv = 1.0 / global_max
+        for eid, arr in raw.items():
+            out[int(eid)] = [float(x * inv) for x in arr.tolist()]
+    return out
+
+
 def contact_efficiency(metrics, entities, mesh) -> float:
     return metrics["total_pp_contacts"] / (mesh.volume * len(entities))
 
@@ -737,7 +1287,7 @@ def weighted_contact_efficiency(metrics, entities, mesh) -> float:
     return total_force / (mesh.volume * len(entities))
 
 
-def export_results(entities, metrics, output_dir, save_hdf5, save_csv):
+def export_results(entities, metrics, output_dir, save_hdf5, save_csv, vertex_stress: Optional[dict[int, list[float]]] = None):
     os.makedirs(output_dir, exist_ok=True)
 
     rows = []
@@ -800,6 +1350,16 @@ def export_results(entities, metrics, output_dir, save_hdf5, save_csv):
         df_points.to_csv(pts_path, index=False)
         print(f"Wrote CSV: {p_path}, {c_path}, {pts_path}")
 
+    if save_csv and vertex_stress:
+        vs_path = os.path.join(output_dir, "vertex_stress.csv")
+        vs_rows: list[dict[str, float | int]] = []
+        for eid, vals in vertex_stress.items():
+            for vi, s in enumerate(vals):
+                vs_rows.append({"particle_id": int(eid), "vertex_index": int(vi), "stress": float(s)})
+        if vs_rows:
+            pd.DataFrame(vs_rows).to_csv(vs_path, index=False)
+            print(f"Wrote CSV: {vs_path}")
+
     if save_hdf5:
         h5_path = os.path.join(output_dir, "results.h5")
         with h5py.File(h5_path, "w") as f:
@@ -808,18 +1368,26 @@ def export_results(entities, metrics, output_dir, save_hdf5, save_csv):
             f.create_dataset("contact_normals", data=nrm)
             f.attrs["Z"] = float(metrics["Z"])
             f.attrs["total_pp"] = int(metrics["total_pp_contacts"])
+            f.attrs["total_pp_strong"] = int(metrics.get("total_pp_contacts_strong", 0))
             f.attrs["total_pc"] = int(metrics["total_pc_contacts"])
             f.attrs["n_isolated"] = int(metrics["n_isolated_particles"])
             f.attrs["n_container_touch"] = int(metrics["n_container_touching"])
+            f.attrs["system_pressure"] = float(metrics.get("system_pressure", 0.0))
+            if vertex_stress is not None:
+                grp = f.create_group("vertex_stress")
+                for eid, vals in vertex_stress.items():
+                    grp.create_dataset(str(eid), data=np.array(vals, dtype=np.float32))
         print(f"Wrote HDF5: {h5_path}")
 
     print("── Contact Analysis Summary ─────────────────────────────────")
     print(f"Particles simulated:               {len(entities)}")
     print(f"Total particle-particle contacts:  {metrics['total_pp_contacts']}")
+    print(f"Strong PP (|F|>{metrics.get('Z_force_threshold_N', Z_CONTACT_FORCE_MIN_N):.0e} N): {metrics.get('total_pp_contacts_strong', 0)}")
     print(f"Total particle-container contacts: {metrics['total_pc_contacts']}")
-    print(f"Avg contacts per particle (Z):     {metrics['Z']:.3f}")
+    print(f"Avg contacts per particle (Z):     {metrics['Z']:.3f}  (force-thresholded PP graph)")
     print(f"Isolated particles (Z=0):          {metrics['n_isolated_particles']}")
     print(f"Particles touching container:      {metrics['n_container_touching']}")
+    print(f"System pressure (Σ|F|/A):          {float(metrics.get('system_pressure', 0.0)):.4f} Pa")
     if metrics["contact_forces"]:
         forces = np.asarray(metrics["contact_forces"], dtype=float)
         print(f"Mean contact force:                {forces.mean():.4f} N")
@@ -854,14 +1422,16 @@ def visualize_results(entities, metrics, original_mesh):
     base_poly = pv.PolyData(np.asarray(original_mesh.vertices, dtype=float).copy(), faces)
 
     for e in entities:
-        pos = e.get_pos()
+        px, py, pz = e.get_pos()
+        pos = _vec3_from_xyz(px, py, pz)
         qw, qx, qy, qz = e.get_quat()
+        qx, qy, qz, qw = _quat_tuple_xyzw(qw, qx, qy, qz)
         c = int(counts.get(_entity_id(e), 0))
         t = c / max_c
 
         poly = base_poly.copy(deep=True)
         rot = Rotation.from_quat([qx, qy, qz, qw]).as_matrix()
-        verts = (rot @ poly.points.T).T + np.asarray(pos, dtype=float)
+        verts = (rot @ poly.points.T).T + pos
         poly.points = verts
         poly["t"] = np.full((poly.n_points,), float(t), dtype=float)
         plotter.add_mesh(
@@ -909,12 +1479,21 @@ def main():
         else:
             raise
 
-    sim_options = gs.options.SimOptions(dt=args.dt, substeps=args.substeps, gravity=GRAVITY)
+    sim_options = make_sim_options(
+        gs,
+        {"DT": args.dt, "SUBSTEPS": args.substeps, "GRAVITY": GRAVITY},
+    )
     rigid_options = gs.options.RigidOptions(use_gjk_collision=True)
+    fem_options = make_fem_options(gs, {"FEM_NEWTON_ITERATIONS": int(DEFAULT_CONFIG.get("FEM_NEWTON_ITERATIONS", 4))})
 
     # Avoid building the visualizer unless explicitly requested.
     # This prevents the viewer from throttling the run (e.g., ~0.1 FPS on CPU).
-    scene = gs.Scene(sim_options=sim_options, rigid_options=rigid_options, show_viewer=bool(args.show_viewer))
+    scene = gs.Scene(
+        sim_options=sim_options,
+        rigid_options=rigid_options,
+        fem_options=fem_options,
+        show_viewer=bool(args.show_viewer),
+    )
 
     physics_mesh, original_mesh = load_particle_mesh(PARTICLE_FILE, SCALE_FACTOR)
     container_ids, env_info = create_environment(
@@ -942,15 +1521,35 @@ def main():
     )
     particle_ids = {_entity_id(e) for e in entities}
     scene.build()
-    run_simulation(scene, entities, args.dt, args.substeps, args.duration, SETTLE_THRESHOLD)
+    run_simulation(
+        scene,
+        entities,
+        args.dt,
+        args.substeps,
+        args.duration,
+        SETTLE_THRESHOLD,
+        update_visualizer=bool(args.show_viewer),
+    )
     contacts = extract_contacts(scene, particle_ids, container_ids, CONTACT_DEPTH_TOL)
-    metrics = compute_metrics(contacts, particle_ids)
+    metrics = compute_metrics(
+        contacts,
+        particle_ids,
+        container_surface_area_m2=container_surface_area_m2(ENVIRONMENT_TYPE, DEFAULT_CONFIG),
+    )
+    vertex_stress = compute_vertex_stress(
+        entities,
+        contacts,
+        original_mesh,
+        particle_ids,
+        sigma=float(DEFAULT_CONFIG.get("STRESS_SIGMA", 0.4)),
+    )
     export_results(
         entities,
         metrics,
         OUTPUT_DIR,
         save_hdf5=(SAVE_HDF5 and (not args.no_hdf5)),
         save_csv=(SAVE_CSV and (not args.no_csv)),
+        vertex_stress=vertex_stress,
     )
     if args.show_viewer:
         visualize_results(entities, metrics, original_mesh)

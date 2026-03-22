@@ -24,12 +24,12 @@ function normalizeGraphLinks(metrics: MetricsResponse): ContactGraphLink[] {
 }
 
 export default function Dashboard(props: {
-  zSeries: Array<{ t: number; Z: number }>
-  maxVelSeries: Array<{ t: number; max_vel: number }>
+  keSeries: Array<{ t: number; kinetic_energy: number }>
+  pressureSeries: Array<{ t: number; system_pressure: number }>
   metrics: MetricsResponse
 }) {
-  const { zSeries, maxVelSeries, metrics } = props
-  const [open, setOpen] = useState({ z: true, velocity: true, chains: false })
+  const { keSeries, pressureSeries, metrics } = props
+  const [open, setOpen] = useState({ ke: true, pressure: true, chains: false })
   const graphRef = useRef<SVGSVGElement | null>(null)
   const links = useMemo(() => normalizeGraphLinks(metrics), [metrics])
   const forceValues = useMemo(
@@ -102,7 +102,12 @@ export default function Dashboard(props: {
   const cardStyle: React.CSSProperties = { background: '#f8fbff', border: '1px solid #d4dfec', borderRadius: 10, padding: 10 }
   const panelHeader = (title: string, key: keyof typeof open) => (
     <button
-      onClick={() => setOpen((p) => ({ ...p, [key]: !p[key] }))}
+      type="button"
+      onClick={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        setOpen((p) => ({ ...p, [key]: !p[key] }))
+      }}
       style={{ width: '100%', border: 'none', background: 'transparent', color: '#1d3553', fontWeight: 700, textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', padding: 0, marginBottom: 8 }}
     >
       <span>{title}</span>
@@ -113,30 +118,30 @@ export default function Dashboard(props: {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
       <div style={cardStyle}>
-        {panelHeader('Coordination Number (Z) over time', 'z')}
-        {open.z ? (
-          <div style={{ width: '100%', height: 140 }}>
+        {panelHeader('Total kinetic energy (J)', 'ke')}
+        {open.ke ? (
+          <div style={{ width: '100%', height: 108 }}>
             <ResponsiveContainer>
-              <LineChart data={zSeries}>
+              <LineChart data={keSeries}>
                 <XAxis dataKey="t" tick={{ fill: '#4f6f93', fontSize: 11 }} />
-                <YAxis tick={{ fill: '#4f6f93', fontSize: 11 }} />
-                <Tooltip />
-                <Line type="monotone" dataKey="Z" stroke="#3a86ff" strokeWidth={2} dot={false} />
+                <YAxis tick={{ fill: '#4f6f93', fontSize: 11 }} tickFormatter={(v) => (typeof v === 'number' ? v.toExponential(0) : String(v))} />
+                <Tooltip formatter={(v) => (typeof v === 'number' ? v.toExponential(3) : String(v))} />
+                <Line type="monotone" dataKey="kinetic_energy" stroke="#06d6a0" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           </div>
         ) : null}
       </div>
-      <div style={cardStyle}>
-        {panelHeader('Max velocity over time', 'velocity')}
-        {open.velocity ? (
-          <div style={{ width: '100%', height: 140 }}>
+      <div style={{ ...cardStyle, gridColumn: '1 / span 2' }}>
+        {panelHeader('System pressure P (Σ|F| / container area, jamming)', 'pressure')}
+        {open.pressure ? (
+          <div style={{ width: '100%', height: 108 }}>
             <ResponsiveContainer>
-              <LineChart data={maxVelSeries}>
+              <LineChart data={pressureSeries}>
                 <XAxis dataKey="t" tick={{ fill: '#4f6f93', fontSize: 11 }} />
-                <YAxis tick={{ fill: '#4f6f93', fontSize: 11 }} />
-                <Tooltip />
-                <Line type="monotone" dataKey="max_vel" stroke="#ff6b35" strokeWidth={2} dot={false} />
+                <YAxis tick={{ fill: '#4f6f93', fontSize: 11 }} tickFormatter={(v) => (typeof v === 'number' ? v.toExponential(0) : String(v))} />
+                <Tooltip formatter={(v) => (typeof v === 'number' ? v.toExponential(3) : String(v))} />
+                <Line type="monotone" dataKey="system_pressure" stroke="#e76f51" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -152,7 +157,7 @@ export default function Dashboard(props: {
               <div style={{ color: '#5b7598', fontSize: 11 }}>high force</div>
             </div>
             <div style={{ color: '#5b7598', fontSize: 11, marginBottom: 8 }}>|F| range: {minForce.toExponential(2)} to {maxForce.toExponential(2)}</div>
-            <svg ref={graphRef} style={{ width: '100%', height: 170 }} />
+            <svg ref={graphRef} style={{ width: '100%', height: 148 }} />
           </>
         ) : (
           <div style={{ color: '#5b7598', fontSize: 12 }}>Expand to view the force-chain graph.</div>

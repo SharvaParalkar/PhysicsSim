@@ -10,4 +10,4 @@ pyvista
 fastapi
 websockets
 uvicorn
-scipy
+tqdm
