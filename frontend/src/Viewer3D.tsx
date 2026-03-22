@@ -801,8 +801,8 @@ export default function Viewer3D(props: Viewer3DProps) {
         <div
           style={{
             position: 'absolute',
-            top: 10,
-            left: 10,
+            bottom: 10,
+            right: 10,
             zIndex: 2,
             background: 'rgba(255,255,255,0.88)',
             border: '1px solid #d4dfec',
@@ -811,6 +811,7 @@ export default function Viewer3D(props: Viewer3DProps) {
             fontSize: 11,
             color: '#1d3553',
             pointerEvents: 'none',
+            maxWidth: 'min(240px, calc(100% - 20px))',
           }}
         >
           <div style={{ fontWeight: 700, marginBottom: 6 }}>Contact stress</div>

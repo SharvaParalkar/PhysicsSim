@@ -47,6 +47,15 @@ function matchesFastPhysicsPreset(c: SimulationConfig): boolean {
   return c.GRAVITY.every((v, i) => Math.abs(v - f.GRAVITY[i]) < 1e-6)
 }
 
+const MODE_LABEL: Record<'idle' | 'falling' | 'settled', string> = {
+  idle: 'Ready',
+  falling: 'Running',
+  settled: 'Finished',
+}
+
+const FAST_MODE_HELP =
+  'Rigid-style preset: looser settle threshold, dt 1/120, 2 substeps, analytical off, shorter drop, Vogel spread, stronger gravity. Uncheck to restore standard settings.'
+
 export default function App() {
   const [mode, setMode] = useState<'idle' | 'falling' | 'settled'>('idle')
   const [logs, setLogs] = useState<string[]>([])
@@ -58,7 +67,6 @@ export default function App() {
     n_container_touch: 0,
     system_pressure: 0,
   })
-  const [simTime, setSimTime] = useState<number>(0)
   const [runSignal, setRunSignal] = useState(0)
   const [keSeries, setKeSeries] = useState<Array<{ t: number; kinetic_energy: number }>>([])
   const [metricsResponse, setMetricsResponse] = useState<MetricsResponse>({
@@ -102,6 +110,15 @@ export default function App() {
   const liveFrameSerialRef = useRef(0)
   const pendingStartRef = useRef<string | null>(null)
   const [transparentContainer, setTransparentContainer] = useState(false)
+  const [wsStatus, setWsStatus] = useState<'connecting' | 'open' | 'closed'>(() => {
+    const ws = getSharedSimulationSocket()
+    if (ws.readyState === WebSocket.OPEN) return 'open'
+    if (ws.readyState === WebSocket.CONNECTING) return 'connecting'
+    return 'closed'
+  })
+  const [sectionOpen, setSectionOpen] = useState({ simulation: true, environment: true, advanced: false })
+  const [logOpen, setLogOpen] = useState(false)
+  const [showAdvancedHud, setShowAdvancedHud] = useState(false)
 
   const refreshResults = useCallback(async () => {
     const [mRes, rRes] = await Promise.all([fetch('http://localhost:8000/metrics'), fetch('http://localhost:8000/results')])
@@ -174,16 +191,12 @@ export default function App() {
     [],
   )
 
-  const onSimTimeRef = useRef(setSimTime)
   const onFrameMetricsRef = useRef(handleFrameMetrics)
   const onLiveMetricsRef = useRef(handleLiveMetrics)
   const onLogsRef = useRef(appendLog)
   const onModeChangeRef = useRef(setMode)
   const onRunCompleteRef = useRef(handleRunComplete)
 
-  useEffect(() => {
-    onSimTimeRef.current = setSimTime
-  }, [setSimTime])
   useEffect(() => {
     onFrameMetricsRef.current = handleFrameMetrics
   }, [handleFrameMetrics])
@@ -218,6 +231,24 @@ export default function App() {
     if (runSignal === 0) return
     setSettledVertexStress(null)
   }, [runSignal])
+
+  useEffect(() => {
+    const ws = getSharedSimulationSocket()
+    const sync = () => {
+      if (ws.readyState === WebSocket.OPEN) setWsStatus('open')
+      else if (ws.readyState === WebSocket.CONNECTING) setWsStatus('connecting')
+      else setWsStatus('closed')
+    }
+    ws.addEventListener('open', sync)
+    ws.addEventListener('close', sync)
+    ws.addEventListener('error', sync)
+    sync()
+    return () => {
+      ws.removeEventListener('open', sync)
+      ws.removeEventListener('close', sync)
+      ws.removeEventListener('error', sync)
+    }
+  }, [])
 
   useEffect(() => {
     const ws = getSharedSimulationSocket()
@@ -284,7 +315,6 @@ export default function App() {
           particles: fm.particles ?? [],
           serial: liveFrameSerialRef.current,
         }
-        onSimTimeRef.current(typeof fm.t === 'number' ? fm.t : 0)
         onFrameMetricsRef.current({
           t: typeof msg.t === 'number' ? msg.t : 0,
           max_vel: typeof msg.max_vel === 'number' ? msg.max_vel : 0,
@@ -370,7 +400,6 @@ export default function App() {
       live_metrics_every: 60,
       config: simConfigRef.current,
     })
-    setSimTime(0)
     liveFrameSerialRef.current = 0
     liveFrameRef.current = { step: -99999, t: 0, particles: [], serial: 0 }
     if (ws.readyState === WebSocket.OPEN) {
@@ -407,7 +436,7 @@ export default function App() {
 
   const metricsGridStyle: React.CSSProperties = {
     display: 'grid',
-    gridTemplateColumns: 'repeat(2, 1fr)',
+    gridTemplateColumns: 'repeat(3, 1fr)',
     gap: 6,
     background: '#edf4fc',
     border: '1px solid #d4dfec',
@@ -417,6 +446,28 @@ export default function App() {
 
   const metricsLabelStyle: React.CSSProperties = { color: '#6b829f', fontSize: 10, lineHeight: 1.2 }
   const metricsValueStyle: React.CSSProperties = { color: '#173454', fontWeight: 700, fontSize: 12, lineHeight: 1.2 }
+
+  const sectionToggleStyle: React.CSSProperties = {
+    width: '100%',
+    border: 'none',
+    background: 'transparent',
+    color: '#1d3553',
+    fontWeight: 700,
+    fontSize: 12,
+    textAlign: 'left',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    cursor: 'pointer',
+    padding: '2px 0 6px',
+  }
+
+  const formatPressure = (pa: number | undefined) => {
+    if (pa == null || !Number.isFinite(pa)) return '—'
+    const a = Math.abs(pa)
+    if (a >= 1e6 || a < 1e-2) return pa.toExponential(2)
+    return pa.toFixed(1)
+  }
 
   const modularJammingHeuristic = useMemo(
     () =>
@@ -447,7 +498,6 @@ export default function App() {
               if (mode === 'falling') return
               setMode('falling')
               setLogs([])
-              setSimTime(0)
               setKeSeries([])
               setPressureSeries([])
               setLiveHud({ t: 0, max_vel: 0, kinetic_energy: 0, system_pressure: 0 })
@@ -510,340 +560,431 @@ export default function App() {
               gap: 8,
             }}
           >
-            <div style={{ display: 'flex', gap: 10 }}>
-              <div style={{ flex: 1 }}>
-                <div style={labelStyle}>mode</div>
-                <div style={valueStyle}>{mode}</div>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ flex: '1 1 120px' }}>
+                <div style={labelStyle}>Status</div>
+                <div style={valueStyle}>{MODE_LABEL[mode]}</div>
               </div>
-              <div style={{ flex: 1 }}>
-                <div style={labelStyle}>t (s)</div>
-                <div style={valueStyle}>{simTime.toFixed(2)}</div>
+              <div style={{ flex: '1 1 120px' }}>
+                <div style={labelStyle}>Server stream</div>
+                <div style={{ ...valueStyle, display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                  <span
+                    aria-hidden
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: 999,
+                      flexShrink: 0,
+                      background:
+                        wsStatus === 'open' ? '#2a9d8f' : wsStatus === 'connecting' ? '#e9c46a' : '#9aa5b5',
+                    }}
+                  />
+                  {wsStatus === 'open' ? 'Connected' : wsStatus === 'connecting' ? 'Connecting…' : 'Disconnected'}
+                </div>
               </div>
             </div>
 
             <div style={{ display: 'grid', gap: 8 }}>
-              <div style={{ ...labelStyle, marginTop: 0 }}>Simulation Config</div>
-            <label style={{ ...labelStyle, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-              <input
-                type="checkbox"
-                checked={matchesFastPhysicsPreset(simConfig)}
-                disabled={simConfig.SEQUENTIAL_DROP === true}
-                onChange={(e) =>
-                  setSimConfig((p) => ({
-                    ...p,
-                    ...(e.target.checked ? FAST_PHYSICS_TUNING : STANDARD_PHYSICS_TUNING),
-                  }))
-                }
-              />
-              <span>
-                Fast mode (rigid settling): looser settle threshold, dt 1/120, 2 substeps, analytical off, shorter drop,
-                Vogel spread, stronger gravity. Uncheck to restore standard throughput settings.
-              </span>
-            </label>
-            <label style={labelStyle}>
-              N_PARTICLES
-              <input
-                type="number"
-                min={1}
-                value={simConfig.N_PARTICLES}
-                onChange={(e) => setSimConfig((p) => ({ ...p, N_PARTICLES: Math.max(1, Number(e.target.value || 1)) }))}
-                style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
-              />
-            </label>
-            <label style={labelStyle}>
-              YOUNGS_MODULUS (Pa, &gt;1e8 = rigid): {simConfig.YOUNGS_MODULUS.toExponential(2)}
-              <input
-                type="range"
-                min={4}
-                max={9}
-                step={0.01}
-                value={Math.log10(Math.max(1e4, Math.min(1e9, simConfig.YOUNGS_MODULUS)))}
-                onChange={(e) =>
-                  setSimConfig((p) => ({
-                    ...p,
-                    YOUNGS_MODULUS: Math.min(1e9, 10 ** Number(e.target.value)),
-                  }))
-                }
-                style={{ width: '100%' }}
-              />
-            </label>
-            <label style={labelStyle}>
-              Stress spread (STRESS_SIGMA, rad): {simConfig.STRESS_SIGMA?.toFixed(2) ?? '0.40'}
-              <input
-                type="range"
-                min={0.1}
-                max={1.5}
-                step={0.05}
-                value={simConfig.STRESS_SIGMA ?? 0.4}
-                onChange={(e) =>
-                  setSimConfig((p) => ({
-                    ...p,
-                    STRESS_SIGMA: Number(e.target.value),
-                  }))
-                }
-                style={{ width: '100%' }}
-              />
-            </label>
-            <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <input
-                type="checkbox"
-                checked={simConfig.ANALYTICAL_MODE !== false}
-                disabled={simConfig.SEQUENTIAL_DROP === true}
-                onChange={(e) => setSimConfig((p) => ({ ...p, ANALYTICAL_MODE: e.target.checked }))}
-              />
-              <span>Analytical mode (fast fall, then 500 Hz / 16 substeps)</span>
-            </label>
-            <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <input
-                type="checkbox"
-                checked={simConfig.SEQUENTIAL_DROP === true}
-                onChange={(e) =>
-                  setSimConfig((p) => ({
-                    ...p,
-                    SEQUENTIAL_DROP: e.target.checked,
-                  }))
-                }
-              />
-              <span>Sequential drop (FEM: one new particle per scene rebuild)</span>
-            </label>
-            <label style={labelStyle}>
-              SEQUENTIAL_STAGE_DURATION (s, blank = auto)
-              <input
-                type="number"
-                min={0.05}
-                step={0.1}
-                placeholder="auto"
-                value={simConfig.SEQUENTIAL_STAGE_DURATION ?? ''}
-                disabled={simConfig.SEQUENTIAL_DROP !== true}
-                onChange={(e) => {
-                  const raw = e.target.value
-                  setSimConfig((p) => ({
-                    ...p,
-                    SEQUENTIAL_STAGE_DURATION: raw === '' ? null : Math.max(0.05, Number(raw)),
-                  }))
-                }}
-                style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
-              />
-            </label>
-            <label style={labelStyle}>
-              DT (s): {simConfig.DT.toFixed(5)} (throughput default 1/240)
-              <input
-                type="range"
-                min={0.001}
-                max={0.01}
-                step={0.00025}
-                value={simConfig.DT}
-                onChange={(e) => setSimConfig((p) => ({ ...p, DT: Number(e.target.value) }))}
-                style={{ width: '100%' }}
-              />
-            </label>
-            <label style={labelStyle}>
-              SUBSTEPS: {simConfig.SUBSTEPS}
-              <input
-                type="range"
-                min={1}
-                max={20}
-                step={1}
-                value={simConfig.SUBSTEPS}
-                onChange={(e) => setSimConfig((p) => ({ ...p, SUBSTEPS: Math.round(Number(e.target.value)) }))}
-                style={{ width: '100%' }}
-              />
-            </label>
-            <label style={labelStyle}>
-              SIM_DURATION (s)
-              <input
-                type="number"
-                step={0.5}
-                min={0.5}
-                value={simConfig.SIM_DURATION}
-                onChange={(e) => setSimConfig((p) => ({ ...p, SIM_DURATION: Number(e.target.value) }))}
-                style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
-              />
-            </label>
-            <label style={labelStyle}>
-              POISSON_RATIO
-              <input
-                type="number"
-                step={0.01}
-                min={0}
-                max={0.49}
-                value={simConfig.POISSON_RATIO}
-                onChange={(e) => setSimConfig((p) => ({ ...p, POISSON_RATIO: Number(e.target.value) }))}
-                style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
-              />
-            </label>
-            <label style={labelStyle}>
-              ENVIRONMENT_TYPE
-              <select
-                value={simConfig.ENVIRONMENT_TYPE}
-                onChange={(e) => {
-                  const v = e.target.value as SimulationConfig['ENVIRONMENT_TYPE']
-                  setSimConfig((p) => ({ ...p, ENVIRONMENT_TYPE: v }))
-                  if (v === 'plate') setTransparentContainer(false)
-                }}
-                style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+              <div style={{ ...labelStyle, marginTop: 0 }}>Configuration</div>
+
+              <button
+                type="button"
+                onClick={() => setSectionOpen((s) => ({ ...s, simulation: !s.simulation }))}
+                style={sectionToggleStyle}
               >
-                <option value="plate">plate</option>
-                <option value="cylinder">cylinder</option>
-              </select>
-            </label>
-            {simConfig.ENVIRONMENT_TYPE === 'plate' ? (
-              <>
-                <label style={labelStyle}>
-                  Plate size (PLATE_SIZE, m)
-                  <input
-                    type="number"
-                    step={0.05}
-                    min={0.1}
-                    value={simConfig.PLATE_SIZE}
-                    onChange={(e) => setSimConfig((p) => ({ ...p, PLATE_SIZE: Number(e.target.value) }))}
-                    style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
-                  />
-                </label>
-                <label style={labelStyle}>
-                  Plate wall height (PLATE_WALL_HEIGHT, m)
-                  <input
-                    type="number"
-                    step={0.01}
-                    min={0}
-                    value={simConfig.PLATE_WALL_HEIGHT}
-                    onChange={(e) => setSimConfig((p) => ({ ...p, PLATE_WALL_HEIGHT: Number(e.target.value) }))}
-                    style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
-                  />
-                </label>
-              </>
-            ) : (
-              <label style={labelStyle}>
-                CYLINDER_DIAMETER (m)
-                <input
-                  type="number"
-                  step={0.01}
-                  min={0.05}
-                  value={simConfig.CYLINDER_DIAMETER}
-                  onChange={(e) => setSimConfig((p) => ({ ...p, CYLINDER_DIAMETER: Number(e.target.value) }))}
-                  style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
-                />
-              </label>
-            )}
-            <label style={labelStyle}>
-              DROP_HEIGHT (m)
-              <input
-                type="number"
-                step={0.01}
-                min={0.01}
-                value={simConfig.DROP_HEIGHT}
-                onChange={(e) => setSimConfig((p) => ({ ...p, DROP_HEIGHT: Number(e.target.value) }))}
-                style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
-              />
-            </label>
-            <label style={labelStyle}>
-              DROP_SPREAD (0 = column at origin)
-              <input
-                type="number"
-                step={0.05}
-                min={0}
-                max={1}
-                value={simConfig.DROP_SPREAD}
-                onChange={(e) => setSimConfig((p) => ({ ...p, DROP_SPREAD: Number(e.target.value) }))}
-                style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
-              />
-            </label>
-            <label style={labelStyle}>
-              SETTLE_THRESHOLD (m/s)
-              <input
-                type="number"
-                step={0.0005}
-                min={1e-6}
-                value={simConfig.SETTLE_THRESHOLD}
-                onChange={(e) => setSimConfig((p) => ({ ...p, SETTLE_THRESHOLD: Number(e.target.value) }))}
-                style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
-              />
-            </label>
-            <label style={labelStyle}>
-              GRAVITY (m/s²) X, Y, Z
-              <div style={{ display: 'flex', gap: 6 }}>
-                {([0, 1, 2] as const).map((i) => (
-                  <input
-                    key={i}
-                    type="number"
-                    step={0.1}
-                    value={simConfig.GRAVITY[i]}
-                    onChange={(e) => {
-                      const v = Number(e.target.value)
-                      setSimConfig((p) => {
-                        const g: [number, number, number] = [p.GRAVITY[0], p.GRAVITY[1], p.GRAVITY[2]]
-                        g[i] = v
-                        return { ...p, GRAVITY: g }
-                      })
-                    }}
-                    style={{ flex: 1, border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
-                  />
-                ))}
-              </div>
-            </label>
+                <span>Simulation</span>
+                <span style={{ color: '#55779f', fontSize: 11 }}>{sectionOpen.simulation ? 'Collapse' : 'Expand'}</span>
+              </button>
+              {sectionOpen.simulation ? (
+                <>
+                  <label style={{ ...labelStyle, display: 'flex', alignItems: 'flex-start', gap: 8 }} title={FAST_MODE_HELP}>
+                    <input
+                      type="checkbox"
+                      checked={matchesFastPhysicsPreset(simConfig)}
+                      disabled={simConfig.SEQUENTIAL_DROP === true}
+                      onChange={(e) =>
+                        setSimConfig((p) => ({
+                          ...p,
+                          ...(e.target.checked ? FAST_PHYSICS_TUNING : STANDARD_PHYSICS_TUNING),
+                        }))
+                      }
+                    />
+                    <span>Fast preset (rigid-style settling)</span>
+                  </label>
+                  <label style={labelStyle}>
+                    Particle count
+                    <input
+                      type="number"
+                      min={1}
+                      value={simConfig.N_PARTICLES}
+                      onChange={(e) => setSimConfig((p) => ({ ...p, N_PARTICLES: Math.max(1, Number(e.target.value || 1)) }))}
+                      style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                    />
+                  </label>
+                  <label style={labelStyle}>
+                    Young&apos;s modulus (Pa); ≥1e8 ≈ rigid: {simConfig.YOUNGS_MODULUS.toExponential(2)}
+                    <input
+                      type="range"
+                      min={4}
+                      max={9}
+                      step={0.01}
+                      value={Math.log10(Math.max(1e4, Math.min(1e9, simConfig.YOUNGS_MODULUS)))}
+                      onChange={(e) =>
+                        setSimConfig((p) => ({
+                          ...p,
+                          YOUNGS_MODULUS: Math.min(1e9, 10 ** Number(e.target.value)),
+                        }))
+                      }
+                      style={{ width: '100%' }}
+                    />
+                  </label>
+                  <label style={labelStyle}>
+                    Stress spread σ (rad): {simConfig.STRESS_SIGMA?.toFixed(2) ?? '0.40'}
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={1.5}
+                      step={0.05}
+                      value={simConfig.STRESS_SIGMA ?? 0.4}
+                      onChange={(e) =>
+                        setSimConfig((p) => ({
+                          ...p,
+                          STRESS_SIGMA: Number(e.target.value),
+                        }))
+                      }
+                      style={{ width: '100%' }}
+                    />
+                  </label>
+                  <label style={labelStyle}>
+                    Poisson ratio
+                    <input
+                      type="number"
+                      step={0.01}
+                      min={0}
+                      max={0.49}
+                      value={simConfig.POISSON_RATIO}
+                      onChange={(e) => setSimConfig((p) => ({ ...p, POISSON_RATIO: Number(e.target.value) }))}
+                      style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                    />
+                  </label>
+                  <label style={labelStyle}>
+                    Max duration (s)
+                    <input
+                      type="number"
+                      step={0.5}
+                      min={0.5}
+                      value={simConfig.SIM_DURATION}
+                      onChange={(e) => setSimConfig((p) => ({ ...p, SIM_DURATION: Number(e.target.value) }))}
+                      style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                    />
+                  </label>
+                  <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={simConfig.SEQUENTIAL_DROP === true}
+                      onChange={(e) =>
+                        setSimConfig((p) => ({
+                          ...p,
+                          SEQUENTIAL_DROP: e.target.checked,
+                        }))
+                      }
+                    />
+                    <span>Sequential drop (one particle per rebuild)</span>
+                  </label>
+                  <label style={labelStyle}>
+                    Stage duration (s, blank = auto)
+                    <input
+                      type="number"
+                      min={0.05}
+                      step={0.1}
+                      placeholder="auto"
+                      value={simConfig.SEQUENTIAL_STAGE_DURATION ?? ''}
+                      disabled={simConfig.SEQUENTIAL_DROP !== true}
+                      onChange={(e) => {
+                        const raw = e.target.value
+                        setSimConfig((p) => ({
+                          ...p,
+                          SEQUENTIAL_STAGE_DURATION: raw === '' ? null : Math.max(0.05, Number(raw)),
+                        }))
+                      }}
+                      style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                    />
+                  </label>
+                </>
+              ) : null}
+
+              <button
+                type="button"
+                onClick={() => setSectionOpen((s) => ({ ...s, environment: !s.environment }))}
+                style={sectionToggleStyle}
+              >
+                <span>Environment &amp; drop</span>
+                <span style={{ color: '#55779f', fontSize: 11 }}>{sectionOpen.environment ? 'Collapse' : 'Expand'}</span>
+              </button>
+              {sectionOpen.environment ? (
+                <>
+                  <label style={labelStyle}>
+                    Container
+                    <select
+                      value={simConfig.ENVIRONMENT_TYPE}
+                      onChange={(e) => {
+                        const v = e.target.value as SimulationConfig['ENVIRONMENT_TYPE']
+                        setSimConfig((p) => ({ ...p, ENVIRONMENT_TYPE: v }))
+                        if (v === 'plate') setTransparentContainer(false)
+                      }}
+                      style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                    >
+                      <option value="plate">Flat plate</option>
+                      <option value="cylinder">Cylinder</option>
+                    </select>
+                  </label>
+                  {simConfig.ENVIRONMENT_TYPE === 'plate' ? (
+                    <>
+                      <label style={labelStyle}>
+                        Plate size (m)
+                        <input
+                          type="number"
+                          step={0.05}
+                          min={0.1}
+                          value={simConfig.PLATE_SIZE}
+                          onChange={(e) => setSimConfig((p) => ({ ...p, PLATE_SIZE: Number(e.target.value) }))}
+                          style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                        />
+                      </label>
+                      <label style={labelStyle}>
+                        Rim wall height (m)
+                        <input
+                          type="number"
+                          step={0.01}
+                          min={0}
+                          value={simConfig.PLATE_WALL_HEIGHT}
+                          onChange={(e) => setSimConfig((p) => ({ ...p, PLATE_WALL_HEIGHT: Number(e.target.value) }))}
+                          style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                        />
+                      </label>
+                    </>
+                  ) : (
+                    <label style={labelStyle}>
+                      Cylinder diameter (m)
+                      <input
+                        type="number"
+                        step={0.01}
+                        min={0.05}
+                        value={simConfig.CYLINDER_DIAMETER}
+                        onChange={(e) => setSimConfig((p) => ({ ...p, CYLINDER_DIAMETER: Number(e.target.value) }))}
+                        style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                      />
+                    </label>
+                  )}
+                  <label style={labelStyle}>
+                    Drop height (m)
+                    <input
+                      type="number"
+                      step={0.01}
+                      min={0.01}
+                      value={simConfig.DROP_HEIGHT}
+                      onChange={(e) => setSimConfig((p) => ({ ...p, DROP_HEIGHT: Number(e.target.value) }))}
+                      style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                    />
+                  </label>
+                  <label style={labelStyle}>
+                    Horizontal spread (0 = column at origin)
+                    <input
+                      type="number"
+                      step={0.05}
+                      min={0}
+                      max={1}
+                      value={simConfig.DROP_SPREAD}
+                      onChange={(e) => setSimConfig((p) => ({ ...p, DROP_SPREAD: Number(e.target.value) }))}
+                      style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                    />
+                  </label>
+                </>
+              ) : null}
+
+              <button
+                type="button"
+                onClick={() => setSectionOpen((s) => ({ ...s, advanced: !s.advanced }))}
+                style={sectionToggleStyle}
+              >
+                <span>Advanced solver</span>
+                <span style={{ color: '#55779f', fontSize: 11 }}>{sectionOpen.advanced ? 'Collapse' : 'Expand'}</span>
+              </button>
+              {sectionOpen.advanced ? (
+                <>
+                  <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={simConfig.ANALYTICAL_MODE !== false}
+                      disabled={simConfig.SEQUENTIAL_DROP === true || matchesFastPhysicsPreset(simConfig)}
+                      title={
+                        simConfig.SEQUENTIAL_DROP
+                          ? 'Disabled while sequential drop is on.'
+                          : matchesFastPhysicsPreset(simConfig)
+                            ? 'Fast preset keeps analytical handoff off; uncheck Fast preset to edit.'
+                            : undefined
+                      }
+                      onChange={(e) => setSimConfig((p) => ({ ...p, ANALYTICAL_MODE: e.target.checked }))}
+                    />
+                    <span>Analytical handoff (fast fall, then fine contact)</span>
+                  </label>
+                  <label style={labelStyle}>
+                    Time step Δt (s): {simConfig.DT.toFixed(5)} (default 1/240)
+                    <input
+                      type="range"
+                      min={0.001}
+                      max={0.01}
+                      step={0.00025}
+                      value={simConfig.DT}
+                      onChange={(e) => setSimConfig((p) => ({ ...p, DT: Number(e.target.value) }))}
+                      style={{ width: '100%' }}
+                    />
+                  </label>
+                  <label style={labelStyle}>
+                    Substeps per frame: {simConfig.SUBSTEPS}
+                    <input
+                      type="range"
+                      min={1}
+                      max={20}
+                      step={1}
+                      value={simConfig.SUBSTEPS}
+                      onChange={(e) => setSimConfig((p) => ({ ...p, SUBSTEPS: Math.round(Number(e.target.value)) }))}
+                      style={{ width: '100%' }}
+                    />
+                  </label>
+                  <label style={labelStyle}>
+                    Settle speed threshold (m/s)
+                    <input
+                      type="number"
+                      step={0.0005}
+                      min={1e-6}
+                      value={simConfig.SETTLE_THRESHOLD}
+                      onChange={(e) => setSimConfig((p) => ({ ...p, SETTLE_THRESHOLD: Number(e.target.value) }))}
+                      style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                    />
+                  </label>
+                  <label style={labelStyle}>
+                    Gravity (m/s²) X, Y, Z
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      {([0, 1, 2] as const).map((i) => (
+                        <input
+                          key={i}
+                          type="number"
+                          step={0.1}
+                          value={simConfig.GRAVITY[i]}
+                          onChange={(e) => {
+                            const v = Number(e.target.value)
+                            setSimConfig((p) => {
+                              const g: [number, number, number] = [p.GRAVITY[0], p.GRAVITY[1], p.GRAVITY[2]]
+                              g[i] = v
+                              return { ...p, GRAVITY: g }
+                            })
+                          }}
+                          style={{ flex: 1, border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                        />
+                      ))}
+                    </div>
+                  </label>
+                </>
+              ) : null}
             </div>
           </div>
 
           <div style={{ flex: '0 0 auto' }}>
-            <div style={{ ...labelStyle, marginBottom: 4 }}>Metrics (post-run)</div>
+            <div style={{ ...labelStyle, marginBottom: 4 }}>Last run metrics</div>
             <div style={metricsGridStyle}>
               <div>
-                <div style={metricsLabelStyle}>total_pp</div>
+                <div style={metricsLabelStyle}>Coordination Z</div>
+                <div style={metricsValueStyle}>{Number.isFinite(metrics.Z) ? metrics.Z.toFixed(2) : '—'}</div>
+              </div>
+              <div>
+                <div style={metricsLabelStyle}>Pressure (Pa)</div>
+                <div style={metricsValueStyle}>{formatPressure(metrics.system_pressure)}</div>
+              </div>
+              <div>
+                <div style={metricsLabelStyle}>Particle–particle</div>
                 <div style={metricsValueStyle}>{metrics.total_pp}</div>
               </div>
               <div>
-                <div style={metricsLabelStyle}>total_pc</div>
+                <div style={metricsLabelStyle}>Particle–wall</div>
                 <div style={metricsValueStyle}>{metrics.total_pc}</div>
+              </div>
+              <div>
+                <div style={metricsLabelStyle}>Isolated</div>
+                <div style={metricsValueStyle}>{metrics.n_isolated}</div>
+              </div>
+              <div>
+                <div style={metricsLabelStyle}>Wall contacts</div>
+                <div style={metricsValueStyle}>{metrics.n_container_touch}</div>
               </div>
             </div>
           </div>
 
-          <div style={{ flex: '1 1 55%', minHeight: 220, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6, gap: 8 }}>
-              <div style={labelStyle}>Log</div>
+          <div style={{ flex: logOpen ? '1 1 55%' : '0 0 auto', minHeight: logOpen ? 220 : 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
               <button
                 type="button"
-                onClick={() => void copyLogs()}
+                onClick={() => setLogOpen((o) => !o)}
                 style={{
-                  flexShrink: 0,
-                  fontSize: 11,
+                  border: 'none',
+                  background: 'transparent',
+                  padding: 0,
+                  color: '#4d6b8f',
+                  fontSize: 12,
                   fontWeight: 700,
-                  padding: '4px 10px',
-                  borderRadius: 8,
-                  border: '1px solid #bccbe0',
-                  background: '#fff',
-                  color: '#1d3553',
                   cursor: 'pointer',
+                  textAlign: 'left',
                 }}
               >
-                Copy
+                Developer log {logOpen ? '▼' : '▶'} {logs.length > 0 ? `(${logs.length})` : ''}
               </button>
+              {logOpen ? (
+                <button
+                  type="button"
+                  onClick={() => void copyLogs()}
+                  style={{
+                    flexShrink: 0,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    padding: '4px 10px',
+                    borderRadius: 8,
+                    border: '1px solid #bccbe0',
+                    background: '#fff',
+                    color: '#1d3553',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Copy
+                </button>
+              ) : null}
             </div>
-            <pre
-              ref={logBoxRef}
-              style={{
-                flex: 1,
-                minHeight: 0,
-                minWidth: 0,
-                background: '#f8fbff',
-                border: '1px solid #d4dfec',
-                borderRadius: 12,
-                padding: 10,
-                margin: 0,
-                overflow: 'auto',
-                color: '#274465',
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-                fontSize: 12,
-                lineHeight: 1.35,
-                whiteSpace: 'pre-wrap',
-                overflowWrap: 'break-word',
-                userSelect: 'text',
-                WebkitUserSelect: 'text',
-                cursor: 'text',
-              }}
-            >
-              {logs.join('\n')}
-            </pre>
+            {logOpen ? (
+              <pre
+                ref={logBoxRef}
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  minWidth: 0,
+                  background: '#f8fbff',
+                  border: '1px solid #d4dfec',
+                  borderRadius: 12,
+                  padding: 10,
+                  margin: 0,
+                  overflow: 'auto',
+                  color: '#274465',
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                  fontSize: 12,
+                  lineHeight: 1.35,
+                  whiteSpace: 'pre-wrap',
+                  overflowWrap: 'break-word',
+                  userSelect: 'text',
+                  WebkitUserSelect: 'text',
+                  cursor: 'text',
+                }}
+              >
+                {logs.join('\n')}
+              </pre>
+            ) : null}
           </div>
         </div>
 
@@ -885,25 +1026,46 @@ export default function App() {
                   fontSize: 12,
                   color: '#1d3553',
                   boxShadow: '0 4px 12px rgba(20,40,80,0.12)',
+                  pointerEvents: 'auto',
                 }}
               >
-                <div style={{ fontWeight: 800, marginBottom: 6 }}>Live HUD</div>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>Live view</div>
                 <div style={{ display: 'grid', gap: 4 }}>
                   <div>
-                    <span style={{ color: '#55779f' }}>t </span>
+                    <span style={{ color: '#55779f' }}>Time </span>
                     {liveHud.t.toFixed(3)} s
                   </div>
                   <div>
-                    <span style={{ color: '#55779f' }}>KE </span>
+                    <span style={{ color: '#55779f' }}>Kinetic energy </span>
                     {liveHud.kinetic_energy.toExponential(2)} J
                   </div>
                   <div>
-                    <span style={{ color: '#55779f' }}>P </span>
+                    <span style={{ color: '#55779f' }}>Pressure </span>
                     {liveHud.system_pressure.toExponential(2)} Pa
                   </div>
-                  <div style={{ marginTop: 6, fontSize: 11, fontWeight: 700, color: modularJammingHeuristic ? '#2a9d8f' : '#55779f' }}>
-                    {modularJammingHeuristic ? '● Modular jamming (heuristic)' : '○ Settling / not jammed'}
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvancedHud((v) => !v)}
+                    style={{
+                      marginTop: 4,
+                      alignSelf: 'flex-start',
+                      fontSize: 11,
+                      fontWeight: 700,
+                      padding: '4px 8px',
+                      borderRadius: 6,
+                      border: '1px solid #bccbe0',
+                      background: '#fff',
+                      color: '#1d3553',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {showAdvancedHud ? 'Hide' : 'Show'} advanced
+                  </button>
+                  {showAdvancedHud ? (
+                    <div style={{ marginTop: 2, fontSize: 11, fontWeight: 700, color: modularJammingHeuristic ? '#2a9d8f' : '#55779f' }}>
+                      {modularJammingHeuristic ? '● Heuristic: jamming-like (low KE, high P)' : '○ Heuristic: still settling'}
+                    </div>
+                  ) : null}
                 </div>
               </div>
               {simConfig.ENVIRONMENT_TYPE === 'cylinder' ? (

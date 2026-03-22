@@ -108,38 +108,50 @@ export default function Dashboard(props: {
   )
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 10 }}>
       <div style={cardStyle}>
         {panelHeader('Total kinetic energy (J)', 'ke')}
         {open.ke ? (
           <div style={{ width: '100%', height: 108 }}>
-            <ResponsiveContainer>
-              <LineChart data={keSeries}>
-                <XAxis dataKey="t" tick={{ fill: '#4f6f93', fontSize: 11 }} />
-                <YAxis tick={{ fill: '#4f6f93', fontSize: 11 }} tickFormatter={(v) => (typeof v === 'number' ? v.toExponential(0) : String(v))} />
-                <Tooltip formatter={(v) => (typeof v === 'number' ? v.toExponential(3) : String(v))} />
-                <Line type="monotone" dataKey="kinetic_energy" stroke="#06d6a0" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
+            {keSeries.length === 0 ? (
+              <div style={{ height: '100%', display: 'grid', placeItems: 'center', color: '#5b7598', fontSize: 12, textAlign: 'center', padding: '0 8px' }}>
+                No series yet — run a simulation to populate the chart.
+              </div>
+            ) : (
+              <ResponsiveContainer>
+                <LineChart data={keSeries}>
+                  <XAxis dataKey="t" tick={{ fill: '#4f6f93', fontSize: 11 }} />
+                  <YAxis tick={{ fill: '#4f6f93', fontSize: 11 }} tickFormatter={(v) => (typeof v === 'number' ? v.toExponential(0) : String(v))} />
+                  <Tooltip formatter={(v) => (typeof v === 'number' ? v.toExponential(3) : String(v))} />
+                  <Line type="monotone" dataKey="kinetic_energy" stroke="#06d6a0" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
           </div>
         ) : null}
       </div>
-      <div style={{ ...cardStyle, gridColumn: '1 / span 2' }}>
+      <div style={cardStyle}>
         {panelHeader('System pressure P (Σ|F| / container area, jamming)', 'pressure')}
         {open.pressure ? (
           <div style={{ width: '100%', height: 108 }}>
-            <ResponsiveContainer>
-              <LineChart data={pressureSeries}>
-                <XAxis dataKey="t" tick={{ fill: '#4f6f93', fontSize: 11 }} />
-                <YAxis tick={{ fill: '#4f6f93', fontSize: 11 }} tickFormatter={(v) => (typeof v === 'number' ? v.toExponential(0) : String(v))} />
-                <Tooltip formatter={(v) => (typeof v === 'number' ? v.toExponential(3) : String(v))} />
-                <Line type="monotone" dataKey="system_pressure" stroke="#e76f51" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
+            {pressureSeries.length === 0 ? (
+              <div style={{ height: '100%', display: 'grid', placeItems: 'center', color: '#5b7598', fontSize: 12, textAlign: 'center', padding: '0 8px' }}>
+                No series yet — run a simulation to populate the chart.
+              </div>
+            ) : (
+              <ResponsiveContainer>
+                <LineChart data={pressureSeries}>
+                  <XAxis dataKey="t" tick={{ fill: '#4f6f93', fontSize: 11 }} />
+                  <YAxis tick={{ fill: '#4f6f93', fontSize: 11 }} tickFormatter={(v) => (typeof v === 'number' ? v.toExponential(0) : String(v))} />
+                  <Tooltip formatter={(v) => (typeof v === 'number' ? v.toExponential(3) : String(v))} />
+                  <Line type="monotone" dataKey="system_pressure" stroke="#e76f51" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
           </div>
         ) : null}
       </div>
-      <div style={{ ...cardStyle, gridColumn: '1 / span 2' }}>
+      <div style={cardStyle}>
         {panelHeader('Contact force chains (D3)', 'chains')}
         {open.chains ? (
           <>
