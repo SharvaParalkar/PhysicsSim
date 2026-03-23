@@ -7,6 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
     <style>
         *, *::before, *::after { box-sizing: border-box; }
@@ -78,9 +79,121 @@
         .ratio-bar-track { height: 12px; background: #e2e8f0; border-radius: 99px; overflow: hidden; margin: 6px 0 16px; }
         .ratio-bar-fill  { height: 100%; border-radius: 99px; transition: width 0.6s ease; }
 
+        /* File chips */
+        .file-chip { display:flex; align-items:center; gap:8px; padding:8px 12px; border-radius:10px; font-size:12px; }
+        .file-chip-a { background:#eff6ff; border:1px solid #bfdbfe; color:#1e40af; }
+        .file-chip-b { background:#fffbeb; border:1px solid #fde68a; color:#92400e; }
+        .file-chip-remove { background:none; border:none; cursor:pointer; font-size:16px; color:#94a3b8; padding:0 2px; line-height:1; flex-shrink:0; font-weight:700; }
+        .file-chip-remove:hover { color:#dc2626; }
+        .file-chip-empty { padding:12px; text-align:center; color:#94a3b8; font-size:12px; border:1px dashed #e2e8f0; border-radius:10px; }
+
+        /* Dataset badge pills */
+        .ds-badge-a { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; background:#2563eb; border-radius:7px; color:white; font-weight:900; font-size:12px; flex-shrink:0; }
+        .ds-badge-b { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; background:#d97706; border-radius:7px; color:white; font-weight:900; font-size:12px; flex-shrink:0; }
+
+        /* Drop zone variants */
+        .drop-zone-a { border:2px dashed #93c5fd !important; }
+        .drop-zone-a:hover, .drop-zone-a.drag-over { border-color:#2563eb !important; background:#eff6ff !important; }
+        .drop-zone-b { border:2px dashed #fcd34d !important; }
+        .drop-zone-b:hover, .drop-zone-b.drag-over { border-color:#d97706 !important; background:#fffbeb !important; }
+
         section { scroll-margin-top: 76px; }
 
         @media (max-width: 768px) { aside { display: none !important; } }
+
+        /* ── PRINT ────────────────────────────────────────────────────────────── */
+        @page {
+            size: A4 landscape;
+            margin: 12mm 14mm;
+        }
+
+        /* Print-only cover header — hidden on screen */
+        #print-header { display: none; }
+
+        @media print {
+            /* Force colors in print */
+            * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+
+            body { background: white !important; display: block !important; }
+
+            /* Full-width layout — no sidebar */
+            aside   { display: none !important; }
+            main    { width: 100% !important; }
+
+            /* Sticky header → static, strip glass blur */
+            header {
+                position: static !important;
+                background: white !important;
+                backdrop-filter: none !important;
+                border-bottom: 1.5pt solid #1e293b !important;
+                padding: 10pt 0 8pt !important;
+            }
+
+            /* Show print header, hide screen-only elements */
+            #print-header         { display: block !important; }
+            #sim-banner           { display: none !important; }
+            #import               { display: none !important; }
+            .no-print             { display: none !important; }
+            .file-chip-remove     { display: none !important; }
+            .drop-zone            { display: none !important; }
+            #files-a, #files-b    { display: none !important; }
+
+            /* Content padding reset */
+            div[style*="max-width:1100px"] { padding: 0 !important; }
+
+            /* Remove decorative shadows */
+            .glass-card { box-shadow: none !important; border: 0.75pt solid #e2e8f0 !important; }
+
+            /* Section page breaks */
+            section                         { scroll-margin-top: 0 !important; margin-bottom: 18pt !important; }
+            #overview                       { page-break-before: avoid; }
+            #population                     { page-break-before: always; }
+            #contacts                       { page-break-before: always; }
+            #geometry                       { page-break-before: always; }
+            #stress                         { page-break-before: always; }
+            #comparison                     { page-break-before: always; }
+            .glass-card                     { break-inside: avoid; }
+
+            /* Chart heights for A4 landscape */
+            .chart-wrap    { height: 175pt !important; }
+            .chart-wrap-lg { height: 230pt !important; }
+            .chart-wrap-sm { height: 130pt !important; }
+
+            /* Metric cards */
+            #metric-grid { grid-template-columns: repeat(4, 1fr) !important; gap: 8pt !important; }
+            .metric-card { padding: 10pt 12pt !important; }
+            .metric-val  { font-size: 18pt !important; }
+            .metric-label{ font-size: 9pt !important; }
+            .metric-sub  { font-size: 9pt !important; }
+
+            /* Grids — keep 2-col for A4 landscape */
+            .sec-title { font-size: 13pt !important; padding-bottom: 5pt; border-bottom: 0.75pt solid #e2e8f0; margin-bottom: 8pt !important; }
+            .sec-sub   { display: none !important; }
+
+            /* Tables — allow full expansion */
+            .tbl-wrap { max-height: none !important; overflow: visible !important; border: 0.75pt solid #e2e8f0 !important; }
+            thead th  { position: static !important; background: #f8fafc !important; font-size: 9pt !important; }
+            tbody td  { font-size: 9pt !important; }
+
+            /* Ratio bars */
+            .ratio-bar-track { margin: 4pt 0 10pt !important; height: 9pt !important; }
+
+            /* Comparison delta badges */
+            .delta-up, .delta-down, .delta-zero { font-size: 9pt !important; }
+
+            /* Sidebar status in print → content comes from #print-header */
+            #sidebar-ds-a, #sidebar-ds-b, #overview-ds-indicator { display: none !important; }
+
+            /* Chart card headers */
+            .chart-head { margin-bottom: 8pt !important; }
+            .chart-title { font-size: 10pt !important; }
+            .badge { font-size: 8pt !important; }
+
+            /* Placeholder panels (comparison empty state) — hide the whole section if no B data */
+            #cmp-placeholder { display: none !important; }
+            /* If comparison content is hidden (no B data), hide the whole section */
+            #comparison:has(#cmp-content[style*="display:none"]) { display: none !important; }
+        }
     </style>
 </head>
 <body class="flex min-h-screen">
@@ -91,6 +204,25 @@
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:28px;">
             <div style="width:36px;height:36px;background:#2563eb;border-radius:9px;display:flex;align-items:center;justify-content:center;color:white;font-size:17px;font-weight:900;">G</div>
             <span style="font-size:16px;font-weight:900;color:#0f172a;letter-spacing:-0.3px;">GranularLab</span>
+        </div>
+        <!-- Dataset status -->
+        <div style="margin-bottom:20px;display:flex;flex-direction:column;gap:6px;">
+            <div id="sidebar-ds-a" style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:9px;background:#f8fafc;border:1px solid #e2e8f0;">
+                <span class="ds-badge-a" style="width:22px;height:22px;font-size:11px;border-radius:6px;">A</span>
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:11px;font-weight:700;color:#1d4ed8;">Dataset A</div>
+                    <div id="sidebar-a-status" style="font-size:10px;color:#94a3b8;">No data</div>
+                </div>
+                <div id="sidebar-a-dot" style="width:7px;height:7px;border-radius:50%;background:#e2e8f0;flex-shrink:0;"></div>
+            </div>
+            <div id="sidebar-ds-b" style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:9px;background:#f8fafc;border:1px solid #e2e8f0;">
+                <span class="ds-badge-b" style="width:22px;height:22px;font-size:11px;border-radius:6px;">B</span>
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:11px;font-weight:700;color:#b45309;">Dataset B</div>
+                    <div id="sidebar-b-status" style="font-size:10px;color:#94a3b8;">No data</div>
+                </div>
+                <div id="sidebar-b-dot" style="width:7px;height:7px;border-radius:50%;background:#e2e8f0;flex-shrink:0;"></div>
+            </div>
         </div>
         <p style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#94a3b8;margin:0 0 10px 4px;">Analytics</p>
         <nav id="sidebar-nav" style="display:flex;flex-direction:column;gap:2px;">
@@ -132,7 +264,11 @@
                 <h1 style="font-size:18px;font-weight:900;color:#0f172a;margin:0 0 2px;">Simulation Analytics</h1>
                 <p style="font-size:12px;color:#64748b;margin:0;">Granular Jamming Analysis Suite</p>
             </div>
-            <div style="display:flex;gap:8px;">
+            <div class="no-print" style="display:flex;gap:8px;">
+                <button onclick="window.print()" style="padding:8px 16px;font-size:12px;font-weight:600;border:1px solid #e2e8f0;border-radius:8px;background:white;cursor:pointer;color:#475569;display:flex;align-items:center;gap:6px;">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                    Print Report
+                </button>
                 <button onclick="window.location.reload()" style="padding:8px 16px;font-size:12px;font-weight:600;border:1px solid #e2e8f0;border-radius:8px;background:white;cursor:pointer;color:#475569;">Reset</button>
                 <button onclick="exportCSV()" style="padding:8px 16px;font-size:12px;font-weight:700;border:none;border-radius:8px;background:#0f172a;color:white;cursor:pointer;">Export CSV</button>
             </div>
@@ -144,47 +280,102 @@
         ✓ Simulation data loaded automatically into Dataset A
     </div>
 
+    <!-- Print-only cover header (hidden on screen, shown in @media print) -->
+    <div id="print-header" style="padding:0 0 0 0;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2pt solid #0f172a;padding-bottom:10pt;margin-bottom:20pt;">
+            <div style="display:flex;align-items:center;gap:12pt;">
+                <div style="width:34pt;height:34pt;background:#2563eb;border-radius:8pt;display:flex;align-items:center;justify-content:center;color:white;font-size:18pt;font-weight:900;flex-shrink:0;">G</div>
+                <div>
+                    <div style="font-size:17pt;font-weight:900;color:#0f172a;line-height:1.1;">GranularLab Analytics Report</div>
+                    <div style="font-size:10pt;color:#64748b;margin-top:2pt;">Granular Jamming Simulation — Post-Settled Analysis</div>
+                </div>
+            </div>
+            <div style="text-align:right;font-size:9pt;color:#64748b;line-height:1.8;">
+                <div id="print-date"></div>
+                <div id="print-ds-a-summary" style="color:#1d4ed8;font-weight:600;"></div>
+                <div id="print-ds-b-summary" style="color:#b45309;font-weight:600;"></div>
+            </div>
+        </div>
+        <!-- Dataset summary cards for print -->
+        <div id="print-ds-cards" style="display:flex;gap:14pt;margin-bottom:18pt;"></div>
+    </div>
+
     <div style="max-width:1100px;margin:0 auto;padding:32px;display:flex;flex-direction:column;gap:40px;">
 
         <!-- ── IMPORT ─────────────────────────────────────── -->
         <section id="import">
             <div class="sec-title">Import Data</div>
-            <p class="sec-sub">Drop the simulation <code>simulation_export.json</code> (full payload) or individual files: <code>particles.csv</code>, <code>contact_pairs.csv</code>, <code>vertex_stress.csv</code>, <code>summary.json</code></p>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
-                <div class="glass-card drop-zone" id="drop-a" style="border:2px dashed #cbd5e1;text-align:center;"
-                    onclick="document.getElementById('file-a').click()"
-                    ondragover="ev(event,'A')" ondragleave="el(event)" ondrop="ed(event,'A')">
-                    <input type="file" id="file-a" multiple accept=".json,.csv" style="display:none" onchange="loadFiles('A',this.files)">
-                    <div style="padding:36px 24px;">
-                        <div style="width:44px;height:44px;background:#eff6ff;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 12px;">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+            <p class="sec-sub">Drop a <code>simulation_results.zip</code> (from <em>Export All Data</em>), a <code>simulation_export.json</code>, or individual CSV files. Multiple files can be added per dataset and removed individually.</p>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+
+                <!-- ── Dataset A ── -->
+                <div>
+                    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+                        <span class="ds-badge-a">A</span>
+                        <span style="font-size:16px;font-weight:900;color:#2563eb;">Dataset A</span>
+                        <span style="font-size:11px;color:#94a3b8;font-weight:500;">Primary</span>
+                    </div>
+                    <!-- Drop zone -->
+                    <div class="glass-card drop-zone drop-zone-a" id="drop-a"
+                        ondragover="ev(event,'A')" ondragleave="el(event)" ondrop="ed(event,'A')"
+                        style="text-align:center;">
+                        <input type="file" id="file-a" multiple accept=".json,.csv,.zip" style="display:none" onchange="loadFiles('A',this.files)">
+                        <div style="padding:20px 16px 16px;">
+                            <button onclick="document.getElementById('file-a').click()"
+                                style="padding:8px 22px;background:#2563eb;color:white;border:none;border-radius:9px;font-size:13px;font-weight:700;cursor:pointer;box-shadow:0 2px 8px rgba(37,99,235,0.25);">
+                                + Add Files
+                            </button>
+                            <p style="font-size:11px;color:#93c5fd;margin:8px 0 0;">or drag .zip / .json / .csv here</p>
                         </div>
-                        <div style="font-size:15px;font-weight:800;color:#2563eb;margin-bottom:4px;">Dataset A</div>
-                        <p style="font-size:12px;color:#94a3b8;margin:0 0 16px;">Click or drag your simulation files here</p>
-                        <div id="status-a" style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#cbd5e1;">No Data</div>
+                    </div>
+                    <!-- File list -->
+                    <div id="files-a" style="margin-top:8px;display:flex;flex-direction:column;gap:5px;">
+                        <div class="file-chip-empty">No files loaded yet</div>
                     </div>
                 </div>
-                <div class="glass-card drop-zone" id="drop-b" style="border:2px dashed #cbd5e1;text-align:center;"
-                    onclick="document.getElementById('file-b').click()"
-                    ondragover="ev(event,'B')" ondragleave="el(event)" ondrop="ed(event,'B')">
-                    <input type="file" id="file-b" multiple accept=".json,.csv" style="display:none" onchange="loadFiles('B',this.files)">
-                    <div style="padding:36px 24px;">
-                        <div style="width:44px;height:44px;background:#fffbeb;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 12px;">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#d97706" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+
+                <!-- ── Dataset B ── -->
+                <div>
+                    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+                        <span class="ds-badge-b">B</span>
+                        <span style="font-size:16px;font-weight:900;color:#d97706;">Dataset B</span>
+                        <span style="font-size:11px;color:#94a3b8;font-weight:500;">Comparison (optional)</span>
+                    </div>
+                    <!-- Drop zone -->
+                    <div class="glass-card drop-zone drop-zone-b" id="drop-b"
+                        ondragover="ev(event,'B')" ondragleave="el(event)" ondrop="ed(event,'B')"
+                        style="text-align:center;">
+                        <input type="file" id="file-b" multiple accept=".json,.csv,.zip" style="display:none" onchange="loadFiles('B',this.files)">
+                        <div style="padding:20px 16px 16px;">
+                            <button onclick="document.getElementById('file-b').click()"
+                                style="padding:8px 22px;background:#d97706;color:white;border:none;border-radius:9px;font-size:13px;font-weight:700;cursor:pointer;box-shadow:0 2px 8px rgba(217,119,6,0.25);">
+                                + Add Files
+                            </button>
+                            <p style="font-size:11px;color:#fcd34d;margin:8px 0 0;">or drag .zip / .json / .csv here</p>
                         </div>
-                        <div style="font-size:15px;font-weight:800;color:#d97706;margin-bottom:4px;">Dataset B <span style="font-weight:500;font-size:12px;color:#94a3b8;">(Comparison)</span></div>
-                        <p style="font-size:12px;color:#94a3b8;margin:0 0 16px;">Optional — for side-by-side analysis</p>
-                        <div id="status-b" style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#cbd5e1;">Optional</div>
+                    </div>
+                    <!-- File list -->
+                    <div id="files-b" style="margin-top:8px;display:flex;flex-direction:column;gap:5px;">
+                        <div class="file-chip-empty">No files loaded yet</div>
                     </div>
                 </div>
+
             </div>
         </section>
 
         <!-- ── OVERVIEW ───────────────────────────────────── -->
         <section id="overview">
-            <div class="sec-title">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-                Population Overview
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;">
+                <div class="sec-title" style="margin:0;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                    Population Overview
+                </div>
+                <div id="overview-ds-indicator" style="display:none;align-items:center;gap:8px;font-size:12px;font-weight:600;color:#64748b;">
+                    Showing:
+                    <span style="display:flex;align-items:center;gap:4px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:3px 8px;color:#1d4ed8;">
+                        <span class="ds-badge-a" style="width:18px;height:18px;font-size:10px;border-radius:4px;">A</span> Dataset A
+                    </span>
+                </div>
             </div>
             <p class="sec-sub">Population-level summary statistics from the settled simulation state</p>
             <div id="metric-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;"></div>
@@ -201,14 +392,17 @@
                 <div class="glass-card" style="padding:22px;">
                     <div class="chart-head">
                         <span class="chart-title">Nodal Coordination Number (per particle)</span>
-                        <span class="badge b-blue">Bar</span>
+                        <div style="display:flex;gap:6px;align-items:center;">
+                            <span id="z-dist-ds-badge" class="ds-badge-a" title="Showing Dataset A (blue) and B (orange) if both loaded">A</span>
+                            <span class="badge b-blue">Bar</span>
+                        </div>
                     </div>
                     <div class="chart-wrap"><canvas id="chart-z-dist"></canvas></div>
                 </div>
                 <div class="glass-card" style="padding:22px;">
                     <div class="chart-head">
                         <span class="chart-title">Z Frequency Histogram</span>
-                        <span class="badge b-green">Histogram</span>
+                        <span class="badge b-green">Histogram · A</span>
                     </div>
                     <div class="chart-wrap"><canvas id="chart-z-hist"></canvas></div>
                 </div>
@@ -217,14 +411,14 @@
                 <div class="glass-card" style="padding:22px;">
                     <div class="chart-head">
                         <span class="chart-title">Isolated vs Connected</span>
-                        <span class="badge b-rose">Doughnut</span>
+                        <span class="badge b-rose">Doughnut · A</span>
                     </div>
                     <div class="chart-wrap-sm"><canvas id="chart-isolated"></canvas></div>
                 </div>
                 <div class="glass-card" style="padding:22px;">
                     <div class="chart-head">
                         <span class="chart-title">Adjacency List (Contact Network)</span>
-                        <span class="badge b-purple">Table</span>
+                        <span class="badge b-purple">Table · A</span>
                     </div>
                     <div id="adjacency-table" style="max-height:210px;" class="tbl-wrap"></div>
                 </div>
@@ -338,16 +532,31 @@
 
         <!-- ── COMPARISON ─────────────────────────────────── -->
         <section id="comparison">
-            <div class="sec-title">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.5"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
-                Dataset Comparison
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px;flex-wrap:wrap;">
+                <div class="sec-title" style="margin:0;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.5"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
+                    Dataset Comparison
+                </div>
+                <!-- Color legend -->
+                <div style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;">
+                    <span style="display:flex;align-items:center;gap:5px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:7px;padding:4px 10px;color:#1d4ed8;">
+                        <span class="ds-badge-a" style="width:18px;height:18px;font-size:10px;border-radius:4px;">A</span>
+                        <span style="display:inline-block;width:12px;height:12px;background:#3b82f6;border-radius:3px;"></span>
+                        Blue
+                    </span>
+                    <span style="display:flex;align-items:center;gap:5px;background:#fffbeb;border:1px solid #fde68a;border-radius:7px;padding:4px 10px;color:#92400e;">
+                        <span class="ds-badge-b" style="width:18px;height:18px;font-size:10px;border-radius:4px;">B</span>
+                        <span style="display:inline-block;width:12px;height:12px;background:#f97316;border-radius:3px;"></span>
+                        Orange
+                    </span>
+                </div>
             </div>
             <p class="sec-sub">Side-by-side A vs B — load both datasets to enable this section</p>
             <div id="cmp-placeholder" class="glass-card" style="padding:48px;text-align:center;color:#94a3b8;">
                 <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="margin:0 auto 12px;opacity:0.3;display:block;"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
                 Load Dataset B to enable comparison
             </div>
-            <div id="cmp-content" style="display:none;display:flex;flex-direction:column;gap:16px;">
+            <div id="cmp-content" style="display:none;flex-direction:column;gap:16px;">
                 <div id="delta-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;"></div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
                     <div class="glass-card" style="padding:22px;">
@@ -396,11 +605,24 @@
 
 <script>
 // ── State ──────────────────────────────────────────────────────────────────────
+// FILE_MAP stores raw parsed data keyed by filename, per dataset
+const FILE_MAP = { A: {}, B: {} };
+
 const DS = {
     A: { summary: null, particles: [], contacts: [], stress: [] },
     B: { summary: null, particles: [], contacts: [], stress: [] },
 };
 const charts = {};
+
+const TYPE_META = {
+    full_export:    { icon: '📦', label: 'Full Export JSON' },
+    summary:        { icon: '📊', label: 'Summary JSON' },
+    particles:      { icon: '⚫', label: 'Particles CSV' },
+    contacts:       { icon: '🔗', label: 'Contact Pairs CSV' },
+    contact_points: { icon: '📍', label: 'Contact Points CSV' },
+    stress:         { icon: '⚡', label: 'Vertex Stress CSV' },
+    unknown:        { icon: '📄', label: 'Data File' },
+};
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 window.addEventListener('load', () => {
@@ -408,7 +630,12 @@ window.addEventListener('load', () => {
         const raw = localStorage.getItem('granularlab_export');
         if (raw) {
             localStorage.removeItem('granularlab_export');
-            ingestFull('A', JSON.parse(raw));
+            const data = JSON.parse(raw);
+            _storeFile('A', 'simulation_export.json', 'full_export', data,
+                `${data.particles?.length ?? 0} particles, ${data.contacts?.length ?? 0} contacts`);
+            recomputeDS('A');
+            renderFileList('A');
+            refresh();
             document.getElementById('sim-banner').style.display = 'block';
         }
     } catch (_) {}
@@ -423,39 +650,141 @@ function ed(e, v) { e.preventDefault(); e.currentTarget.classList.remove('drag-o
 // ── File loading ───────────────────────────────────────────────────────────────
 async function loadFiles(ver, files) {
     for (const file of Array.from(files)) {
-        const text = await file.text();
-        if (file.name.endsWith('.json')) {
-            const data = JSON.parse(text);
-            // Detect full export format ({summary, particles, contacts}) vs summary-only
-            if (data.summary !== undefined || data.particles !== undefined || data.contacts !== undefined) {
-                ingestFull(ver, data);
-            } else {
-                DS[ver].summary = data;
-            }
-        } else if (file.name.endsWith('.csv')) {
-            const parsed = Papa.parse(text.trim(), { header: true, dynamicTyping: true, skipEmptyLines: true });
-            const name = file.name.toLowerCase();
-            if      (name.includes('vertex_stress')) DS[ver].stress    = parsed.data;
-            else if (name.includes('contact_pairs') || name.includes('contacts')) DS[ver].contacts = parsed.data;
-            else if (name.includes('particles'))     DS[ver].particles = parsed.data;
+        const ext = file.name.split('.').pop().toLowerCase();
+        if (ext === 'zip') {
+            await loadZip(ver, file);
+        } else {
+            await parseSingleFile(ver, file.name, await file.text());
         }
     }
-    markLoaded(ver);
+    recomputeDS(ver);
+    renderFileList(ver);
     refresh();
 }
 
-function ingestFull(ver, data) {
-    if (data.summary)   DS[ver].summary   = data.summary;
-    if (data.particles) DS[ver].particles = data.particles;
-    if (data.contacts)  DS[ver].contacts  = data.contacts;
-    if (data.stress)    DS[ver].stress    = data.stress;
-    markLoaded(ver);
+async function loadZip(ver, file) {
+    if (typeof JSZip === 'undefined') { alert('JSZip library not loaded'); return; }
+    try {
+        const zip = await JSZip.loadAsync(await file.arrayBuffer());
+        for (const [zipPath, zipEntry] of Object.entries(zip.files)) {
+            if (zipEntry.dir) continue;
+            const baseName = zipPath.split('/').pop();
+            if (!baseName) continue;
+            const ext = baseName.split('.').pop().toLowerCase();
+            if (!['json', 'csv'].includes(ext)) continue;
+            if (baseName === 'manifest.json') continue;
+            await parseSingleFile(ver, baseName, await zipEntry.async('string'));
+        }
+    } catch (e) {
+        console.error('ZIP load error:', e);
+        alert('Could not read ZIP file: ' + e.message);
+    }
+}
+
+async function parseSingleFile(ver, name, text) {
+    const ext = name.split('.').pop().toLowerCase();
+    const nl  = name.toLowerCase();
+    try {
+        if (ext === 'json') {
+            const data = JSON.parse(text);
+            if (data.summary !== undefined || data.particles !== undefined || data.contacts !== undefined) {
+                const pC = data.particles?.length ?? 0, cC = data.contacts?.length ?? 0;
+                _storeFile(ver, name, 'full_export', data, `${pC} particles, ${cC} contacts`);
+            } else {
+                _storeFile(ver, name, 'summary', data, `${Object.keys(data).length} fields`);
+            }
+        } else if (ext === 'csv') {
+            const parsed = Papa.parse(text.trim(), { header: true, dynamicTyping: true, skipEmptyLines: true });
+            let type = 'unknown';
+            if      (nl.includes('vertex_stress'))                              type = 'stress';
+            else if (nl.includes('contact_pair') || nl === 'contacts.csv')      type = 'contacts';
+            else if (nl.includes('contact_point'))                              type = 'contact_points';
+            else if (nl.includes('particle'))                                   type = 'particles';
+            _storeFile(ver, name, type, parsed.data, `${parsed.data.length} rows`);
+        }
+    } catch (e) { console.error('Parse error:', name, e); }
+}
+
+function _storeFile(ver, name, type, data, count) {
+    FILE_MAP[ver][name] = { type, data, count };
+}
+
+// ── Remove a file from a dataset ──────────────────────────────────────────────
+function removeFile(ver, name) {
+    delete FILE_MAP[ver][name];
+    recomputeDS(ver);
+    renderFileList(ver);
     refresh();
 }
 
-function markLoaded(ver) {
-    const el = document.getElementById(`status-${ver.toLowerCase()}`);
-    if (el) { el.textContent = '✓ Loaded'; el.style.color = '#2563eb'; }
+// ── Recompute DS from FILE_MAP ─────────────────────────────────────────────────
+function recomputeDS(ver) {
+    DS[ver] = { summary: null, particles: [], contacts: [], stress: [] };
+    const entries = Object.entries(FILE_MAP[ver]);
+    // Process full exports first (they may be overridden by individual CSVs)
+    for (const [, e] of entries.filter(([, e]) => e.type === 'full_export')) {
+        if (e.data.summary)           DS[ver].summary   = { ...(DS[ver].summary || {}), ...e.data.summary };
+        if (e.data.particles?.length) DS[ver].particles = e.data.particles;
+        if (e.data.contacts?.length)  DS[ver].contacts  = e.data.contacts;
+    }
+    for (const [, e] of entries.filter(([, e]) => e.type !== 'full_export')) {
+        if      (e.type === 'summary')        DS[ver].summary   = { ...(DS[ver].summary || {}), ...e.data };
+        else if (e.type === 'particles')      DS[ver].particles = e.data;
+        else if (e.type === 'contacts')       DS[ver].contacts  = e.data;
+        else if (e.type === 'contact_points' && !DS[ver].contacts.length) DS[ver].contacts = e.data;
+        else if (e.type === 'stress')         DS[ver].stress    = e.data;
+    }
+}
+
+// ── Render file list chips + sidebar status ────────────────────────────────────
+function renderFileList(ver) {
+    const el = document.getElementById(`files-${ver.toLowerCase()}`);
+    if (!el) return;
+    const entries = Object.entries(FILE_MAP[ver]);
+    const chipCls = ver === 'A' ? 'file-chip-a' : 'file-chip-b';
+
+    if (!entries.length) {
+        el.innerHTML = '<div class="file-chip-empty">No files loaded yet</div>';
+        _updateSidebarStatus(ver, false, 0);
+        return;
+    }
+
+    el.innerHTML = entries.map(([name, entry]) => {
+        const meta = TYPE_META[entry.type] || TYPE_META.unknown;
+        const safeN = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        return `<div class="file-chip ${chipCls}">
+            <span style="font-size:15px;flex-shrink:0;">${meta.icon}</span>
+            <div style="flex:1;min-width:0;overflow:hidden;">
+                <div style="font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${name}">${name}</div>
+                <div style="font-size:10px;opacity:0.65;margin-top:1px;">${meta.label} &nbsp;·&nbsp; ${entry.count}</div>
+            </div>
+            <button class="file-chip-remove" onclick="removeFile('${ver}','${safeN}')" title="Remove this file">×</button>
+        </div>`;
+    }).join('');
+
+    _updateSidebarStatus(ver, true, entries.length);
+}
+
+function _updateSidebarStatus(ver, loaded, fileCount) {
+    const v = ver.toLowerCase();
+    const statusEl = document.getElementById(`sidebar-${v}-status`);
+    const dotEl    = document.getElementById(`sidebar-${v}-dot`);
+    const cardEl   = document.getElementById(`sidebar-ds-${v}`);
+    if (!statusEl || !dotEl) return;
+    if (loaded) {
+        const d = DS[ver];
+        const parts = d.particles.length ? `${d.particles.length} particles` : '';
+        const conts = d.contacts.length  ? `${d.contacts.length} contacts` : '';
+        statusEl.textContent = [parts, conts].filter(Boolean).join(', ') || `${fileCount} file${fileCount > 1 ? 's' : ''} loaded`;
+        statusEl.style.color = ver === 'A' ? '#2563eb' : '#d97706';
+        dotEl.style.background = ver === 'A' ? '#22c55e' : '#22c55e';
+        if (cardEl) cardEl.style.borderColor = ver === 'A' ? '#bfdbfe' : '#fde68a';
+    } else {
+        statusEl.textContent = 'No data';
+        statusEl.style.color = '#94a3b8';
+        dotEl.style.background = '#e2e8f0';
+        if (cardEl) cardEl.style.borderColor = '#e2e8f0';
+    }
 }
 
 // ── Refresh all ────────────────────────────────────────────────────────────────
@@ -511,6 +840,9 @@ function renderMetrics() {
     const grid = document.getElementById('metric-grid');
     grid.innerHTML = '';
     const { summary: s, particles: p } = DS.A;
+    // Show/hide dataset indicator
+    const ind = document.getElementById('overview-ds-indicator');
+    if (ind) ind.style.display = (s || p.length) ? 'flex' : 'none';
     if (!s && !p.length) return;
 
     const n    = (s?.n_particles)  ?? p.length ?? 0;
@@ -549,6 +881,15 @@ function renderZDist() {
     kill('zd');
     const p = DS.A.particles;
     if (!p.length) return;
+    const hasB = DS.B.particles.length > 0;
+    // Update badge to show A or A+B
+    const badge = document.getElementById('z-dist-ds-badge');
+    if (badge) {
+        badge.textContent = hasB ? 'A+B' : 'A';
+        badge.className = hasB ? '' : 'ds-badge-a';
+        if (hasB) Object.assign(badge.style, { background: 'linear-gradient(135deg,#2563eb 50%,#d97706 50%)', width:'32px', height:'18px', fontSize:'9px', borderRadius:'5px', color:'white', display:'inline-flex', alignItems:'center', justifyContent:'center', fontWeight:'900' });
+        else badge.removeAttribute('style');
+    }
     const ctx = document.getElementById('chart-z-dist').getContext('2d');
     const dsets = [{
         label: 'Dataset A',
@@ -556,7 +897,7 @@ function renderZDist() {
         backgroundColor: '#3b82f6',
         borderRadius: 4,
     }];
-    if (DS.B.particles.length) dsets.push({
+    if (hasB) dsets.push({
         label: 'Dataset B',
         data: DS.B.particles.map(x => x.n_contacts ?? 0),
         backgroundColor: '#f97316',
@@ -565,7 +906,7 @@ function renderZDist() {
     charts.zd = new Chart(ctx, {
         type: 'bar',
         data: { labels: p.map(x => `P${x.id}`), datasets: dsets },
-        options: { ...OPTS, plugins: { legend: { display: dsets.length > 1, position: 'top', labels: { font: { size: 11 } } } } },
+        options: { ...OPTS, plugins: { legend: { display: hasB, position: 'top', labels: { font: { size: 11 }, usePointStyle: true } } } },
     });
 }
 
@@ -1046,6 +1387,68 @@ function setupScrollSpy() {
     }, { threshold: 0.25, rootMargin: '-76px 0px -55% 0px' });
     sections.forEach(s => obs.observe(s));
 }
+
+// ── Print handling ─────────────────────────────────────────────────────────────
+function _buildPrintHeader() {
+    // Date
+    const dateEl = document.getElementById('print-date');
+    if (dateEl) dateEl.textContent = 'Generated: ' + new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric', hour:'2-digit', minute:'2-digit' });
+
+    // Dataset summaries
+    function dsSummary(ver) {
+        const d = DS[ver], s = d.summary || {};
+        const n  = d.particles.length || s.n_particles || 0;
+        const pp = s.total_pp ?? d.contacts.length;
+        const z  = s.Z != null ? ` · Z=${Number(s.Z).toFixed(2)}` : '';
+        return n ? `Dataset ${ver}: ${n} particles · ${pp} P-P contacts${z}` : '';
+    }
+    const elA = document.getElementById('print-ds-a-summary');
+    const elB = document.getElementById('print-ds-b-summary');
+    if (elA) elA.textContent = dsSummary('A');
+    if (elB) elB.textContent = dsSummary('B');
+
+    // Dataset mini KPI cards for print
+    const cardsEl = document.getElementById('print-ds-cards');
+    if (cardsEl) {
+        const sA = DS.A.summary || {}, sB = DS.B.summary || {};
+        const hasB = DS.B.particles.length > 0 || DS.B.summary;
+        const kpis = [
+            { label: 'Particles',       a: sA.n_particles ?? DS.A.particles.length, b: sB.n_particles ?? DS.B.particles.length },
+            { label: 'P–P Contacts',    a: sA.total_pp ?? DS.A.contacts.length, b: sB.total_pp ?? DS.B.contacts.length },
+            { label: 'Avg Z',           a: sA.Z != null ? Number(sA.Z).toFixed(3) : '—', b: sB.Z != null ? Number(sB.Z).toFixed(3) : '—' },
+            { label: 'Isolated',        a: sA.n_isolated ?? '—', b: sB.n_isolated ?? '—' },
+            { label: 'P–C Contacts',    a: sA.total_pc ?? '—', b: sB.total_pc ?? '—' },
+            { label: 'Sys. Pressure',   a: sA.system_pressure != null ? sA.system_pressure.toExponential(2) : '—', b: sB.system_pressure != null ? sB.system_pressure.toExponential(2) : '—' },
+        ];
+        cardsEl.innerHTML = kpis.map(k => `
+            <div style="flex:1;background:#f8fafc;border:0.75pt solid #e2e8f0;border-radius:6pt;padding:8pt 10pt;min-width:0;">
+                <div style="font-size:8pt;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4pt;">${k.label}</div>
+                <div style="display:flex;gap:8pt;align-items:baseline;">
+                    <div style="display:flex;align-items:center;gap:4pt;">
+                        <span style="font-size:7pt;font-weight:900;background:#2563eb;color:white;border-radius:3pt;padding:1pt 4pt;">A</span>
+                        <span style="font-size:13pt;font-weight:900;color:#1d4ed8;">${k.a ?? '—'}</span>
+                    </div>
+                    ${hasB ? `<div style="display:flex;align-items:center;gap:4pt;">
+                        <span style="font-size:7pt;font-weight:900;background:#d97706;color:white;border-radius:3pt;padding:1pt 4pt;">B</span>
+                        <span style="font-size:13pt;font-weight:900;color:#b45309;">${k.b ?? '—'}</span>
+                    </div>` : ''}
+                </div>
+            </div>`).join('');
+    }
+}
+
+window.addEventListener('beforeprint', () => {
+    _buildPrintHeader();
+    // Resize all active charts so they re-render at the new print dimensions
+    Object.values(charts).forEach(c => { try { c?.resize?.(); } catch(_) {} });
+});
+
+window.addEventListener('afterprint', () => {
+    // Restore chart sizing after print dialog closes
+    setTimeout(() => {
+        Object.values(charts).forEach(c => { try { c?.resize?.(); } catch(_) {} });
+    }, 100);
+});
 </script>
 </body>
 </html>

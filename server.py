@@ -757,6 +757,42 @@ def download_summary_json():
                     headers={"Content-Disposition": "attachment; filename=summary.json"})
 
 
+@app.get("/download/results-zip")
+def download_results_zip():
+    """Package all CSV and JSON results files into a single ZIP for Analysis.html import."""
+    import datetime
+    out_dir = Path(OUTPUT_DIR)
+    buf = io.BytesIO()
+    files_added: list[str] = []
+
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for ext in ("*.csv", "*.json"):
+            for path in sorted(out_dir.glob(ext)):
+                zf.write(path, path.name)
+                files_added.append(path.name)
+        # Embed a manifest so Analysis.html knows what's inside
+        manifest = {
+            "exported_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "output_dir": str(out_dir),
+            "files": files_added,
+        }
+        zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+
+    if not files_added:
+        return Response(
+            content="No results found in output directory. Run a simulation first.",
+            status_code=404,
+        )
+
+    buf.seek(0)
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Response(
+        content=buf.read(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=simulation_results_{ts}.zip"},
+    )
+
+
 @app.get("/download/obj")
 def download_obj():
     """Return a ZIP containing settled_particles.obj, contact_network.obj, README.txt."""

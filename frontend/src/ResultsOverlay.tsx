@@ -258,7 +258,7 @@ export default function ResultsOverlay({ screenshot, data, onClose }: Props) {
 
   const handlePrint = () => window.print()
 
-  const handleExportAll = () => {
+  const handleExportJSON = () => {
     const json = JSON.stringify(data, null, 2)
     const blob = new Blob([json], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
@@ -315,10 +315,9 @@ export default function ResultsOverlay({ screenshot, data, onClose }: Props) {
           <div style={{ fontSize: 16, fontWeight: 900, color: '#1d3553', letterSpacing: 0.3, flex: 1 }}>
             Granular Jamming Results
           </div>
-          <button
-            type="button"
+          <a
+            href={`${BASE}/download/results-zip`}
             className="ro-no-print"
-            onClick={handleExportAll}
             style={{
               background: '#1d3553',
               border: 'none',
@@ -328,12 +327,34 @@ export default function ResultsOverlay({ screenshot, data, onClose }: Props) {
               cursor: 'pointer',
               color: 'white',
               fontWeight: 700,
+              textDecoration: 'none',
+              display: 'inline-block',
             }}
             onMouseEnter={(e) => (e.currentTarget.style.background = '#274465')}
             onMouseLeave={(e) => (e.currentTarget.style.background = '#1d3553')}
-            title="Download full simulation_export.json — importable into Analysis.html"
+            title="Download all results files (CSVs + JSON) as a ZIP — drag directly into Analysis.html"
           >
             ↓ Export All Data
+          </a>
+          <button
+            type="button"
+            className="ro-no-print"
+            onClick={handleExportJSON}
+            style={{
+              background: 'white',
+              border: '1px solid #bccbe0',
+              fontSize: 12,
+              padding: '6px 14px',
+              borderRadius: 8,
+              cursor: 'pointer',
+              color: '#1d3553',
+              fontWeight: 600,
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#eaf1f9')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'white')}
+            title="Download live export JSON (particles + contacts + summary)"
+          >
+            ↓ Export JSON
           </button>
           <button
             type="button"
@@ -494,7 +515,12 @@ export default function ResultsOverlay({ screenshot, data, onClose }: Props) {
 
         {/* ── Downloads ──────────────────────────────────────────────── */}
         <SectionHeader>Downloads</SectionHeader>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginBottom: 12 }}>
+        <DownloadBtn
+          href={`${BASE}/download/results-zip`}
+          label={`↓  EXPORT ALL RESULTS (ZIP)  —  CSVs + JSON, drag directly into Analysis.html`}
+          prominent
+        />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, margin: '10px 0 12px' }}>
           <DownloadBtn href={`${BASE}/download/particles-csv`} label="particles.csv" />
           <DownloadBtn href={`${BASE}/download/contacts-csv`} label="contact_pairs.csv" />
           <DownloadBtn href={`${BASE}/download/contact-points-csv`} label="contact_points.csv" />
