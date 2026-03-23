@@ -751,20 +751,12 @@ def load_particle_mesh(filepath: str, scale: float = 1.0):
     return (physics_mesh, original_mesh)
 
 
-def _rigid_material(friction: float, restitution: float, rho: Optional[float] = None):
-    """Genesis versions disagree on `restitution` vs `coup_restitution`; support both.
-
-    `rho` is only relevant for rigid-body mass / inertia. FEM/MPM paths pass density
-    directly into those material constructors.
-    """
+def _rigid_material(friction: float, restitution: float):
+    """Genesis versions disagree on `restitution` vs `coup_restitution`; support both."""
     try:
-        if rho is None:
-            return gs.materials.Rigid(friction=friction, restitution=restitution)
-        return gs.materials.Rigid(rho=float(rho), friction=friction, restitution=restitution)
+        return gs.materials.Rigid(friction=friction, restitution=restitution)
     except TypeError:
-        if rho is None:
-            return gs.materials.Rigid(friction=friction, coup_restitution=restitution)
-        return gs.materials.Rigid(rho=float(rho), friction=friction, coup_restitution=restitution)
+        return gs.materials.Rigid(friction=friction, coup_restitution=restitution)
 
 
 def create_environment(scene, kind, plate_size=0.6, cyl_diameter=0.20,
@@ -887,7 +879,7 @@ def spawn_particles(
             "Genesis particle solver: Rigid (friction=0.4, restitution=0.0); "
             f"YOUNGS_MODULUS={E_in:.6g} Pa > 1e8 (FEM/MPM path skipped)"
         )
-        material = _rigid_material(0.4, 0.0, rho=rho)
+        material = _rigid_material(0.4, 0.0)
     else:
         E = E_in
         if E > float(e_fem_max):
@@ -948,11 +940,6 @@ def spawn_particles(
                     scale=float(scale_factor),
                     pos=(x, y, z),
                     quat=quat,
-                    # Force Genesis to convexify non-watertight meshes so it can compute
-                    # a non-zero mass/inertia (prevents "Combined mass is less than EPS").
-                    convexify=True,
-                    collision=True,
-                    visualization=False,
                 ),
                 material=material,
             )
@@ -992,9 +979,6 @@ def spawn_particles(
                     scale=float(scale_factor),
                     pos=(x, y, z),
                     quat=quat,
-                    convexify=True,
-                    collision=True,
-                    visualization=False,
                 ),
                 material=material,
             )
@@ -1104,11 +1088,11 @@ def _pp_contact_strong_for_z(c: NormalizedContact, f_min: float) -> bool:
     return abs(float(c.force)) > float(f_min)
 
 
-def _pp_contact_for_z_graph(c: NormalizedContact, depth_tol: float = CONTACT_DEPTH_TOL) -> bool:
+def _pp_contact_for_z_graph(c: NormalizedContact) -> bool:
     """P–P link for coordination Z: depth only (contacts list is already resampled; threshold matches extraction)."""
     if not c.is_particle_particle:
         return False
-    return abs(float(c.depth)) > float(depth_tol)
+    return abs(float(c.depth)) > float(CONTACT_DEPTH_TOL)
 
 
 def calculate_live_metrics(
@@ -1118,7 +1102,6 @@ def calculate_live_metrics(
     *,
     particle_mass_kg: float,
     surface_area_m2: Optional[float] = None,
-    depth_tol: float = CONTACT_DEPTH_TOL,
 ) -> dict:
     """
     Lightweight metrics for high-frequency WebSocket updates (jamming / rattlers / energy).
@@ -1126,7 +1109,7 @@ def calculate_live_metrics(
     ``n_rattlers`` counts particles with no particle–particle contacts (isolated in the PP graph),
     matching ``compute_metrics``'s ``n_isolated_particles``.
     """
-    m = compute_metrics(contacts, particle_ids, container_surface_area_m2=surface_area_m2, depth_tol=depth_tol)
+    m = compute_metrics(contacts, particle_ids, container_surface_area_m2=surface_area_m2)
     ke = compute_total_kinetic_energy(entities, particle_mass_kg)
     return {
         "Z": float(m.get("Z", 0.0)),
@@ -1463,7 +1446,7 @@ def extract_contacts_geometric(
     return contacts
 
 
-def compute_metrics(contacts, particle_ids, *, container_surface_area_m2: Optional[float] = None, z_force_min_n: float = Z_CONTACT_FORCE_MIN_N, depth_tol: float = CONTACT_DEPTH_TOL) -> dict:
+def compute_metrics(contacts, particle_ids, *, container_surface_area_m2: Optional[float] = None, z_force_min_n: float = Z_CONTACT_FORCE_MIN_N) -> dict:
     pp = [c for c in contacts if c.is_particle_particle]
     pc = [c for c in contacts if c.is_particle_container]
     f_min = float(z_force_min_n)
@@ -1472,7 +1455,7 @@ def compute_metrics(contacts, particle_ids, *, container_surface_area_m2: Option
     for pid in particle_ids:
         G.add_node(int(pid))
     for c in pp:
-        if not _pp_contact_for_z_graph(c, depth_tol):
+        if not _pp_contact_for_z_graph(c):
             continue
         G.add_edge(
             int(c.entity_a),
@@ -1484,7 +1467,7 @@ def compute_metrics(contacts, particle_ids, *, container_surface_area_m2: Option
 
     n = len(particle_ids) if particle_ids else 0
     pp_strong_n = sum(1 for c in pp if _pp_contact_strong_for_z(c, f_min))
-    pp_z_n = sum(1 for c in pp if _pp_contact_for_z_graph(c, depth_tol))
+    pp_z_n = sum(1 for c in pp if _pp_contact_for_z_graph(c))
     Z = (2 * pp_z_n / n) if n else 0.0
     contact_counts = dict(G.degree())
     n_isolated = sum(1 for pid in particle_ids if contact_counts.get(int(pid), 0) == 0)

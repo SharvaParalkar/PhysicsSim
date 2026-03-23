@@ -753,36 +753,6 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
             sync_q.put({"type": "progress", "phase": phase, "pct": pct, "detail": detail})
 
         cfg_run = dict(cfg)
-
-        # When a micro-scale particle file is selected (e.g. *600M*.obj, authored in µm),
-        # the backend auto-scales the mesh to metres via SCALE_FACTOR=1e-6.  The environment
-        # defaults (plate size, wall thickness, drop height, contact tolerance) are tuned for
-        # cm-scale particles and must be rescaled to match, otherwise particles fall through the
-        # floor or vanish inside an enormous container.
-        try:
-            _pf = _resolve_particle_file(cfg_run.get("PARTICLE_FILE"))
-            _sf = float(cfg_run.get("SCALE_FACTOR", 1.0))
-            if abs(_sf - 1.0) < 1e-15:
-                _sf = _infer_scale_factor_for_particle_file(_pf)
-            if abs(_sf - 1.0) > 1e-10:
-                for _k in (
-                    "PLATE_SIZE", "CYLINDER_DIAMETER", "CYLINDER_HEIGHT",
-                    "WALL_THICKNESS", "PLATE_WALL_HEIGHT", "DROP_HEIGHT",
-                ):
-                    if _k in cfg_run:
-                        cfg_run[_k] = float(cfg_run[_k]) * _sf
-                cfg_run["CONTACT_DEPTH_TOL"] = (
-                    float(cfg_run.get("CONTACT_DEPTH_TOL", simulation.CONTACT_DEPTH_TOL)) * _sf
-                )
-                logger.info(
-                    "Auto-scaled environment for %s: factor=%g  PLATE_SIZE→%g  CONTACT_DEPTH_TOL→%g",
-                    Path(_pf).name, _sf,
-                    cfg_run.get("PLATE_SIZE", "n/a"),
-                    cfg_run["CONTACT_DEPTH_TOL"],
-                )
-        except Exception as _scale_exc:
-            logger.warning("Environment auto-scale skipped: %s", _scale_exc)
-
         sequential = bool(cfg.get("SEQUENTIAL_DROP"))
         analytical = bool(cfg.get("ANALYTICAL_MODE"))
         if sequential:
@@ -795,7 +765,7 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
 
         duration = float(cfg["SIM_DURATION"])
         settle_threshold = float(cfg["SETTLE_THRESHOLD"])
-        depth_tol = float(cfg_run["CONTACT_DEPTH_TOL"])
+        depth_tol = float(cfg["CONTACT_DEPTH_TOL"])
         vel_threshold = float(cfg.get("ANALYTICAL_VEL_THRESHOLD", 0.1))
         LATEST_Z_HISTORY = []
         LATEST_MAX_VEL_HISTORY = []
@@ -904,7 +874,6 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                     entities,
                     particle_mass_kg=particle_mass_kg,
                     surface_area_m2=surface_area_m2,
-                    depth_tol=depth_tol,
                 )
                 last_live_Z = float(lm["Z"])
                 LATEST_Z_HISTORY.append({"t": t_now, "Z": last_live_Z})
@@ -1153,7 +1122,7 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                 depth_tol=depth_tol,
             )
         print(f"[DEBUG] final contact count={len(contacts)}", flush=True)
-        metrics = simulation.compute_metrics(contacts, particle_ids, container_surface_area_m2=surface_area_m2, depth_tol=depth_tol)
+        metrics = simulation.compute_metrics(contacts, particle_ids, container_surface_area_m2=surface_area_m2)
         vertex_stress: dict[int, list[float]] = {}
         if RUNTIME._original_mesh is not None:
             vertex_stress = simulation.compute_vertex_stress(

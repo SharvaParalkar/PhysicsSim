@@ -830,8 +830,7 @@ export default function Viewer3D(props: Viewer3DProps) {
   }, [environmentType, cylinderDiameter, cylinderHeight, wallThickness, plateSize, plateWallHeight])
   const envSpanDisplay = Math.max(envSpanMeters * lengthScale, 1e-6)
   const cameraDistance = Math.max(envSpanDisplay * 2.2, 1.2)
-  // Scale near-plane with scene span so it doesn't clip geometry in µm mode (lengthScale=1e6).
-  const cameraNear = Math.max(cameraDistance / 5000, envSpanDisplay * 0.0005)
+  const cameraNear = Math.max(cameraDistance / 5000, 1e-5)
   const cameraFar = Math.max(cameraDistance * 25, 2000)
   const cameraY = (wallThickness + (environmentType === 'plate' ? plateWallHeight : cylinderHeight) * 0.5) * lengthScale
   const cameraConfig = useMemo(

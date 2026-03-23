@@ -692,26 +692,7 @@ export default function App() {
                 <div style={{ display: 'flex', gap: 6 }}>
                   <select
                     value={simConfig.PARTICLE_FILE ?? 'particle.obj'}
-                    onChange={(e) => {
-                      const name = e.target.value
-                      const is600M = /600m/i.test(name)
-                      setSimConfig((p) => ({
-                        ...p,
-                        PARTICLE_FILE: name,
-                        ...(is600M && {
-                          // Environment tuned for sub-millimetre (µm-scale) particles.
-                          // Server auto-scales the mesh via SCALE_FACTOR=1e-6; these values
-                          // keep the container proportional (6 mm plate, 1 mm drop, etc.)
-                          PLATE_SIZE: 0.006,
-                          WALL_THICKNESS: 0.0005,
-                          PLATE_WALL_HEIGHT: 0.003,
-                          DROP_HEIGHT: 0.001,
-                          CYLINDER_DIAMETER: 0.004,
-                          CYLINDER_HEIGHT: 0.006,
-                        }),
-                      }))
-                      if (is600M) setLengthUnit('um')
-                    }}
+                    onChange={(e) => setSimConfig((p) => ({ ...p, PARTICLE_FILE: e.target.value }))}
                     style={{ flex: 1, border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
                   >
                     {availableParticles.map((name) => (
