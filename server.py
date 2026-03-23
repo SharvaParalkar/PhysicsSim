@@ -631,9 +631,8 @@ def get_metrics():
         return _sanitize_floats(out)
 
 
-@app.get("/export")
-def get_export():
-    """Full post-simulation payload for the results overlay."""
+def _build_export_payload() -> dict[str, Any]:
+    """Build the full simulation export payload (summary + enriched particles + contacts)."""
     out_dir = Path(OUTPUT_DIR)
     particles_raw = _read_csv_records(out_dir / "particles.csv")
     contact_pairs_raw = _read_csv_records(out_dir / "contact_pairs.csv")
@@ -714,6 +713,12 @@ def get_export():
     })
 
 
+@app.get("/export")
+def get_export():
+    """Full post-simulation payload for the results overlay."""
+    return _build_export_payload()
+
+
 @app.get("/download/particles-csv")
 def download_particles_csv():
     path = Path(OUTPUT_DIR) / "particles.csv"
@@ -765,11 +770,23 @@ def download_results_zip():
     buf = io.BytesIO()
     files_added: list[str] = []
 
+    ts = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for ext in ("*.csv", "*.json"):
             for path in sorted(out_dir.glob(ext)):
                 zf.write(path, path.name)
                 files_added.append(path.name)
+
+        # Generate and embed the full export JSON (enriched particles + contacts + summary)
+        try:
+            export_payload = _build_export_payload()
+            export_filename = f"simulation_export_{ts}.json"
+            zf.writestr(export_filename, json.dumps(export_payload, indent=2))
+            files_added.append(export_filename)
+        except Exception as exc:
+            logger.warning("Could not build export JSON for ZIP: %s", exc)
+
         # Embed a manifest so Analysis.html knows what's inside
         manifest = {
             "exported_at": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -785,7 +802,6 @@ def download_results_zip():
         )
 
     buf.seek(0)
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     return Response(
         content=buf.read(),
         media_type="application/zip",

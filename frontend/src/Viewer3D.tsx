@@ -57,6 +57,27 @@ function lerpParticleTransform(a: WsFrameParticle, b: WsFrameParticle, alpha: nu
 }
 
 /** Writes lerped per-vertex stress into `row` (length ≥ verts) without allocating. */
+/** Expand a single frame's sparse or dense stress data into a full per-vertex Float32Array. */
+function expandStressDense(p: WsFrameParticle | undefined, verts: number): Float32Array {
+  const fallback = p ? Math.max(0, Math.min(1, p.stress_intensity ?? 0)) : 0
+  const arr = new Float32Array(verts).fill(fallback)
+  const data = p?.vertex_intensities
+  if (!data || data.length === 0) return arr
+  const idxs = p?.vertex_stress_indices
+  if (idxs && idxs.length === data.length) {
+    for (let j = 0; j < idxs.length; j++) {
+      const ix = idxs[j]!
+      if (ix >= 0 && ix < verts) arr[ix] = data[j]!
+    }
+  } else {
+    const m = Math.min(verts, data.length)
+    for (let k = 0; k < m; k++) arr[k] = data[k]!
+    const tail = data[m - 1] ?? fallback
+    for (let k = m; k < verts; k++) arr[k] = tail
+  }
+  return arr
+}
+
 function fillStressRowLerp(
   row: Float32Array,
   verts: number,
@@ -64,17 +85,22 @@ function fillStressRowLerp(
   pb: WsFrameParticle | undefined,
   alpha: number,
 ) {
-  const va = pa?.vertex_intensities
-  const vb = pb?.vertex_intensities
   const fa = pa ? Math.max(0, Math.min(1, pa.stress_intensity ?? 0)) : 0
   const fb = pb ? Math.max(0, Math.min(1, pb.stress_intensity ?? 0)) : 0
   const fMix = THREE.MathUtils.lerp(fa, fb, alpha)
   const sparseA = (pa?.vertex_stress_indices?.length ?? 0) > 0
   const sparseB = (pb?.vertex_stress_indices?.length ?? 0) > 0
+
   if (sparseA || sparseB) {
-    row.fill(fMix)
+    // Expand both frames to full dense arrays then lerp vertex-by-vertex
+    const arrA = expandStressDense(pa, verts)
+    const arrB = expandStressDense(pb, verts)
+    for (let k = 0; k < verts; k++) row[k] = THREE.MathUtils.lerp(arrA[k]!, arrB[k]!, alpha)
     return
   }
+
+  const va = pa?.vertex_intensities
+  const vb = pb?.vertex_intensities
   if (va && vb && va.length > 0 && vb.length > 0) {
     const m = Math.min(verts, va.length, vb.length)
     for (let k = 0; k < m; k++) row[k] = THREE.MathUtils.lerp(va[k]!, vb[k]!, alpha)
@@ -337,6 +363,8 @@ function InstancedFemParticles(props: {
     stressTexW,
     stressData,
     stressTexture,
+    edgePositions,
+    edgeVertCount,
   } = useMemo(() => {
     let sphereFallback = false
     const base: THREE.BufferGeometry = (() => {
@@ -406,6 +434,12 @@ function InstancedFemParticles(props: {
       stressTexture.needsUpdate = true
     }
 
+    // Compute geometric edges for white outline rendering
+    const eGeo = new THREE.EdgesGeometry(base, 15)
+    const edgePositions = (eGeo.getAttribute('position').array as Float32Array).slice()
+    const edgeVertCount = edgePositions.length / 3
+    eGeo.dispose()
+
     return {
       geometry: base,
       verts: vCount,
@@ -417,8 +451,22 @@ function InstancedFemParticles(props: {
       stressTexW: tw,
       stressData,
       stressTexture,
+      edgePositions,
+      edgeVertCount,
     }
   }, [obj, radius, count, meshScale])
+
+  /** Dynamic BufferGeometry holding all instances' transformed edge vertices. */
+  const edgesBufGeo = useMemo(() => {
+    if (edgeVertCount === 0) return null
+    const geo = new THREE.BufferGeometry()
+    const posAttr = new THREE.BufferAttribute(new Float32Array(count * edgeVertCount * 3), 3)
+    posAttr.setUsage(THREE.DynamicDrawUsage)
+    geo.setAttribute('position', posAttr)
+    return geo
+  }, [count, edgeVertCount])
+
+  const edgesMat = useMemo(() => new THREE.LineBasicMaterial({ color: '#ffffff' }), [])
 
   useEffect(() => {
     onMeshVertexCount?.(verts, sphereFallback)
@@ -568,6 +616,30 @@ function InstancedFemParticles(props: {
     } else {
       stressTexture.needsUpdate = true
     }
+
+    // Transform edge vertices by each instance's matrix for white edge rendering
+    if (edgesBufGeo && edgeVertCount > 0) {
+      const matArr = mesh.instanceMatrix.array as Float32Array
+      const posAttr = edgesBufGeo.getAttribute('position') as THREE.BufferAttribute
+      const posData = posAttr.array as Float32Array
+      const nDraw = mesh.count
+      for (let i = 0; i < nDraw; i++) {
+        const mo = i * 16
+        const m0=matArr[mo],   m4=matArr[mo+4], m8=matArr[mo+8],  m12=matArr[mo+12]
+        const m1=matArr[mo+1], m5=matArr[mo+5], m9=matArr[mo+9],  m13=matArr[mo+13]
+        const m2=matArr[mo+2], m6=matArr[mo+6], m10=matArr[mo+10],m14=matArr[mo+14]
+        const pOff = i * edgeVertCount * 3
+        for (let k = 0; k < edgeVertCount; k++) {
+          const ek = k * 3
+          const px=edgePositions[ek], py=edgePositions[ek+1], pz=edgePositions[ek+2]
+          posData[pOff+ek]   = m0*px + m4*py + m8*pz  + m12
+          posData[pOff+ek+1] = m1*px + m5*py + m9*pz  + m13
+          posData[pOff+ek+2] = m2*px + m6*py + m10*pz + m14
+        }
+      }
+      edgesBufGeo.setDrawRange(0, nDraw * edgeVertCount)
+      posAttr.needsUpdate = true
+    }
   })
 
   useEffect(() => {
@@ -576,16 +648,26 @@ function InstancedFemParticles(props: {
       bootstrapMat.dispose()
       shaderMat.dispose()
       stressTexture?.dispose()
+      edgesBufGeo?.dispose()
+      edgesMat.dispose()
     }
-  }, [geometry, bootstrapMat, shaderMat, stressTexture])
+  }, [geometry, bootstrapMat, shaderMat, stressTexture, edgesBufGeo, edgesMat])
 
   return (
-    <instancedMesh
-      key={useShader ? 'stress-glsl' : 'bootstrap-std'}
-      ref={meshRef}
-      args={[geometry, useShader ? shaderMat : bootstrapMat, count]}
-      frustumCulled={false}
-    />
+    <>
+      <instancedMesh
+        key={useShader ? 'stress-glsl' : 'bootstrap-std'}
+        ref={meshRef}
+        args={[geometry, useShader ? shaderMat : bootstrapMat, count]}
+        frustumCulled={false}
+      />
+      {edgesBufGeo && (
+        <lineSegments frustumCulled={false}>
+          <primitive object={edgesBufGeo} attach="geometry" />
+          <primitive object={edgesMat} attach="material" />
+        </lineSegments>
+      )}
+    </>
   )
 }
 

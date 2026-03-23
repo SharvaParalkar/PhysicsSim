@@ -816,6 +816,27 @@ function fmtSci(v) {
 
 function kill(k) { if (charts[k]) { charts[k].destroy(); delete charts[k]; } }
 
+function noDataCanvas(id, msg) {
+    const canvas = document.getElementById(id);
+    if (!canvas) return;
+    // Destroy any existing Chart on this canvas
+    const existKey = Object.keys(charts).find(k => charts[k]?.canvas === canvas);
+    if (existKey) { charts[existKey].destroy(); delete charts[existKey]; }
+    const w = canvas.offsetWidth  || canvas.clientWidth  || 300;
+    const h = canvas.offsetHeight || canvas.clientHeight || 200;
+    canvas.width  = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '500 12px Inter, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(msg || 'No data available', w / 2, h / 2);
+}
+
 function mkHist(vals, bins) {
     if (!vals.length) return { labels: [], data: [] };
     const mn = Math.min(...vals), mx = Math.max(...vals);
@@ -880,7 +901,7 @@ function renderMetrics() {
 function renderZDist() {
     kill('zd');
     const p = DS.A.particles;
-    if (!p.length) return;
+    if (!p.length) { noDataCanvas('chart-z-dist', 'No particle data — load particles.csv or full export JSON'); return; }
     const hasB = DS.B.particles.length > 0;
     // Update badge to show A or A+B
     const badge = document.getElementById('z-dist-ds-badge');
@@ -914,7 +935,7 @@ function renderZDist() {
 function renderZHist() {
     kill('zh');
     const p = DS.A.particles;
-    if (!p.length) return;
+    if (!p.length) { noDataCanvas('chart-z-hist', 'No particle data — load particles.csv or full export JSON'); return; }
     const maxZ = Math.max(...p.map(x => x.n_contacts ?? 0));
     const hist = Array(maxZ + 1).fill(0);
     p.forEach(x => hist[Math.max(0, x.n_contacts ?? 0)]++);
@@ -942,7 +963,7 @@ function renderIsolatedPie() {
     const { summary: s, particles: p } = DS.A;
     const n   = s?.n_particles ?? p.length;
     const iso = s?.n_isolated  ?? p.filter(x => (x.n_contacts ?? 0) === 0).length;
-    if (!n) return;
+    if (!n) { noDataCanvas('chart-isolated', 'No particle data'); return; }
     const ctx = document.getElementById('chart-isolated').getContext('2d');
     charts.iso = new Chart(ctx, {
         type: 'doughnut',
@@ -957,12 +978,33 @@ function renderIsolatedPie() {
 // ── Adjacency Table ────────────────────────────────────────────────────────────
 function renderAdjTable() {
     const el = document.getElementById('adjacency-table');
-    const p = DS.A.particles;
-    if (!p.length || !p[0]?.neighbors) {
-        el.innerHTML = '<div style="padding:20px;text-align:center;color:#94a3b8;font-size:12px;">No adjacency data — load the full export JSON to see the contact network</div>';
+    let p = DS.A.particles;
+    const c = DS.A.contacts;
+
+    if (!p.length) {
+        el.innerHTML = '<div style="padding:20px;text-align:center;color:#94a3b8;font-size:12px;">No particle data loaded.</div>';
         return;
     }
+
+    // Build neighbor map from contacts when particles don't carry a neighbors field
+    // (happens when particles.csv is loaded alongside the full export JSON)
+    if (!p[0]?.neighbors) {
+        const nbMap = {};
+        for (const row of c) {
+            const a = row.particle_a ?? row.id_a;
+            const b = row.particle_b ?? row.id_b;
+            if (a == null || b == null) continue;
+            (nbMap[a] = nbMap[a] || []).push(b);
+            (nbMap[b] = nbMap[b] || []).push(a);
+        }
+        p = p.map(pt => ({ ...pt, neighbors: nbMap[pt.id] || [] }));
+    }
+
     const rows = p.filter(x => x.neighbors?.length).slice(0, 60);
+    if (!rows.length) {
+        el.innerHTML = '<div style="padding:20px;text-align:center;color:#94a3b8;font-size:12px;">No particle–particle contacts in this simulation — adjacency list is empty.</div>';
+        return;
+    }
     el.innerHTML = `<table>
         <thead><tr><th>Particle</th><th>Z#</th><th>Neighbors</th></tr></thead>
         <tbody>${rows.map((x, i) =>
@@ -980,13 +1022,18 @@ function renderAdjTable() {
 function renderPPPC() {
     kill('pppc');
     const s = DS.A.summary;
-    if (!s) return;
+    const c = DS.A.contacts;
+    // Fall back to counting from loaded contacts when summary is absent
+    const pp = s?.total_pp ?? c.filter(x => x.particle_a != null && x.particle_b != null).length;
+    const pc = s?.total_pc ?? 0;
+    if (!s && !c.length) { noDataCanvas('chart-pp-pc', 'No contact data — load summary.json or contact CSVs'); return; }
+    if (pp === 0 && pc === 0) { noDataCanvas('chart-pp-pc', 'No contacts recorded in this simulation'); return; }
     const ctx = document.getElementById('chart-pp-pc').getContext('2d');
     charts.pppc = new Chart(ctx, {
         type: 'doughnut',
         data: {
             labels: ['P–P Contacts', 'P–Container Contacts'],
-            datasets: [{ data: [s.total_pp ?? 0, s.total_pc ?? 0], backgroundColor: ['#3b82f6', '#10b981'], borderWidth: 0 }],
+            datasets: [{ data: [pp, pc], backgroundColor: ['#3b82f6', '#10b981'], borderWidth: 0 }],
         },
         options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { font: { size: 11 } } } } },
     });
@@ -996,7 +1043,7 @@ function renderPPPC() {
 function renderForceDist() {
     kill('force');
     const forces = DS.A.contacts.map(c => c.force).filter(f => f != null && isFinite(f) && f > 0);
-    if (!forces.length) return;
+    if (!forces.length) { noDataCanvas('chart-force', 'No force data — requires contact_pairs.csv with force values'); return; }
     const { labels, data } = mkHist(forces, 20);
     const ctx = document.getElementById('chart-force').getContext('2d');
     charts.force = new Chart(ctx, {
@@ -1018,7 +1065,7 @@ function renderDepthDist() {
     const depths = DS.A.contacts
         .map(c => (c.depth != null && isFinite(c.depth)) ? c.depth * 1000 : null)
         .filter(d => d != null && d > 0);
-    if (!depths.length) return;
+    if (!depths.length) { noDataCanvas('chart-depth', 'No penetration depth data — requires contact_pairs.csv'); return; }
     const { labels, data } = mkHist(depths, 20);
     const ctx = document.getElementById('chart-depth').getContext('2d');
     charts.depth = new Chart(ctx, {
@@ -1038,7 +1085,7 @@ function renderDepthDist() {
 function renderNormals() {
     kill('normals');
     const nc = DS.A.contacts.filter(c => c.nx != null);
-    if (!nc.length) return;
+    if (!nc.length) { noDataCanvas('chart-normals', 'No normal vector data — requires contact_points.csv'); return; }
     const bins = { '+X': 0, '-X': 0, '+Y': 0, '-Y': 0, '+Z': 0, '-Z': 0 };
     nc.forEach(c => {
         const ax = Math.abs(c.nx ?? 0), ay = Math.abs(c.ny ?? 0), az = Math.abs(c.nz ?? 0);
@@ -1138,7 +1185,7 @@ function renderSurfaceRatioViz() {
 function renderScatter() {
     kill('scatter');
     const p = DS.A.particles;
-    if (!p.length) return;
+    if (!p.length) { noDataCanvas('chart-scatter', 'No particle data — load particles.csv or full export JSON'); return; }
     const ctx = document.getElementById('chart-scatter').getContext('2d');
     const dsets = [{ label: 'A', data: p.map(x => ({ x: x.x, y: x.z })), backgroundColor: '#3b82f666', pointRadius: 5 }];
     if (DS.B.particles.length) dsets.push({ label: 'B', data: DS.B.particles.map(x => ({ x: x.x, y: x.z })), backgroundColor: '#f9741666', pointRadius: 5 });
@@ -1160,7 +1207,7 @@ function renderScatter() {
 function renderStress() {
     kill('stress');
     const sv = DS.A.stress;
-    if (!sv.length) return;
+    if (!sv.length) { noDataCanvas('chart-stress', 'No stress data — load vertex_stress.csv'); return; }
     const samples = sv.slice(0, 1200).map(x => x.stress);
     const ctx = document.getElementById('chart-stress').getContext('2d');
     charts.stress = new Chart(ctx, {

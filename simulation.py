@@ -116,6 +116,9 @@ CONTACT_SAMPLE_EVERY = 20              # legacy doc alignment: prefer CONTACT_EX
 CONTACT_EXTRACT_FALLING_EVERY = 20
 CONTACT_DEPTH_TOL    = 5e-5            # min penetration depth to count as contact
 STRESS_FLOOR         = 0.05            # normalized intensities below this are clamped to 0 (kills noise on non-touching particles)
+# STRESS_SIGMA: fraction of mesh characteristic radius used as local-space Gaussian width.
+# 0.30 = 30 % of half-diagonal.  Increase to widen blobs, decrease to sharpen them.
+# (Old meaning: radians for angular falloff — now unused.)
 # Strong PP count (reference): |F| above this; Z uses depth > CONTACT_DEPTH_TOL only (see compute_metrics).
 Z_CONTACT_FORCE_MIN_N = 1e-3
 # ── Output ─────────────────────────────────────────────────────────────────  # output settings
@@ -277,7 +280,7 @@ DEFAULT_CONFIG = {
     "OUTPUT_DIR": OUTPUT_DIR,
     "SAVE_HDF5": SAVE_HDF5,
     "SAVE_CSV": SAVE_CSV,
-    "STRESS_SIGMA": 0.12,  # radians — Hertzian angular falloff width (tight ~16° FWHM keeps stress local to contact site)
+    "STRESS_SIGMA": 0.30,  # fraction of mesh char-size used as Gaussian sigma_local (0.30 = 30 % of half-diagonal)
     "STRESS_FLOOR": 0.05,  # clamp post-normalization noise below this to 0.0 (kills ghost gradients on non-touching particles)
     # When True: rebuild scene repeatedly — simulate k particles, snapshot FEM state, add one more at the drop height.
     # Disables analytical handoff in the server (stages conflict with mid-run scene rebuilds).
@@ -1457,8 +1460,12 @@ def compute_fem_vertex_force_stress(
 
 def compute_particle_stress_map(contacts, particle_ids: set[int]) -> dict[int, float]:
     # Aggregate per-particle contact "intensity" from force and depth.
+    # Only PP (particle–particle) contacts contribute; PC (floor/wall) contacts are excluded
+    # so particles sitting on the container floor don't appear red.
     raw_scores: dict[int, float] = {int(pid): 0.0 for pid in particle_ids}
     for c in contacts:
+        if not bool(c.is_particle_particle):
+            continue
         score = abs(float(c.force)) if c.force is not None else abs(float(c.depth))
         if c.entity_a in raw_scores:
             raw_scores[int(c.entity_a)] += score
@@ -1783,8 +1790,24 @@ def _accumulate_stress_for_contacts(
     n_world: np.ndarray,
     n_verts: int,
     denom: float,
+    pos_world: Optional[np.ndarray] = None,
+    R_inv=None,
+    verts_local: Optional[np.ndarray] = None,
+    sigma_local: float = 0.01,
 ) -> np.ndarray:
-    """Accumulate Gaussian stress contributions for one particle from a filtered contact list."""
+    """Accumulate per-vertex stress contributions for one particle from a contact list.
+
+    When `pos_world`, `R_inv`, and `verts_local` are supplied (preferred path), stress is
+    computed as a purely distance-based Gaussian in the particle's *local* mesh frame:
+
+        stress_v += force * exp(-||local_v - local_contact||² / (2 * sigma_local²))
+
+    This places the stress blob exactly at the contact site regardless of particle rotation,
+    and the blob width (sigma_local ≈ 25–35 % of mesh char size) keeps it spatially tight.
+
+    Legacy fallback (angular): uses the angle between the vertex normal and the
+    vertex→contact direction — retained only when local-frame params are unavailable.
+    """
     stress = np.zeros(n_verts, dtype=np.float64)
     for c in contacts:
         p_w = np.asarray(c.position, dtype=np.float64).ravel()[:3]
@@ -1792,25 +1815,42 @@ def _accumulate_stress_for_contacts(
             fm = abs(float(c.force))
         else:
             fm = float(c.depth) * 1e6
-        if not math.isfinite(fm):
+        if not math.isfinite(fm) or fm < 0.0:
             fm = 0.0
-        vec = p_w.reshape(1, 3) - world_verts
-        dist = np.linalg.norm(vec, axis=1)
-        dist = np.maximum(dist, 1e-6)
-        vec_n = vec / dist.reshape(-1, 1)
-        cos_t = np.clip(np.sum(vec_n * n_world, axis=1), -1.0, 1.0)
-        angle = np.arccos(cos_t)
-        stress += fm * np.exp(-(angle**2) / denom)
+
+        if pos_world is not None and R_inv is not None and verts_local is not None:
+            # ── Primary path: local-space Euclidean distance ──────────────────
+            # Transform the world-space contact point into the particle's local frame.
+            # This is rotation-invariant and places the highlight at the correct face.
+            local_pt = R_inv.apply(p_w - pos_world)
+            dist_sq = np.sum((verts_local - local_pt) ** 2, axis=1)
+            denom_d = 2.0 * sigma_local ** 2
+            stress += fm * np.exp(-dist_sq / denom_d)
+        else:
+            # ── Legacy fallback: angular Gaussian in world space ──────────────
+            vec = p_w.reshape(1, 3) - world_verts
+            dist = np.linalg.norm(vec, axis=1)
+            dist = np.maximum(dist, 1e-6)
+            vec_n = vec / dist.reshape(-1, 1)
+            cos_t = np.clip(np.sum(vec_n * n_world, axis=1), -1.0, 1.0)
+            angle = np.arccos(cos_t)
+            stress += fm * np.exp(-(angle**2) / denom)
     return stress
 
 
 def _normalize_stress_map(raw: dict[int, np.ndarray]) -> dict[int, np.ndarray]:
-    """Normalize a {eid: stress_array} dict to [0, 1] by global max. Returns zero arrays unchanged."""
-    global_max = max((float(np.max(arr)) for arr in raw.values() if arr.size), default=0.0)
+    """Normalize all particles' stress arrays by a single global maximum.
+
+    Global normalization ensures only the most heavily contacted vertices reach
+    1.0 (red).  Per-particle normalization was inflating lightly-touched particles
+    to full red because each particle's tiny local max was scaled to 1.0.
+    """
+    if not raw:
+        return {}
+    global_max = float(max(np.max(arr) for arr in raw.values() if arr.size))
     if global_max <= 0.0:
         return {eid: np.zeros_like(arr) for eid, arr in raw.items()}
-    inv = 1.0 / global_max
-    return {eid: arr * inv for eid, arr in raw.items()}
+    return {eid: arr / global_max for eid, arr in raw.items()}
 
 
 def compute_vertex_stress(
@@ -1818,15 +1858,23 @@ def compute_vertex_stress(
     contacts: list,
     original_mesh,
     particle_ids: set,
-    sigma: float = 0.12,
+    sigma: float = 0.30,
     stress_floor: float = 0.05,
 ) -> dict[int, list[float]]:
     """
     Per-vertex Hertzian-style stress proxy from contact positions and forces.
 
-    PP and PC contacts are normalized independently then blended (PC at 40% weight)
-    so particle-particle contacts remain visible even when container forces dominate.
-    A hard floor clamps post-normalization noise to exactly 0 on non-contact regions.
+    The stress Gaussian is evaluated in each particle's *local* mesh frame using
+    Euclidean distance, so the highlight lands precisely at the contact site regardless
+    of particle rotation.  `sigma` is interpreted as a fraction of the mesh's
+    characteristic radius (half-diagonal of bounding box):
+
+        sigma_local = char_size * max(sigma, 0.20)   [metres]
+
+    Only PP (particle–particle) contacts drive the gradient; PC (particle–container)
+    contacts are excluded so floor/wall touches do not colour particles red.
+    Stress values are globally normalised so only the most-contacted vertices reach 1.0.
+    A hard floor clamps post-normalisation noise to exactly 0 on non-contact regions.
     """
     if original_mesh is None or len(original_mesh.vertices) == 0:
         return {}
@@ -1841,17 +1889,32 @@ def compute_vertex_stress(
         vn = np.zeros((n_verts, 3), dtype=np.float64)
         vn[:, 1] = 1.0
 
+    # ── Derive sigma_local from mesh bounding box ─────────────────────────────
+    # char_size = half-diagonal of the local bounding box, so sigma_local is a
+    # physically meaningful fraction of the particle size.
+    try:
+        bounds_min = verts_local.min(axis=0)
+        bounds_max = verts_local.max(axis=0)
+        char_size = float(np.linalg.norm(bounds_max - bounds_min)) / 2.0
+    except Exception:
+        char_size = 0.025
+    if char_size < 1e-6:
+        char_size = 0.025
+
     sig = float(sigma)
     if not math.isfinite(sig) or sig <= 0.0:
-        sig = 0.12
-    denom = 2.0 * sig**2
+        sig = 0.30
+    # Clamp to [20 %, 60 %] of char_size so the blob is neither a pinpoint nor a flood.
+    sigma_local = float(np.clip(char_size * sig, char_size * 0.20, char_size * 0.60))
+
+    # Legacy denom kept for fallback path in _accumulate_stress_for_contacts.
+    denom = 2.0 * sig ** 2
 
     floor = float(stress_floor)
     if not math.isfinite(floor) or floor < 0.0:
         floor = 0.05
 
     pp_raw: dict[int, np.ndarray] = {}
-    pc_raw: dict[int, np.ndarray] = {}
 
     for e in entities:
         eid = _entity_id(e)
@@ -1859,8 +1922,11 @@ def compute_vertex_stress(
             continue
         pos, quat_xyzw = _entity_pose(e)
         qx, qy, qz, qw = quat_xyzw
-        R = Rotation.from_quat(np.array([qx, qy, qz, qw], dtype=np.float64)).as_matrix()
-        world_verts = (R @ verts_local.T).T + pos.reshape(1, 3)
+        R_obj = Rotation.from_quat(np.array([qx, qy, qz, qw], dtype=np.float64))
+        R = R_obj.as_matrix()
+        R_inv = R_obj.inv()
+        pos_world = pos.ravel()[:3]
+        world_verts = (R @ verts_local.T).T + pos_world.reshape(1, 3)
         n_world = (R @ vn.T).T
         norms = np.linalg.norm(n_world, axis=1, keepdims=True)
         n_world = n_world / np.maximum(norms, 1e-12)
@@ -1870,26 +1936,23 @@ def compute_vertex_stress(
             if (int(c.entity_a) == eid or int(c.entity_b) == eid)
             and bool(c.is_particle_particle)
         ]
-        pc_rel = [
-            c for c in contacts
-            if (int(c.entity_a) == eid or int(c.entity_b) == eid)
-            and bool(c.is_particle_container)
-        ]
 
-        pp_raw[eid] = _accumulate_stress_for_contacts(pp_rel, eid, world_verts, n_world, n_verts, denom)
-        pc_raw[eid] = _accumulate_stress_for_contacts(pc_rel, eid, world_verts, n_world, n_verts, denom)
+        pp_raw[eid] = _accumulate_stress_for_contacts(
+            pp_rel, eid, world_verts, n_world, n_verts, denom,
+            pos_world=pos_world, R_inv=R_inv, verts_local=verts_local, sigma_local=sigma_local,
+        )
 
     pp_norm = _normalize_stress_map(pp_raw)
-    pc_norm = _normalize_stress_map(pc_raw)
 
     out: dict[int, list[float]] = {}
-    all_eids = set(pp_norm) | set(pc_norm)
+    all_eids = set(pp_norm)
 
     if not all_eids:
         contact_counts: dict[int, int] = {}
         for c in contacts:
-            contact_counts[int(c.entity_a)] = contact_counts.get(int(c.entity_a), 0) + 1
-            contact_counts[int(c.entity_b)] = contact_counts.get(int(c.entity_b), 0) + 1
+            if bool(c.is_particle_particle):
+                contact_counts[int(c.entity_a)] = contact_counts.get(int(c.entity_a), 0) + 1
+                contact_counts[int(c.entity_b)] = contact_counts.get(int(c.entity_b), 0) + 1
         max_count = max(contact_counts.values()) if contact_counts else 0
         for eid in particle_ids:
             t = float(contact_counts.get(int(eid), 0)) / max_count if max_count > 0 else 0.0
@@ -1897,9 +1960,7 @@ def compute_vertex_stress(
         return out
 
     for eid in all_eids:
-        pp_arr = pp_norm.get(eid, np.zeros(n_verts, dtype=np.float64))
-        pc_arr = pc_norm.get(eid, np.zeros(n_verts, dtype=np.float64))
-        blended = np.maximum(pp_arr, pc_arr * 0.4)
+        blended = pp_norm.get(eid, np.zeros(n_verts, dtype=np.float64))
         blended = np.where(blended < floor, 0.0, blended)
         out[int(eid)] = blended.tolist()
     return out
