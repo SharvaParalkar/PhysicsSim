@@ -250,12 +250,26 @@ function ensurePrintStyles() {
 export default function ResultsOverlay({ screenshot, data, onClose }: Props) {
   const { summary, particles, contacts } = data
   const [portalRoot] = useState(getOrCreatePortalRoot)
+  const [jsonExpanded, setJsonExpanded] = useState(false)
 
   useEffect(() => {
     ensurePrintStyles()
   }, [])
 
   const handlePrint = () => window.print()
+
+  const handleExportAll = () => {
+    const json = JSON.stringify(data, null, 2)
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `simulation_export_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
 
   const z = summary?.Z ?? 0
   const pp = summary?.total_pp ?? 0
@@ -301,6 +315,26 @@ export default function ResultsOverlay({ screenshot, data, onClose }: Props) {
           <div style={{ fontSize: 16, fontWeight: 900, color: '#1d3553', letterSpacing: 0.3, flex: 1 }}>
             Granular Jamming Results
           </div>
+          <button
+            type="button"
+            className="ro-no-print"
+            onClick={handleExportAll}
+            style={{
+              background: '#1d3553',
+              border: 'none',
+              fontSize: 12,
+              padding: '6px 14px',
+              borderRadius: 8,
+              cursor: 'pointer',
+              color: 'white',
+              fontWeight: 700,
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#274465')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = '#1d3553')}
+            title="Download full simulation_export.json — importable into Analysis.html"
+          >
+            ↓ Export All Data
+          </button>
           <button
             type="button"
             className="ro-no-print"
@@ -471,6 +505,73 @@ export default function ResultsOverlay({ screenshot, data, onClose }: Props) {
           label={`↓  DOWNLOAD SETTLED GEOMETRY (.OBJ)  —  ${nParticles} particles · world-space coords + contact_network.obj in ZIP`}
           prominent
         />
+
+        {/* ── JSON Statistics ─────────────────────────────────────────── */}
+        <SectionHeader>JSON Statistics</SectionHeader>
+        <button
+          type="button"
+          className="ro-no-print"
+          onClick={() => setJsonExpanded(v => !v)}
+          style={{
+            width: '100%',
+            background: '#f0f7ff',
+            border: '1px solid #d4dfec',
+            borderRadius: 8,
+            padding: '8px 14px',
+            fontSize: 12,
+            fontWeight: 600,
+            color: '#1d3553',
+            cursor: 'pointer',
+            textAlign: 'left',
+            marginBottom: jsonExpanded ? 0 : 4,
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+          }}
+        >
+          <span>Summary Statistics (JSON)</span>
+          <span style={{ fontSize: 10, color: '#8aa3be' }}>{jsonExpanded ? '▲ collapse' : '▼ expand'}</span>
+        </button>
+        {jsonExpanded && (
+          <div style={{
+            background: '#f8fbff',
+            border: '1px solid #d4dfec',
+            borderTop: 'none',
+            borderRadius: '0 0 8px 8px',
+            padding: '12px 14px',
+            maxHeight: 260,
+            overflowY: 'auto',
+            marginBottom: 8,
+          }}>
+            <pre style={{
+              margin: 0,
+              fontSize: 11,
+              fontFamily: '"JetBrains Mono", "Fira Code", monospace',
+              color: '#1d3553',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-all',
+              lineHeight: 1.6,
+            }}>
+              {JSON.stringify({
+                n_particles: nParticles,
+                Z_avg_coordination: z,
+                total_pp_contacts: pp,
+                total_pc_contacts: pc,
+                n_isolated_rattlers: isolated,
+                n_container_touching: wallTouch,
+                contact_efficiency_per_m3: contactEff,
+                system_pressure_pa: summary?.system_pressure ?? null,
+                total_particle_volume_m3: summary?.total_particle_volume ?? null,
+                single_particle_volume_m3: summary?.single_particle_volume_m3 ?? null,
+                n_contact_pairs: contacts.length,
+                timestamp: ts || null,
+              }, null, 2)}
+            </pre>
+          </div>
+        )}
+        <p className="ro-no-print" style={{ fontSize: 11, color: '#8aa3be', marginBottom: 4 }}>
+          ↳ Use <strong>Export All Data</strong> to download the full payload (summary + per-particle + contacts), then drag it into <strong>Analysis.html</strong> for advanced visualization.
+        </p>
 
         {/* ── Print footer ───────────────────────────────────────────── */}
         <div className="ro-print-footer" style={{ marginTop: 24, borderTop: '1px solid #d4dfec', paddingTop: 8 }}>

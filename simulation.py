@@ -835,10 +835,18 @@ def enforce_particle_separation(
 
 
 def _coacd_proxy_path(filepath: str, scale: float) -> str:
-    """Return a deterministic path for the cached compound OBJ collision proxy."""
-    base, _ = os.path.splitext(filepath)
+    """Return a deterministic path for the cached compound OBJ collision proxy.
+
+    Proxies are written to a ``coacd_cache`` subdirectory inside the same
+    folder as the source mesh so they never pollute the Particles folder root.
+    The directory is created on demand.
+    """
+    src_dir = os.path.dirname(os.path.abspath(filepath))
+    cache_dir = os.path.join(src_dir, "coacd_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(filepath))[0]
     scale_tag = f"{scale:.6g}".replace(".", "p").replace("-", "n")
-    return f"{base}_coacd_proxy_s{scale_tag}.obj"
+    return os.path.join(cache_dir, f"{stem}_coacd_proxy_s{scale_tag}.obj")
 
 
 def _write_coacd_compound_obj(parts: list, filepath: str) -> None:
