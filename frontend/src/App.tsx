@@ -23,7 +23,7 @@ const STANDARD_PHYSICS_TUNING: Pick<
   SETTLE_THRESHOLD: 1e-3,
   DT: 1 / 240,
   SUBSTEPS: 4,
-  ANALYTICAL_MODE: true,
+  ANALYTICAL_MODE: false,  // No-op with rigid bodies (E > 1e8); FEM users can re-enable in Advanced panel
   DROP_HEIGHT: 0.2,
   DROP_SPREAD: 0,
   GRAVITY: [0, -9.81, 0],
@@ -69,6 +69,63 @@ const LENGTH_UNITS: Record<LengthUnit, { label: string; short: string; metersPer
   um: { label: 'Micrometers', short: 'µm', metersPerUnit: 1e-6 },
   mm: { label: 'Millimeters', short: 'mm', metersPerUnit: 0.001 },
   cm: { label: 'Centimeters', short: 'cm', metersPerUnit: 0.01 },
+}
+
+/**
+ * Combined environment + physics settings for µm-scale particles (e.g. Star600M.obj).
+ *
+ * Why each value:
+ *  - PLATE_SIZE 6 mm / WALL_THICKNESS 0.5 mm / PLATE_WALL_HEIGHT 3 mm:
+ *      Environment proportional to 600 µm particles.
+ *  - DROP_HEIGHT 1 mm: Short drop — tiny fall distance prevents particles starting
+ *      far above the plate and keeps kinetic energy low at first contact.
+ *  - DROP_SPREAD 0.5 (Vogel disk): Avoids the extreme column-stacking that happens with
+ *      DROP_SPREAD=0 and many particles — a 90 mm column above a 6 mm plate causes
+ *      catastrophic collision cascades when particles all land at once.
+ *  - N_PARTICLES 20: Reasonable packing for a 6 mm plate; more than ~20 would overflow.
+ *  - SUBSTEPS 16: 4× the standard value; keeps Genesis's internal substep_dt small
+ *      enough that µm-scale contacts are resolved before penetration accumulates.
+ *  - DT 1/240: Same outer timestep as standard — increased SUBSTEPS already reduces the
+ *      internal step. Reducing DT further would slow the run without extra benefit here.
+ *  - SETTLE_THRESHOLD 5e-4 m/s: Tighter than the 1e-3 standard so tiny particles are
+ *      declared settled only when truly at rest (gravity × mass is tiny, so final
+ *      velocities are also tiny).
+ *  - SIM_DURATION 3 s: Sufficient — with only 10 mm to fall, all particles land in <0.1 s
+ *      even for the highest stack level; 3 s gives ample time to settle.
+ */
+const MICRON_SCALE_SETTINGS = {
+  // Environment
+  PLATE_SIZE: 0.006,
+  WALL_THICKNESS: 0.0005,
+  PLATE_WALL_HEIGHT: 0.003,
+  DROP_HEIGHT: 0.001,
+  CYLINDER_DIAMETER: 0.004,
+  CYLINDER_HEIGHT: 0.006,
+  // Physics
+  N_PARTICLES: 20,
+  DROP_SPREAD: 0.5,
+  SUBSTEPS: 16,
+  DT: 1 / 240,
+  SETTLE_THRESHOLD: 5e-4,
+  SIM_DURATION: 3.0,
+  ANALYTICAL_MODE: false,
+  GRAVITY: [0, -9.81, 0] as [number, number, number],
+}
+
+/** Standard environment + physics reset used when switching away from µm-scale particles. */
+const STANDARD_SCALE_SETTINGS = {
+  // Environment
+  PLATE_SIZE: 0.6,
+  WALL_THICKNESS: 0.02,
+  PLATE_WALL_HEIGHT: 0.15,
+  DROP_HEIGHT: 0.2,
+  CYLINDER_DIAMETER: 0.2,
+  CYLINDER_HEIGHT: 0.3,
+  // Physics
+  N_PARTICLES: 100,
+  DROP_SPREAD: 0,
+  ...STANDARD_PHYSICS_TUNING,
+  SIM_DURATION: 5.0,
 }
 
 export default function App() {
@@ -567,6 +624,15 @@ export default function App() {
     return `http://localhost:8000/particles/${file}?run=${runSignal}`
   }, [simConfig.PARTICLE_FILE, runSignal])
 
+  // Mirrors the server-side _infer_scale_factor_for_particle_file heuristic.
+  // OBJ files named *600M* are authored in µm; the physics server scales them by 1e-6 to convert
+  // to metres. The viewer must apply the same factor to the raw OBJ geometry so that vertex offsets
+  // (in OBJ units) match the metre-scale positions streamed from the physics server.
+  const meshScale = useMemo(
+    () => (/600m/i.test(simConfig.PARTICLE_FILE ?? '') ? 1e-6 : 1.0),
+    [simConfig.PARTICLE_FILE],
+  )
+
   return (
     <div
       style={{
@@ -694,23 +760,20 @@ export default function App() {
                     value={simConfig.PARTICLE_FILE ?? 'particle.obj'}
                     onChange={(e) => {
                       const name = e.target.value
-                      const is600M = /600m/i.test(name)
-                      setSimConfig((p) => ({
-                        ...p,
-                        PARTICLE_FILE: name,
-                        ...(is600M && {
-                          // Environment tuned for sub-millimetre (µm-scale) particles.
-                          // Server auto-scales the mesh via SCALE_FACTOR=1e-6; these values
-                          // keep the container proportional (6 mm plate, 1 mm drop, etc.)
-                          PLATE_SIZE: 0.006,
-                          WALL_THICKNESS: 0.0005,
-                          PLATE_WALL_HEIGHT: 0.003,
-                          DROP_HEIGHT: 0.001,
-                          CYLINDER_DIAMETER: 0.004,
-                          CYLINDER_HEIGHT: 0.006,
-                        }),
-                      }))
-                      if (is600M) setLengthUnit('um')
+                      const newIsMicron = /600m/i.test(name)
+                      setSimConfig((p) => {
+                        const prevIsMicron = /600m/i.test(p.PARTICLE_FILE ?? '')
+                        return {
+                          ...p,
+                          PARTICLE_FILE: name,
+                          // Entering µm scale: apply full micron preset (env + physics).
+                          ...(newIsMicron && !prevIsMicron && MICRON_SCALE_SETTINGS),
+                          // Leaving µm scale: restore standard environment + physics.
+                          ...(!newIsMicron && prevIsMicron && STANDARD_SCALE_SETTINGS),
+                        }
+                      })
+                      if (newIsMicron) setLengthUnit('um')
+                      else setLengthUnit('cm')
                     }}
                     style={{ flex: 1, border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
                   >
@@ -1326,6 +1389,7 @@ export default function App() {
                 cylinderSegments={32}
                 transparentContainer={transparentContainer}
                 lengthScale={lengthScale}
+                meshScale={meshScale}
               />
             </div>
           </div>

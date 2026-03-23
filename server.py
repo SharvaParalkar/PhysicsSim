@@ -210,6 +210,25 @@ def _infer_scale_factor_for_particle_file(particle_file: str) -> float:
     return 1.0
 
 
+def _infer_contact_depth_tol(scale_factor: float) -> float:
+    """
+    Return a contact-depth tolerance proportional to the mesh scale.
+
+    The default 5e-5 m (50 µm) is well-suited for cm-scale particles but is
+    nearly 10% of a 600 µm particle's diameter, causing almost every contact
+    to be filtered out.  Scale the tolerance so it stays at ~1% of typical
+    particle diameter across all supported scales:
+
+        scale 1.0  (mm→cm mesh units) → 5e-5 m (50 µm, original default)
+        scale 1e-6 (µm-authored mesh) → 5e-11 m → clamped to 5e-9 m (5 nm)
+
+    The lower bound prevents rounding-noise contacts from being accepted when
+    the tolerance becomes numerically negligible relative to float precision.
+    """
+    tol = 5e-5 * float(scale_factor)
+    return max(tol, 5e-9)
+
+
 def _particle_mass_kg_from_runtime(runtime: "SimulationRuntime", rho: float) -> float:
     """Single particle mass from physics mesh volume × density; retries if first volume estimate is zero."""
     pmesh = getattr(runtime, "physics_mesh", None)
@@ -236,6 +255,52 @@ def _particle_mass_kg_from_runtime(runtime: "SimulationRuntime", rho: float) -> 
     return mass
 
 
+# Physical length keys that must be scaled when physics normalisation is applied.
+_PHYS_LENGTH_KEYS: tuple[str, ...] = (
+    "PLATE_SIZE",
+    "WALL_THICKNESS",
+    "PLATE_WALL_HEIGHT",
+    "DROP_HEIGHT",
+    "CYLINDER_DIAMETER",
+    "CYLINDER_HEIGHT",
+)
+
+
+def _scale_cfg_lengths(cfg: dict, factor: float) -> dict:
+    """Return a copy of *cfg* with all physical length keys multiplied by *factor*.
+
+    Used to convert a display-scale config (e.g. PLATE_SIZE=6 mm) into a
+    physics-scale config (PLATE_SIZE=6 mm × physics_norm) so that Genesis sees
+    a self-consistent world at a numerically stable size.
+    """
+    if abs(factor - 1.0) < 1e-9:
+        return dict(cfg)
+    out = dict(cfg)
+    for key in _PHYS_LENGTH_KEYS:
+        if key in out:
+            out[key] = float(out[key]) * factor
+    return out
+
+
+def _rescale_positions(particles: list[dict], factor: float) -> list[dict]:
+    """Divide the x/y/z centroid of every particle by *factor*.
+
+    Converts physics-scale positions back to display-scale metres so the viewer
+    renders particles at the correct location inside the µm-scale container.
+    Returns the original list unchanged when factor ≈ 1.
+    """
+    if abs(factor - 1.0) < 1e-9:
+        return particles
+    out: list[dict] = []
+    for p in particles:
+        pp = dict(p)
+        pp["x"] = float(p["x"]) / factor
+        pp["y"] = float(p["y"]) / factor
+        pp["z"] = float(p["z"]) / factor
+        out.append(pp)
+    return out
+
+
 class SimulationAborted(Exception):
     """User requested cancel during scene build or other cooperative checkpoints."""
 
@@ -252,6 +317,9 @@ class SimulationRuntime:
         self.active_containers: list[Any] = []
         self.physics_mesh = None
         self._original_mesh = None
+        self._coacd_proxy_file: Optional[str] = None
+        self._physics_norm: float = 1.0
+        self._phys_cfg: dict = {}
         self.default_particle_file = _resolve_particle_file(DEFAULT_PARTICLE_NAME)
         self._busy = asyncio.Lock()
         self.cancel_requested = False
@@ -344,37 +412,72 @@ class SimulationRuntime:
                     Path(particle_file).name,
                     scale_factor,
                 )
+        # If CONTACT_DEPTH_TOL was not explicitly overridden by the UI (i.e. it still
+        # matches the module-level default), replace it with a scale-appropriate value
+        # so µm-scale contacts are not spuriously filtered out.
+        default_tol = float(simulation.CONTACT_DEPTH_TOL)
+        current_tol = float(cfg.get("CONTACT_DEPTH_TOL", default_tol))
+        if abs(current_tol - default_tol) < 1e-15 and abs(scale_factor - 1.0) > 1e-10:
+            cfg = dict(cfg)
+            cfg["CONTACT_DEPTH_TOL"] = _infer_contact_depth_tol(scale_factor)
+            logger.info(
+                "Auto CONTACT_DEPTH_TOL=%g for SCALE_FACTOR=%g.",
+                cfg["CONTACT_DEPTH_TOL"],
+                scale_factor,
+            )
         _p("mesh", 0.12, "Loading particle mesh…")
-        self.physics_mesh, self._original_mesh = simulation.load_particle_mesh(particle_file, scale_factor)
+        self.physics_mesh, self._original_mesh, self._coacd_proxy_file, physics_norm = \
+            simulation.load_particle_mesh(particle_file, scale_factor)
+        self._physics_norm = physics_norm
+
+        # Build physics-scale config: scale all length dimensions up by physics_norm
+        # so Genesis sees a numerically stable world (e.g. particle.obj scale).
+        # The original cfg is kept at display scale for the viewer / metrics.
+        _phys_cfg = _scale_cfg_lengths(dict(cfg), physics_norm)
+        if physics_norm != 1.0:
+            # Override depth tolerance: physics runs at reference scale, so the
+            # µm-adjusted 5 nm value is too small; revert to the 50 µm default.
+            _phys_cfg["CONTACT_DEPTH_TOL"] = float(simulation.CONTACT_DEPTH_TOL)
+            logger.info(
+                "Physics normalisation ×%.4g applied to %s; "
+                "CONTACT_DEPTH_TOL reset to %.4g m.",
+                physics_norm,
+                Path(particle_file).name,
+                simulation.CONTACT_DEPTH_TOL,
+            )
+        self._phys_cfg = _phys_cfg
+
         _p("environment", 0.35, "Building container geometry…")
         containers, env_info = simulation.create_environment(
             self.scene,
-            cfg["ENVIRONMENT_TYPE"],
-            cfg["PLATE_SIZE"],
-            cfg["CYLINDER_DIAMETER"],
-            cfg["CYLINDER_HEIGHT"],
-            cfg["CYLINDER_SEGMENTS"],
-            cfg["WALL_THICKNESS"],
-            float(cfg.get("PLATE_WALL_HEIGHT", simulation.PLATE_WALL_HEIGHT)),
-            env_restitution=float(cfg.get("ENV_RESTITUTION", 0.0)),
+            _phys_cfg["ENVIRONMENT_TYPE"],
+            _phys_cfg["PLATE_SIZE"],
+            _phys_cfg["CYLINDER_DIAMETER"],
+            _phys_cfg["CYLINDER_HEIGHT"],
+            _phys_cfg["CYLINDER_SEGMENTS"],
+            _phys_cfg["WALL_THICKNESS"],
+            float(_phys_cfg.get("PLATE_WALL_HEIGHT", simulation.PLATE_WALL_HEIGHT)),
+            env_restitution=float(_phys_cfg.get("ENV_RESTITUTION", 0.0)),
         )
         self.active_containers = list(containers)
-        _p("spawn", 0.55, f"Spawning {int(cfg['N_PARTICLES'])} particles…")
+        _p("spawn", 0.55, f"Spawning {int(_phys_cfg['N_PARTICLES'])} particles…")
         entities = simulation.spawn_particles(
             self.scene,
             self.physics_mesh,
-            cfg["N_PARTICLES"],
+            _phys_cfg["N_PARTICLES"],
             env_info,
-            cfg["DROP_HEIGHT"],
-            cfg["DROP_SPREAD"],
-            cfg["YOUNGS_MODULUS"],
-            cfg["POISSON_RATIO"],
-            cfg["DENSITY"],
+            _phys_cfg["DROP_HEIGHT"],
+            _phys_cfg["DROP_SPREAD"],
+            _phys_cfg["YOUNGS_MODULUS"],
+            _phys_cfg["POISSON_RATIO"],
+            _phys_cfg["DENSITY"],
             particle_file=particle_file,
             scale_factor=scale_factor,
-            particle_restitution=float(cfg.get("PARTICLE_RESTITUTION", 0.0)),
-            e_fem_max=float(cfg["FEM_JAMMING_E_MAX"]),
+            particle_restitution=float(_phys_cfg.get("PARTICLE_RESTITUTION", 0.0)),
+            e_fem_max=float(_phys_cfg["FEM_JAMMING_E_MAX"]),
             prior_fem_snapshots=prior_fem_snapshots,
+            coacd_proxy_file=self._coacd_proxy_file,
+            physics_norm=physics_norm,
         )
         self.active_entities = list(entities)
         if not _use_cpu_backend():
@@ -754,34 +857,11 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
 
         cfg_run = dict(cfg)
 
-        # When a micro-scale particle file is selected (e.g. *600M*.obj, authored in µm),
-        # the backend auto-scales the mesh to metres via SCALE_FACTOR=1e-6.  The environment
-        # defaults (plate size, wall thickness, drop height, contact tolerance) are tuned for
-        # cm-scale particles and must be rescaled to match, otherwise particles fall through the
-        # floor or vanish inside an enormous container.
-        try:
-            _pf = _resolve_particle_file(cfg_run.get("PARTICLE_FILE"))
-            _sf = float(cfg_run.get("SCALE_FACTOR", 1.0))
-            if abs(_sf - 1.0) < 1e-15:
-                _sf = _infer_scale_factor_for_particle_file(_pf)
-            if abs(_sf - 1.0) > 1e-10:
-                for _k in (
-                    "PLATE_SIZE", "CYLINDER_DIAMETER", "CYLINDER_HEIGHT",
-                    "WALL_THICKNESS", "PLATE_WALL_HEIGHT", "DROP_HEIGHT",
-                ):
-                    if _k in cfg_run:
-                        cfg_run[_k] = float(cfg_run[_k]) * _sf
-                cfg_run["CONTACT_DEPTH_TOL"] = (
-                    float(cfg_run.get("CONTACT_DEPTH_TOL", simulation.CONTACT_DEPTH_TOL)) * _sf
-                )
-                logger.info(
-                    "Auto-scaled environment for %s: factor=%g  PLATE_SIZE→%g  CONTACT_DEPTH_TOL→%g",
-                    Path(_pf).name, _sf,
-                    cfg_run.get("PLATE_SIZE", "n/a"),
-                    cfg_run["CONTACT_DEPTH_TOL"],
-                )
-        except Exception as _scale_exc:
-            logger.warning("Environment auto-scale skipped: %s", _scale_exc)
+        # NOTE: The UI already pre-scales environment dimensions (PLATE_SIZE, DROP_HEIGHT, etc.)
+        # to match the selected particle mesh when Star600M.obj (or other µm-scale meshes) is
+        # chosen. A previous server-side auto-scale by the mesh scale_factor (1e-6) caused
+        # double-scaling (e.g. 6mm → 6nm), making the container impossibly tiny and particles
+        # invisible. Environment scaling is now handled entirely by the frontend.
 
         sequential = bool(cfg.get("SEQUENTIAL_DROP"))
         analytical = bool(cfg.get("ANALYTICAL_MODE"))
@@ -817,6 +897,9 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
         if not sequential:
             container_ids, particle_ids, entities = RUNTIME.build_scene(cfg_run, on_progress=_on_build_progress)
             particle_mass_kg = _particle_mass_kg_from_runtime(RUNTIME, rho)
+            # If physics normalisation was applied, override depth_tol to physics scale
+            if RUNTIME._phys_cfg:
+                depth_tol = float(RUNTIME._phys_cfg.get("CONTACT_DEPTH_TOL", depth_tol))
 
         dt = float(cfg_run["DT"])
 
@@ -825,7 +908,14 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
         def _step() -> None:
             RUNTIME.scene.step(update_visualizer=False)
             if RUNTIME.active_entities and RUNTIME.physics_mesh is not None:
-                simulation.enforce_container_bounds(RUNTIME.active_entities, RUNTIME.physics_mesh, cfg_run)
+                # Use physics-scale cfg so bounds/separation thresholds match
+                # the normalised world coordinates (e.g. 225 mm plate, not 6 mm).
+                _pc = RUNTIME._phys_cfg if RUNTIME._phys_cfg else cfg_run
+                simulation.enforce_container_bounds(RUNTIME.active_entities, RUNTIME.physics_mesh, _pc)
+                simulation.enforce_particle_separation(
+                    RUNTIME.active_entities, RUNTIME.physics_mesh, _pc,
+                    original_mesh=RUNTIME._original_mesh,
+                )
 
         if not sequential:
             # Show spawn poses immediately so the UI is not blank until the first (slow) CPU step.
@@ -836,7 +926,10 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                     "t": 0.0,
                     "max_vel": 0.0,
                     "Z": 0.0,
-                    "particles": simulation._collect_particle_transforms(entities),
+                    "particles": _rescale_positions(
+                        simulation._collect_particle_transforms(entities),
+                        RUNTIME._physics_norm,
+                    ),
                 }
             )
 
@@ -937,11 +1030,14 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                         "t": t_now,
                         "max_vel": float(max_vel or 0.0),
                         "Z": last_live_Z,
-                        "particles": simulation._collect_particle_transforms(
-                            entities,
-                            stress_map,
-                            fem_vertex_norms=fem_maps,
-                            fem_norm_global_max=gmax,
+                        "particles": _rescale_positions(
+                            simulation._collect_particle_transforms(
+                                entities,
+                                stress_map,
+                                fem_vertex_norms=fem_maps,
+                                fem_norm_global_max=gmax,
+                            ),
+                            RUNTIME._physics_norm,
                         ),
                     }
                 )
@@ -978,6 +1074,14 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                     particle_mass_kg = _particle_mass_kg_from_runtime(RUNTIME, rho)
                     try:
                         simulation.restore_fem_entities(entities, snaps)
+                        # Centroid restoration is approximate; run a one-time separation pass to
+                        # correct any small overlaps introduced at the phase-transition handoff
+                        # before the new scene begins stepping.
+                        if RUNTIME.physics_mesh is not None:
+                            simulation.enforce_particle_separation(
+                                RUNTIME.active_entities, RUNTIME.physics_mesh, cfg2,
+                                original_mesh=RUNTIME._original_mesh,
+                            )
                     except Exception as exc:
                         sync_q.put({"type": "log", "line": f"[warn] FEM state restore failed ({exc}); continuing from spawn."})
                     contact_cache = simulation.ContactSampleCache()
@@ -1054,7 +1158,10 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                         "t": float(t_elapsed),
                         "max_vel": 0.0,
                         "Z": 0.0,
-                        "particles": simulation._collect_particle_transforms(entities),
+                        "particles": _rescale_positions(
+                            simulation._collect_particle_transforms(entities),
+                            RUNTIME._physics_norm,
+                        ),
                     }
                 )
                 stage_budget = min(stage_cap_default, total_budget)

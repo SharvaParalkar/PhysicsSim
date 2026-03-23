@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Granular Lab | Analytics Suite</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f8fafc; color: #1e293b; }
+        .glass-card { 
+            background: white; 
+            border: 1px solid #e2e8f0;
+            border-radius: 1rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        /* Prevents the downward expansion issue */
+        .chart-container {
+            position: relative;
+            height: 320px; 
+            width: 100%;
+        }
+        .sidebar-item { @apply flex items-center gap-3 px-4 py-3 rounded-xl text-slate-500 font-medium transition-all hover:bg-blue-50 hover:text-blue-600; }
+        .sidebar-item.active { @apply bg-blue-600 text-white shadow-md shadow-blue-200; }
+    </style>
+</head>
+<body class="flex min-h-screen">
+
+    <aside class="w-72 bg-white border-r border-slate-200 flex flex-col sticky top-0 h-screen hidden md:flex">
+        <div class="p-8">
+            <div class="flex items-center gap-3 text-blue-600 mb-10">
+                <div class="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold text-xl">G</div>
+                <span class="text-xl font-bold tracking-tight text-slate-900">GranularLab</span>
+            </div>
+            <nav class="space-y-2">
+                <a href="#" class="sidebar-item active">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h7"></path></svg>
+                    Dashboard
+                </a>
+                <a href="#" class="sidebar-item">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                    Stress Analysis
+                </a>
+            </nav>
+        </div>
+        <div class="mt-auto p-8 border-t border-slate-100">
+            <div class="bg-slate-50 rounded-xl p-4">
+                <p class="text-xs font-bold text-slate-400 uppercase mb-1">System Status</p>
+                <div class="flex items-center gap-2">
+                    <div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                    <span class="text-sm font-semibold">Engine Ready</span>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <main class="flex-1 overflow-y-auto">
+        <header class="bg-white/80 backdrop-blur-md border-b border-slate-200 p-6 sticky top-0 z-30">
+            <div class="max-w-6xl mx-auto flex justify-between items-center">
+                <div>
+                    <h2 class="text-2xl font-bold text-slate-900">Simulation Analytics</h2>
+                    <p class="text-slate-500 text-sm">Comparison Tool & Population Summary</p>
+                </div>
+                <div class="flex gap-3">
+                    <button onclick="window.location.reload()" class="px-4 py-2 text-sm font-semibold border border-slate-200 rounded-lg hover:bg-slate-50 transition">Reset</button>
+                    <button class="bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-bold shadow-lg shadow-blue-200 hover:bg-blue-700 transition">Export CSV</button>
+                </div>
+            </div>
+        </header>
+
+        <div class="max-w-6xl mx-auto p-8 space-y-8">
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="glass-card p-1 text-center border-2 border-dashed border-slate-200 hover:border-blue-400 transition-colors group cursor-pointer" onclick="document.getElementById('file-a').click()">
+                    <input type="file" id="file-a" multiple class="hidden" onchange="loadFiles('A', this.files)">
+                    <div class="py-10 px-6">
+                        <div class="text-blue-600 mb-2 font-bold text-lg">Dataset A</div>
+                        <p class="text-sm text-slate-400">Drag simulation files here</p>
+                        <div id="status-a" class="mt-4 text-xs font-bold uppercase tracking-widest text-slate-300">No Data</div>
+                    </div>
+                </div>
+                <div class="glass-card p-1 text-center border-2 border-dashed border-slate-200 hover:border-blue-400 transition-colors group cursor-pointer" onclick="document.getElementById('file-b').click()">
+                    <input type="file" id="file-b" multiple class="hidden" onchange="loadFiles('B', this.files)">
+                    <div class="py-10 px-6">
+                        <div class="text-slate-400 mb-2 font-bold text-lg">Dataset B (Ref)</div>
+                        <p class="text-sm text-slate-400">Add comparison data</p>
+                        <div id="status-b" class="mt-4 text-xs font-bold uppercase tracking-widest text-slate-300">Optional</div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="metric-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div class="glass-card p-6">
+                    <h3 class="font-bold text-slate-800 mb-6 flex items-center justify-between">
+                        Contact Distribution (Z)
+                        <span class="text-[10px] bg-blue-50 text-blue-600 px-2 py-1 rounded">Bar Chart</span>
+                    </h3>
+                    <div class="chart-container">
+                        <canvas id="chart-z"></canvas>
+                    </div>
+                </div>
+                <div class="glass-card p-6">
+                    <h3 class="font-bold text-slate-800 mb-6 flex items-center justify-between">
+                        Contact & Surface Ratio
+                        <span class="text-[10px] bg-emerald-50 text-emerald-600 px-2 py-1 rounded">Geometric</span>
+                    </h3>
+                    <div class="chart-container">
+                        <canvas id="chart-ratio"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="glass-card p-6">
+                <h3 class="font-bold text-slate-800 mb-6 flex items-center justify-between">
+                    Nodal Stress Distribution Across Mesh
+                    <span class="text-[10px] bg-purple-50 text-purple-600 px-2 py-1 rounded">High Fidelity</span>
+                </h3>
+                <div class="chart-container" style="height: 400px;">
+                    <canvas id="chart-stress"></canvas>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        let datasets = { A: {}, B: {} };
+        let activeCharts = {};
+
+        async function loadFiles(ver, files) {
+            const fileList = Array.from(files);
+            const statusLabel = document.getElementById(`status-${ver.toLowerCase()}`);
+            
+            for (let file of fileList) {
+                if (file.name.endsWith('.json')) {
+                    datasets[ver].summary = JSON.parse(await file.text());
+                } else if (file.name.endsWith('.csv')) {
+                    const text = await file.text();
+                    const parsed = Papa.parse(text, { header: true, dynamicTyping: true });
+                    if (file.name.includes('particles')) datasets[ver].particles = parsed.data;
+                    if (file.name.includes('vertex_stress')) datasets[ver].stress = parsed.data;
+                    if (file.name.includes('contact_pairs')) datasets[ver].contacts = parsed.data;
+                }
+            }
+            
+            statusLabel.innerText = "Data Loaded Successfully";
+            statusLabel.className = "mt-4 text-xs font-bold uppercase tracking-widest text-blue-600";
+            refreshDashboard();
+        }
+
+        function refreshDashboard() {
+            renderMetrics();
+            renderCharts();
+        }
+
+        function renderMetrics() {
+            const grid = document.getElementById('metric-grid');
+            grid.innerHTML = '';
+            
+            if (!datasets.A.summary) return;
+
+            const metrics = [
+                { label: 'Avg Coordination (Z)', val: datasets.A.summary.Z || 0, color: 'text-blue-600' },
+                { label: 'P-P Contacts', val: datasets.A.summary.total_pp || 0, color: 'text-slate-800' },
+                { label: 'System Pressure', val: datasets.A.summary.system_pressure?.toExponential(2) || 0, color: 'text-emerald-600' },
+                { label: 'Isolated (Rattlers)', val: datasets.A.summary.n_isolated || 0, color: 'text-rose-500' }
+            ];
+
+            metrics.forEach(m => {
+                const card = document.createElement('div');
+                card.className = 'glass-card p-6 hover:shadow-lg transition-shadow';
+                card.innerHTML = `
+                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">${m.label}</p>
+                    <p class="text-2xl font-bold ${m.color}">${m.val}</p>
+                `;
+                grid.appendChild(card);
+            });
+        }
+
+        function renderCharts() {
+            const chartOptions = {
+                responsive: true,
+                maintainAspectRatio: false, // Critical to prevent expanding downwards
+                plugins: { legend: { display: false } },
+                scales: { y: { beginAtZero: true, grid: { color: '#f1f5f9' } }, x: { grid: { display: false } } }
+            };
+
+            // 1. Z-Distribution Chart
+            if (datasets.A.particles) {
+                const ctx = document.getElementById('chart-z').getContext('2d');
+                if (activeCharts.z) activeCharts.z.destroy();
+                activeCharts.z = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: datasets.A.particles.map(p => `ID ${p.id}`),
+                        datasets: [{ 
+                            data: datasets.A.particles.map(p => p.n_contacts),
+                            backgroundColor: '#3b82f6',
+                            borderRadius: 6
+                        }]
+                    },
+                    options: chartOptions
+                });
+            }
+
+            // 2. Contact vs Surface Area Ratio Chart
+            if (datasets.A.summary) {
+                const ctx = document.getElementById('chart-ratio').getContext('2d');
+                if (activeCharts.ratio) activeCharts.ratio.destroy();
+                
+                // Estimation: Contact area vs theoretical surface area
+                const contactData = [datasets.A.summary.total_pp, datasets.A.summary.total_pc];
+                activeCharts.ratio = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['P-P Area', 'Container Area'],
+                        datasets: [{
+                            data: contactData,
+                            backgroundColor: ['#3b82f6', '#10b981'],
+                            borderWidth: 0
+                        }]
+                    },
+                    options: { ...chartOptions, plugins: { legend: { display: true, position: 'bottom' } } }
+                });
+            }
+
+            // 3. Stress Distribution Chart (Large)
+            if (datasets.A.stress) {
+                const ctx = document.getElementById('chart-stress').getContext('2d');
+                if (activeCharts.stress) activeCharts.stress.destroy();
+                const stressSamples = datasets.A.stress.slice(0, 500).map(s => s.stress);
+                activeCharts.stress = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: stressSamples.map((_, i) => i),
+                        datasets: [{ 
+                            data: stressSamples, 
+                            borderColor: '#8b5cf6', 
+                            borderWidth: 1.5,
+                            fill: true,
+                            backgroundColor: 'rgba(139, 92, 246, 0.05)',
+                            pointRadius: 0
+                        }]
+                    },
+                    options: { ...chartOptions, scales: { x: { display: false } } }
+                });
+            }
+        }
+    </script>
+</body>
+</html>

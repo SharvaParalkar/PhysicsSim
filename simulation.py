@@ -12,7 +12,7 @@ import networkx as nx
 from scipy.spatial.transform import Rotation
 from dataclasses import dataclass, field
 from contextlib import contextmanager
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 # Avoid Windows console UnicodeEncodeError when libraries print box-drawing/emoji.
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
@@ -123,6 +123,17 @@ OUTPUT_DIR           = "./results"     # output directory path
 SAVE_HDF5            = True            # enable HDF5 output
 SAVE_CSV             = True            # enable CSV output
 
+# ── Physics normalisation ───────────────────────────────────────────────────
+# Micro-scale meshes (e.g. 600M variants authored in µm) have characteristic
+# sizes in the sub-mm range after applying their display scale factor (1e-6).
+# Genesis's rigid solver rejects masses below an EPS (~1e-6 kg), and CoACD
+# fails with "Weights sum to zero" for sub-mm vertex coordinates.  Both issues
+# are solved by temporarily scaling the mesh UP to PHYSICS_NORM_TARGET before
+# physics and CoACD, then dividing all output positions back down by the same
+# factor so the viewer sees the correct µm-scale geometry.
+PHYSICS_NORM_THRESHOLD = 5e-3   # m — normalise when char size < 5 mm
+PHYSICS_NORM_TARGET    = 0.025  # m — target char size (≈ default particle.obj)
+
 # ── Genesis option bundles (throughput vs analytical phases) ───────────────
 @dataclass(frozen=True)
 class ThroughputSimTuning:
@@ -180,13 +191,17 @@ def make_rigid_options(gs_mod, _cfg: Optional[dict] = None):
     Rigid solver options for mesh particles against fixed box/cylinder containers.
 
     `box_box_detection` improves box–box contact; stiffer `constraint_timeconst` reduces penetration.
+    Increased `iterations` (300) reduces residual penetration for dense concave multi-hull packing.
+    Tighter `constraint_timeconst` (0.001) shrinks per-step penetration residual before it accumulates.
+    With compound-hull collision proxies the solver sees accurate geometry, so tighter settings
+    converge cleanly without instability.
     """
     g = getattr(gs_mod, "options", gs_mod)
     return g.RigidOptions(
         use_gjk_collision=True,
         box_box_detection=True,
-        iterations=80,
-        constraint_timeconst=0.005,
+        iterations=300,
+        constraint_timeconst=0.001,
     )
 
 
@@ -244,7 +259,7 @@ DEFAULT_CONFIG = {
     "FEM_USE_IMPLICIT": True,
     "FEM_NEWTON_ITERATIONS": 4,
     "FEM_NEWTON_ITERATIONS_PRECISION": 8,
-    "ANALYTICAL_MODE": True,
+    "ANALYTICAL_MODE": False,  # No-op with rigid bodies (E > 1e8); enable only for FEM (E ≤ 1e8)
     "ANALYTICAL_FALLING_DT": AnalyticalFallingTuning.dt,
     "ANALYTICAL_FALLING_SUBSTEPS": AnalyticalFallingTuning.substeps,
     "ANALYTICAL_PRECISION_DT": AnalyticalPrecisionTuning.dt,
@@ -252,7 +267,9 @@ DEFAULT_CONFIG = {
     "ANALYTICAL_VEL_THRESHOLD": 0.1,
     "GRAVITY": GRAVITY,
     "DT": DT,
-    "SUBSTEPS": SUBSTEPS,
+    # Use ThroughputSimTuning.substeps (8) as the default; the module-level SUBSTEPS=4 is
+    # kept for the standalone CLI but the server should use the tuning-class value.
+    "SUBSTEPS": ThroughputSimTuning.substeps,
     "SIM_DURATION": SIM_DURATION,
     "SETTLE_THRESHOLD": SETTLE_THRESHOLD,
     "CONTACT_EXTRACT_FALLING_EVERY": CONTACT_EXTRACT_FALLING_EVERY,
@@ -571,7 +588,10 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
     max_h = float(np.max(half_ext))
     if not math.isfinite(max_h) or max_h <= 0.0:
         return
-    eps = max(1e-5, 2e-3 * max_h)
+    # eps must be at least 5% of the particle half-extent so it remains meaningful
+    # at any scale (the old 1e-5 m floor was negligible for µm-scale particles where
+    # max_h ≈ 300 µm, giving an eps that is only 3% of the floor value).
+    eps = max(5e-2 * max_h, 1e-9)
 
     env = str(cfg.get("ENVIRONMENT_TYPE", ENVIRONMENT_TYPE)).strip().lower()
     t = float(cfg.get("WALL_THICKNESS", WALL_THICKNESS))
@@ -712,6 +732,140 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
                     pass
 
 
+def enforce_particle_separation(
+    entities, physics_mesh, _cfg: dict, *, original_mesh=None
+) -> None:
+    """
+    Post-step centroid-based depenetration sweep.
+
+    Detects particle pairs whose centroids are closer than the computed minimum
+    separation distance and pushes them apart with a Jacobi-style half-correction
+    along the separation axis.
+
+    The threshold is derived from the actual particle geometry (``original_mesh``)
+    when available: the 10th-percentile vertex-to-centroid distance approximates the
+    particle's inner (concave) radius, and ``1.7 ×`` that value is the centroid
+    distance below which two particles MUST be genuinely penetrating.  This is
+    tighter than the old ``char × 0.6`` heuristic which fired falsely for star
+    particles whose concave faces sit naturally close to a neighbour's centroid.
+
+    Only corrects severe overlaps so it does not fight the constraint solver during
+    normal settling contact.  Both RigidEntity and FEMEntity are supported.
+    """
+    if not entities or physics_mesh is None:
+        return
+    try:
+        extents = physics_mesh.bounds[1] - physics_mesh.bounds[0]
+    except Exception:
+        return
+    char = float(max(float(extents[0]), float(extents[1]), float(extents[2]), 1e-9))
+
+    # Compute threshold from the ORIGINAL mesh geometry (the actual star shape)
+    # rather than the bounding-box extent.  For a 6-point star the 10th-percentile
+    # vertex distance from the centroid approximates the inner (concave) radius r_in.
+    # Two centroids closer than 1.7 × r_in are definitively interpenetrating.
+    min_sep = char * 0.4  # fallback if original_mesh is unavailable
+    if original_mesh is not None:
+        try:
+            ov = np.asarray(original_mesh.vertices, dtype=float)
+            if ov.shape[0] > 0:
+                oc = np.asarray(original_mesh.centroid, dtype=float)
+                dists = np.linalg.norm(ov - oc, axis=1)
+                r_in = float(np.percentile(dists, 10))
+                if r_in > 1e-9:
+                    min_sep = r_in * 1.7
+        except Exception:
+            pass
+    min_sep_sq = min_sep * min_sep
+
+    poses: list[tuple[Any, np.ndarray]] = []
+    for e in entities:
+        ename = type(e).__name__
+        if ename not in ("RigidEntity", "FEMEntity"):
+            continue
+        try:
+            p, _ = _entity_pose(e)
+            if np.isfinite(p).all():
+                poses.append((e, np.asarray(p, dtype=float).copy()))
+        except Exception:
+            continue
+
+    if len(poses) < 2:
+        return
+
+    corrections = [np.zeros(3, dtype=float) for _ in poses]
+    made_correction = False
+
+    for i in range(len(poses)):
+        for j in range(i + 1, len(poses)):
+            delta = poses[i][1] - poses[j][1]
+            dist_sq = float(np.dot(delta, delta))
+            if dist_sq >= min_sep_sq or dist_sq < 1e-18:
+                continue
+            dist = math.sqrt(dist_sq)
+            push = (min_sep - dist) * 0.5
+            axis = delta / dist
+            corrections[i] += axis * push
+            corrections[j] -= axis * push
+            made_correction = True
+
+    if not made_correction:
+        return
+
+    for idx, (e, p) in enumerate(poses):
+        corr = corrections[idx]
+        if float(np.linalg.norm(corr)) < 1e-12:
+            continue
+        new_pos = p + corr
+        try:
+            ename = type(e).__name__
+            if ename == "RigidEntity":
+                e.set_pos(new_pos, zero_velocity=False)
+            elif ename == "FEMEntity":
+                st = e.get_state()
+                vpos = _tensor_to_numpy(st.pos).astype(float)
+                if vpos.ndim == 3:
+                    vpos = vpos[0]
+                if vpos.ndim == 2 and vpos.shape[-1] == 3:
+                    vpos = np.ascontiguousarray(vpos + corr.reshape(1, 3))
+                    with _suppress_gs_manual_pose_warnings():
+                        e.set_position(vpos)
+        except Exception:
+            pass
+
+
+def _coacd_proxy_path(filepath: str, scale: float) -> str:
+    """Return a deterministic path for the cached compound OBJ collision proxy."""
+    base, _ = os.path.splitext(filepath)
+    scale_tag = f"{scale:.6g}".replace(".", "p").replace("-", "n")
+    return f"{base}_coacd_proxy_s{scale_tag}.obj"
+
+
+def _write_coacd_compound_obj(parts: list, filepath: str) -> None:
+    """Write CoACD convex parts as a multi-object OBJ (one ``o PartN`` per hull).
+
+    Genesis reads each ``o`` sub-mesh as a separate convex hull in a compound
+    collision proxy when ``convexify=False`` — giving a faithful multi-hull shape
+    instead of one bloated global convex hull.
+
+    OBJ face indices are 1-based and global across the whole file, so we track
+    the running vertex offset as we write each part.
+    """
+    lines = ["# Compound collision proxy — CoACD convex decomposition"]
+    vert_offset = 0
+    for idx, part in enumerate(parts):
+        hull = part.convex_hull  # ensure each part is strictly convex
+        lines.append(f"o Part{idx}")
+        for v in hull.vertices:
+            lines.append(f"v {v[0]:.8g} {v[1]:.8g} {v[2]:.8g}")
+        for f in hull.faces:
+            a, b, c = int(f[0]) + 1 + vert_offset, int(f[1]) + 1 + vert_offset, int(f[2]) + 1 + vert_offset
+            lines.append(f"f {a} {b} {c}")
+        vert_offset += len(hull.vertices)
+    with open(filepath, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
 def load_particle_mesh(filepath: str, scale: float = 1.0):
     ext = os.path.splitext(filepath)[1].lower().lstrip(".")
     if ext not in {"obj", "stl"}:
@@ -732,6 +886,23 @@ def load_particle_mesh(filepath: str, scale: float = 1.0):
     original_mesh.apply_scale(scale)
     original_mesh.apply_translation(-original_mesh.centroid)
 
+    # ── Physics normalisation ─────────────────────────────────────────────────
+    # If the mesh is tiny after applying `scale` (e.g. a 600 µm particle at
+    # scale=1e-6 → char ≈ 0.666 mm) Genesis will reject it with "Combined mass
+    # is less than EPS" and CoACD will fail with "Weights sum to zero".  Scale
+    # the mesh up to PHYSICS_NORM_TARGET so physics runs in a stable range.
+    # All output positions must be divided by physics_norm before display.
+    raw_extents = original_mesh.bounds[1] - original_mesh.bounds[0]
+    char_after_scale = float(max(raw_extents[0], raw_extents[1], raw_extents[2], 1e-9))
+    physics_norm: float = 1.0
+    if char_after_scale < PHYSICS_NORM_THRESHOLD:
+        physics_norm = float(PHYSICS_NORM_TARGET) / char_after_scale
+        original_mesh.apply_scale(physics_norm)
+        print(
+            f"Physics normalisation: char={char_after_scale:.4g} m → "
+            f"{char_after_scale * physics_norm:.4g} m  (×{physics_norm:.4g})"
+        )
+
     parts = []
     try:
         parts = coacd.run_coacd(original_mesh, max_convex_hull=32)
@@ -743,12 +914,25 @@ def load_particle_mesh(filepath: str, scale: float = 1.0):
 
     physics_mesh = trimesh.util.concatenate(parts)
 
+    # Write (or reuse) the compound OBJ collision proxy.  Each CoACD convex hull
+    # becomes a separate ``o PartN`` sub-object so Genesis can build a faithful
+    # multi-hull collision shape instead of one bloated global convex hull.
+    # The proxy vertices are in physics metres (scale × physics_norm already
+    # applied) so Genesis must load it with scale=1.0.
+    proxy_path = _coacd_proxy_path(filepath, scale * physics_norm)
+    try:
+        _write_coacd_compound_obj(parts, proxy_path)
+        print(f"Wrote CoACD compound proxy ({len(parts)} parts) → {proxy_path}")
+    except Exception as exc:
+        print(f"Warning: could not write CoACD proxy to {proxy_path!r}: {exc}; falling back to convexify=True")
+        proxy_path = None  # caller will fall back to original file + convexify=True
+
     volume = float(physics_mesh.volume) if physics_mesh.is_watertight else float(physics_mesh.convex_hull.volume)
     print(
         f"{filepath} | verts={len(physics_mesh.vertices)} | faces={len(physics_mesh.faces)} | "
         f"extents={physics_mesh.extents} | volume={volume:.6g} | parts={len(parts)}"
     )
-    return (physics_mesh, original_mesh)
+    return (physics_mesh, original_mesh, proxy_path, physics_norm)
 
 
 def _rigid_material(friction: float, restitution: float, rho: Optional[float] = None):
@@ -880,6 +1064,8 @@ def spawn_particles(
     particle_restitution: float = PARTICLE_RESTITUTION,
     e_fem_max: float = FEM_JAMMING_E_MAX,
     prior_fem_snapshots: Optional[list[dict]] = None,
+    coacd_proxy_file: Optional[str] = None,
+    physics_norm: float = 1.0,
 ) -> list:
     E_in = float(E)
     if E_in > 1e8:
@@ -929,6 +1115,20 @@ def spawn_particles(
         c = arr.mean(axis=0)
         return (float(c[0]), float(c[1]), float(c[2]))
 
+    # Choose the collision file and Genesis scale:
+    #   Proxy path: vertices are already in physics metres (display_scale ×
+    #     physics_norm applied in load_particle_mesh) → Genesis scale = 1.0.
+    #   Fallback path: original OBJ vertices are in source units (e.g. µm) →
+    #     Genesis scale = display_scale × physics_norm to reach physics metres.
+    if coacd_proxy_file is not None:
+        collision_file = coacd_proxy_file
+        use_convexify = False
+        collision_scale = 1.0
+    else:
+        collision_file = particle_file
+        use_convexify = True
+        collision_scale = float(scale_factor) * float(physics_norm)
+
     entities = []
     if spread <= 1e-9:
         # Single column above the plate: stack along +Y so bodies do not share one point (that breaks FEM contact).
@@ -944,13 +1144,11 @@ def spawn_particles(
                 quat = gs.utils.geom.R_to_quat(R)
             ent = scene.add_entity(
                 gs.morphs.Mesh(
-                    file=particle_file,
-                    scale=float(scale_factor),
+                    file=collision_file,
+                    scale=collision_scale,
                     pos=(x, y, z),
                     quat=quat,
-                    # Force Genesis to convexify non-watertight meshes so it can compute
-                    # a non-zero mass/inertia (prevents "Combined mass is less than EPS").
-                    convexify=True,
+                    convexify=use_convexify,
                     collision=True,
                     visualization=False,
                 ),
@@ -973,6 +1171,11 @@ def spawn_particles(
 
         # Vogel disk on the horizontal plane — loose pack that settles into contacts.
         golden = math.pi * (3.0 - math.sqrt(5.0))
+        # Minimum spawn separation: 1.5× largest extent, matching the column stack_gap.
+        # Accounts for random rotations where a concave tip can reach char/2 beyond the centroid.
+        min_sep_spawn = max(char * 1.5, 1e-4)
+        min_sep_spawn_sq = min_sep_spawn * min_sep_spawn
+        placed_positions: list[tuple[float, float, float]] = []
 
         for i in range(n):
             if i < len(prior):
@@ -984,15 +1187,23 @@ def spawn_particles(
                 x = ri * math.cos(th)
                 z = ri * math.sin(th)
                 y = spawn_y0
+                # Ensure the new spawn position is at least min_sep_spawn away from every
+                # already-placed particle. If XZ proximity forces overlap, push Y upward.
+                for px, py, pz in placed_positions:
+                    xz_sq = (x - px) ** 2 + (z - pz) ** 2
+                    if xz_sq < min_sep_spawn_sq:
+                        dy_needed = math.sqrt(max(min_sep_spawn_sq - xz_sq, 0.0))
+                        y = max(y, py + dy_needed)
                 R = trimesh.transformations.random_rotation_matrix()[:3, :3]
                 quat = gs.utils.geom.R_to_quat(R)
+            placed_positions.append((x, y, z))
             ent = scene.add_entity(
                 gs.morphs.Mesh(
-                    file=particle_file,
-                    scale=float(scale_factor),
+                    file=collision_file,
+                    scale=collision_scale,
                     pos=(x, y, z),
                     quat=quat,
-                    convexify=True,
+                    convexify=use_convexify,
                     collision=True,
                     visualization=False,
                 ),
@@ -2034,7 +2245,7 @@ def main():
         show_viewer=bool(args.show_viewer),
     )
 
-    physics_mesh, original_mesh = load_particle_mesh(PARTICLE_FILE, SCALE_FACTOR)
+    physics_mesh, original_mesh, coacd_proxy_file, physics_norm = load_particle_mesh(PARTICLE_FILE, SCALE_FACTOR)
     container_ids, env_info = create_environment(
         scene,
         ENVIRONMENT_TYPE,
@@ -2058,6 +2269,8 @@ def main():
         POISSON_RATIO,
         DENSITY,
         particle_restitution=PARTICLE_RESTITUTION,
+        coacd_proxy_file=coacd_proxy_file,
+        physics_norm=physics_norm,
     )
     particle_ids = {_entity_id(e) for e in entities}
     scene.build()

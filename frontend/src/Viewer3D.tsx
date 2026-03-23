@@ -189,7 +189,6 @@ function createBufferStressShaderMaterial(nMat4: 1 | 2): THREE.ShaderMaterial {
         gl_FragColor = vec4(col, 1.0);
       }
     `,
-    instancing: true,
   })
 }
 
@@ -240,7 +239,6 @@ function createTextureStressShaderMaterial(stressTex: THREE.DataTexture, texW: n
         gl_FragColor = vec4(col, 1.0);
       }
     `,
-    instancing: true,
   })
 }
 
@@ -318,8 +316,10 @@ function InstancedFemParticles(props: {
   simRunId: number
   settledVertexStress: Record<string, number[]> | null
   onMeshVertexCount?: (verts: number, sphereFallback?: boolean) => void
+  /** Scale applied to OBJ geometry so its units match physics world metres (e.g. 1e-6 for µm OBJ files). */
+  meshScale?: number
 }) {
-  const { count, radius, objUrl, liveFrameRef, simRunId, settledVertexStress, onMeshVertexCount } = props
+  const { count, radius, objUrl, liveFrameRef, simRunId, settledVertexStress, onMeshVertexCount, meshScale = 1 } = props
   const meshRef = useRef<THREE.InstancedMesh | null>(null)
   const obj = useLoader(OBJLoader, objUrl)
 
@@ -355,6 +355,20 @@ function InstancedFemParticles(props: {
       }
       return g.clone()
     })()
+    // Normalise geometry to physics world metres. OBJ files authored in non-metre units
+    // (e.g. µm for Star600M.obj, meshScale=1e-6) must be scaled so vertex offsets match
+    // the metre-scale positions sent by the physics server. Without this, an OBJ vertex
+    // at 300 µm (OBJ unit) would be treated as 300 m, placing the mesh far outside the container.
+    if (meshScale !== 1 && Number.isFinite(meshScale) && meshScale > 0) {
+      base.applyMatrix4(new THREE.Matrix4().makeScale(meshScale, meshScale, meshScale))
+    }
+    // Centre the geometry at the local origin so the instance matrix places it correctly.
+    // The Python physics server (load_particle_mesh) also centres each mesh before spawning,
+    // so particle poses streamed from the server represent the centre-of-mass position.
+    // OBJ files like Star600M.obj have vertices offset far from the origin (e.g. X≈44 mm,
+    // Z≈−150 mm in OBJ µm units); without this step the mesh would appear tens of mm away
+    // from the plate even though the physics simulation is correct.
+    base.center()
     base.computeVertexNormals()
     const vCount = base.getAttribute('position').count
     const idx = new Float32Array(vCount)
@@ -404,7 +418,7 @@ function InstancedFemParticles(props: {
       stressData,
       stressTexture,
     }
-  }, [obj, radius, count])
+  }, [obj, radius, count, meshScale])
 
   useEffect(() => {
     onMeshVertexCount?.(verts, sphereFallback)
@@ -660,6 +674,8 @@ function Scene(props: {
   onMeshVertexCount?: (verts: number, sphereFallback?: boolean) => void
   /** Convert simulation world meters → selected display units (e.g. cm => 100). */
   lengthScale: number
+  /** Scale OBJ geometry vertices to physics world metres (e.g. 1e-6 for µm-authored meshes). */
+  meshScale?: number
   environmentType: 'plate' | 'cylinder'
   plateSize: number
   wallThickness: number
@@ -677,6 +693,7 @@ function Scene(props: {
     settledVertexStress,
     onMeshVertexCount,
     lengthScale,
+    meshScale,
     environmentType,
     plateSize,
     wallThickness,
@@ -776,6 +793,7 @@ function Scene(props: {
           simRunId={simRunId}
           settledVertexStress={settledVertexStress}
           onMeshVertexCount={onMeshVertexCount}
+          meshScale={meshScale}
         />
       </group>
     </>
@@ -791,6 +809,8 @@ type Viewer3DProps = {
   onMeshVertexCount?: (verts: number, sphereFallback?: boolean) => void
   /** Convert simulation world meters → selected display units (e.g. cm => 100). */
   lengthScale?: number
+  /** Scale OBJ geometry vertices to physics world metres (e.g. 1e-6 for µm-authored meshes). */
+  meshScale?: number
   environmentType: 'plate' | 'cylinder'
   plateSize: number
   wallThickness: number
@@ -811,6 +831,7 @@ export default function Viewer3D(props: Viewer3DProps) {
     settledVertexStress,
     onMeshVertexCount,
     lengthScale = 1,
+    meshScale,
     environmentType,
     plateSize,
     wallThickness,
@@ -931,6 +952,7 @@ export default function Viewer3D(props: Viewer3DProps) {
           settledVertexStress={settledVertexStress}
           onMeshVertexCount={reportMeshVerts}
           lengthScale={lengthScale}
+          meshScale={meshScale}
           environmentType={environmentType}
           plateSize={plateSize}
           wallThickness={wallThickness}
