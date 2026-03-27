@@ -702,8 +702,11 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
         barrel_top_world_y = junction_world_y + barrel_h
         barrel_interior_r = max(barrel_r - eps, eps)
         needle_interior_r = max(needle_r - eps, eps)
-        # Analytical floor: particles in the barrel cannot descend below the annulus slab top.
-        barrel_floor_y = junction_world_y + eps
+        # Analytical floor matches the Box top surface: junction_world_y + safe_floor_h/2
+        # safe_floor_h = max(t_bottom, barrel_r * 0.15), mirroring create_environment.
+        t_bottom_cfg = max(1e-6, float(cfg.get("SYRINGE_BOTTOM_THICKNESS", SYRINGE_BOTTOM_THICKNESS)))
+        safe_floor_h = max(t_bottom_cfg, barrel_r * 0.15)
+        barrel_floor_y = junction_world_y + safe_floor_h * 0.5
 
         def _project_inside_syringe(x: float, y: float, z: float) -> tuple[float, float]:
             rr = math.hypot(x, z)
@@ -1554,19 +1557,25 @@ def create_environment(
             material=mat,
         )
         container_ids.add(barrel)
+
+        # Barrel floor: a solid Box primitive, identical in principle to the plate.
+        # Box SDF contact detection is bulletproof — particles cannot tunnel through it
+        # the way they can through thin OBJ mesh colliders.
+        # Minimum safe thickness: at least 15% of barrel radius so a particle falling
+        # the full barrel height cannot traverse the box in a single substep.
+        safe_floor_h = max(t_bottom, barrel_r * 0.15)
+        annulus_box_side = (barrel_r + t_wall) * 2.0
+        annulus_box_center_y = syringe_lift_y + junction_y_local + safe_floor_h * 0.5 - t_bottom * 0.5
         annulus = scene.add_entity(
-            gs.morphs.Mesh(
-                file=annulus_path,
-                scale=1.0,
-                pos=(0.0, syringe_lift_y + junction_y_local, 0.0),
+            gs.morphs.Box(
+                size=(annulus_box_side, safe_floor_h, annulus_box_side),
+                pos=(0.0, annulus_box_center_y, 0.0),
                 fixed=True,
-                convexify=False,
-                collision=True,
-                visualization=False,
             ),
             material=mat,
         )
         container_ids.add(annulus)
+
         needle = scene.add_entity(
             gs.morphs.Mesh(
                 file=needle_path,
@@ -1580,15 +1589,16 @@ def create_environment(
             material=mat,
         )
         container_ids.add(needle)
+
+        # Needle outlet cap: same safe thickness as barrel floor.
+        safe_cap_h = max(t_bottom, needle_r * 0.5)
+        tip_cap_side = (needle_r + t_wall) * 2.0
+        tip_box_center_y = syringe_lift_y + junction_y_local - needle_h
         tip_cap = scene.add_entity(
-            gs.morphs.Mesh(
-                file=tip_cap_path,
-                scale=1.0,
-                pos=(0.0, syringe_lift_y + junction_y_local - needle_h - t_bottom / 2.0, 0.0),
+            gs.morphs.Box(
+                size=(tip_cap_side, safe_cap_h, tip_cap_side),
+                pos=(0.0, tip_box_center_y, 0.0),
                 fixed=True,
-                convexify=False,
-                collision=True,
-                visualization=False,
             ),
             material=mat,
         )
