@@ -206,13 +206,71 @@ def make_fem_options(gs_mod, cfg: Optional[dict] = None):
 
 
 def make_mpm_options(gs_mod, _cfg: Optional[dict] = None):
-    """Explicit MPM grid domain and resolution for syringe/plate scenes."""
+    """Build an MPM domain large enough for the current runtime configuration."""
     g = getattr(gs_mod, "options", gs_mod)
+    cfg = _cfg or {}
+
+    plate_size = float(cfg.get("PLATE_SIZE", PLATE_SIZE))
+    cyl_d = float(cfg.get("CYLINDER_DIAMETER", CYLINDER_DIAMETER))
+    syringe_d = float(cfg.get("SYRINGE_BARREL_DIAMETER", SYRINGE_BARREL_DIAMETER))
+    syringe_h = float(cfg.get("SYRINGE_BARREL_LENGTH", SYRINGE_BARREL_LENGTH))
+    needle_h = float(cfg.get("SYRINGE_NEEDLE_LENGTH", SYRINGE_NEEDLE_LENGTH))
+    gap = float(cfg.get("SYRINGE_PLATE_GAP", SYRINGE_PLATE_GAP))
+    drop_h = float(cfg.get("DROP_HEIGHT", DROP_HEIGHT))
+    wall_t = float(cfg.get("WALL_THICKNESS", WALL_THICKNESS))
+    plate_wall_h = float(cfg.get("PLATE_WALL_HEIGHT", PLATE_WALL_HEIGHT))
+
+    radial_extent = max(0.5 * plate_size, 0.5 * cyl_d, 0.5 * syringe_d, 0.2)
+    lateral_margin = max(0.15 * radial_extent, 0.02)
+    xz_half_span = radial_extent + lateral_margin
+
+    # Mirror create_environment("plate") geometry exactly:
+    #   syringe_lift_y = wall_t + gap - (junction_y_local - needle_h)
+    #                  ≈ wall_t + gap + needle_h   (junction_y_local = t_bottom/2 ≈ 0)
+    #   syringe_top_y  = syringe_lift_y + junction_y_local + barrel_h
+    #                  ≈ wall_t + gap + needle_h + syringe_h
+    #   env_info["top_y"] = max(wall_t + plate_wall_h, syringe_top_y)
+    syringe_top_y = wall_t + gap + needle_h + syringe_h
+    plate_surface_y = wall_t + plate_wall_h
+    actual_top_y = max(plate_surface_y, syringe_top_y)
+    # Needle bottom sits at wall_t + gap (the syringe is lifted so the needle tip is at wall_t+gap).
+    syringe_bottom_y = wall_t + gap
+    spawn_y0 = actual_top_y + drop_h
+
+    lower_y = min(-0.05, syringe_bottom_y - max(0.05, 0.25 * syringe_h))
+    upper_y = max(actual_top_y + max(0.1, 0.5 * syringe_h), spawn_y0 + max(0.1, 0.5 * syringe_h))
+
+    # Genesis MPM uses an internal "safety padding" that makes the effective solver boundary
+    # slightly tighter than the requested domain. If we place particles near the top of the
+    # domain (e.g. DROP_HEIGHT above the syringe), they can be rejected at add_entity() with:
+    # "Entity has particles outside solver boundary".
+    #
+    # Add explicit headroom (and a bit of floor) so spawns + random rotations stay inside even
+    # after Genesis' internal padding. The effective solver boundary can shrink by O(0.05m)
+    # for typical grid densities; therefore the minimum margin must exceed that shrink.
+    user_margin_y = float(cfg.get("MPM_DOMAIN_MARGIN_Y", cfg.get("MPM_DOMAIN_HEADROOM_Y", 0.0)))
+    # Add extra headroom specifically for the number of particles being stacked
+    stack_buffer = float(cfg.get("N_PARTICLES", 50)) * 0.01
+    y_margin = max(
+        user_margin_y,
+        0.25,  # Increased base 0.15 to 0.25
+        0.5 * drop_h,
+        stack_buffer,
+        0.25 * syringe_h,
+        0.25 * plate_size,
+    )
+    upper_y = float(upper_y) + float(y_margin)
+    # Extra epsilon headroom to survive Genesis' internal boundary shrink + float32 rounding.
+    # Genesis' effective boundary can be noticeably tighter than requested; keep this generous.
+    upper_y = float(upper_y) + float(cfg.get("MPM_DOMAIN_EPS_Y", 0.12))
+    lower_y = float(lower_y) - float(0.5 * y_margin)
+
+    grid_density = max(32, int(cfg.get("MPM_GRID_DENSITY", 64)))
     return g.MPMOptions(
-        lower_bound=(-0.2, -0.05, -0.2),
-        upper_bound=(0.2, 0.6, 0.2),
+        lower_bound=(-xz_half_span, lower_y, -xz_half_span),
+        upper_bound=(xz_half_span, upper_y, xz_half_span),
         # Genesis >=0.4 uses scalar grid_density instead of per-axis `res`.
-        grid_density=64,
+        grid_density=grid_density,
     )
 
 
@@ -277,6 +335,8 @@ DEFAULT_CONFIG = {
     "STRESS_FLOOR": 0.05,  # clamp post-normalization noise below this to 0.0 (kills ghost gradients on non-touching particles)
     # Preferred Genesis backend for server runs: auto | cpu | gpu.
     "BACKEND": "auto",
+    # MPM particle sampling/grid resolution. Auto-retried higher on known low-sample failures.
+    "MPM_GRID_DENSITY": 64,
 }
 
 
@@ -295,6 +355,7 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["POISSON_RATIO"] = float(cfg["POISSON_RATIO"])
     cfg["PARTICLE_RESTITUTION"] = float(cfg["PARTICLE_RESTITUTION"])
     cfg["ENV_RESTITUTION"] = float(cfg["ENV_RESTITUTION"])
+    cfg["MPM_GRID_DENSITY"] = max(32, int(cfg.get("MPM_GRID_DENSITY", 64)))
     cfg["CYLINDER_DIAMETER"] = float(cfg["CYLINDER_DIAMETER"])
     cfg["CYLINDER_HEIGHT"] = float(cfg.get("CYLINDER_HEIGHT", CYLINDER_HEIGHT))
     cfg["CYLINDER_SEGMENTS"] = max(16, int(cfg.get("CYLINDER_SEGMENTS", CYLINDER_SEGMENTS)))
@@ -325,9 +386,9 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["SYRINGE_OPEN_TIP"] = bool(cfg.get("SYRINGE_OPEN_TIP", SYRINGE_OPEN_TIP))
     # Single supported container mode: flat plate + syringe. Ignore external environment selection.
     cfg["ENVIRONMENT_TYPE"] = "plate"
-    # Spawn height is defined relative to syringe top:
-    # y_spawn = syringe_top_y - 0.5 * syringe_barrel_length (middle of barrel, inside tube)
-    cfg["DROP_HEIGHT"] = -0.5 * float(cfg["SYRINGE_BARREL_LENGTH"])
+    # Spawn height is defined relative to syringe top (positive is above the syringe).
+    # For the syringe demo we want visible free-fall into the barrel before contact.
+    cfg["DROP_HEIGHT"] = 0.5 * float(cfg["SYRINGE_BARREL_LENGTH"])
     cfg["DROP_SPREAD"] = float(cfg["DROP_SPREAD"])
     cfg["PLATE_WALL_HEIGHT"] = float(cfg.get("PLATE_WALL_HEIGHT", PLATE_WALL_HEIGHT))
     cfg["PLATE_SIZE"] = float(cfg.get("PLATE_SIZE", PLATE_SIZE))
@@ -335,6 +396,8 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["DT"] = float(cfg["DT"])
     cfg["SUBSTEPS"] = int(cfg["SUBSTEPS"])
     cfg["SUBSTEPS"] = max(cfg["SUBSTEPS"], 1)
+    cfg = tune_mpm_timestep(cfg)
+
     cfg["SIM_DURATION"] = float(cfg["SIM_DURATION"])
     cfg["SETTLE_THRESHOLD"] = float(cfg["SETTLE_THRESHOLD"])
     _grav = cfg.get("GRAVITY", GRAVITY)
@@ -347,6 +410,39 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
         _backend = "auto"
     cfg["BACKEND"] = _backend
     cfg["ENVIRONMENT_TYPE"] = "plate"
+    return cfg
+
+
+def tune_mpm_timestep(cfg: dict) -> dict:
+    """
+    Tune DT/SUBSTEPS for Genesis MPM stability at the configured `MPM_GRID_DENSITY`.
+
+    Important: the server may retry `scene.build()` with a higher `MPM_GRID_DENSITY`
+    than the frontend requested; in that case DT/SUBSTEPS must be re-tuned to the
+    new density to prevent NaNs / "particles disappearing" in the viewer.
+    """
+    cfg = dict(cfg)
+    cfg["DT"] = float(cfg.get("DT", DT))
+    cfg["SUBSTEPS"] = max(int(cfg.get("SUBSTEPS", ThroughputSimTuning.substeps)), 1)
+
+    # Genesis MPM is sensitive to the inner substep dt (= DT/SUBSTEPS) vs grid_density.
+    # Empirically (matching Genesis warnings), suggested_dt scales ~ 1/grid_density.
+    grid_density = max(32, int(cfg.get("MPM_GRID_DENSITY", 64)))
+    cfg["MPM_GRID_DENSITY"] = grid_density
+    base_suggested_dt_at_96 = 0.000208333  # seconds, from Genesis warning at grid_density=96
+    suggested_dt = base_suggested_dt_at_96 * (96.0 / float(grid_density))
+    target_substep_dt = 0.9 * suggested_dt  # safety margin
+
+    if target_substep_dt > 0.0 and cfg["DT"] > 0.0:
+        required = int(math.ceil(float(cfg["DT"]) / float(target_substep_dt)))
+        # Cap to keep runtimes sane; if we hit the cap, also shrink DT to maintain stability.
+        max_substeps = 80
+        if required > max_substeps:
+            cfg["SUBSTEPS"] = max_substeps
+            cfg["DT"] = float(target_substep_dt) * float(max_substeps)
+        else:
+            cfg["SUBSTEPS"] = max(int(cfg["SUBSTEPS"]), required)
+
     return cfg
 
 
@@ -419,6 +515,21 @@ def _as_vec3_any(x) -> np.ndarray:
     return v[:3]
 
 
+# Cache last good poses so MPM visualization/export doesn't "disappear" when
+# Genesis returns transient NaNs/huge poses after the first step.
+_LAST_GOOD_POSE: dict[int, tuple[np.ndarray, tuple[float, float, float, float]]] = {}
+
+
+def _pose_reasonable(pos: np.ndarray) -> bool:
+    if pos is None:
+        return False
+    pos = np.asarray(pos, dtype=float).reshape(3)
+    if not np.isfinite(pos).all():
+        return False
+    # Physics-normalized worlds can still be larger than 10m; accept up to a generous bound.
+    return float(np.abs(pos).max()) <= 1.0e4
+
+
 def _entity_pose(e) -> tuple[np.ndarray, tuple[float, float, float, float]]:
     """
     Return (pos_xyz, quat_xyzw) for both RigidEntity-like and FEM/MPM-like entities.
@@ -430,7 +541,14 @@ def _entity_pose(e) -> tuple[np.ndarray, tuple[float, float, float, float]]:
     # to the world-space rigid transform you expect for visualization.
     # For these types we prefer extracting centroid from get_state().
     entity_type = type(e).__name__
-    force_state_pose = ("FEMEntity" in entity_type) or ("MPMEntity" in entity_type)
+    # IMPORTANT:
+    # - FEM entities often lack stable rigid-style pose getters; use state centroid as a fallback.
+    # - MPM entities may expose a state whose `.pos` is a *global* solver particle buffer shared
+    #   across entities; using its centroid can collapse all entities to the same apparent pose.
+    #   Prefer rigid-style getters for MPM when available.
+    is_fem = "FEMEntity" in entity_type
+    is_mpm = "MPMEntity" in entity_type
+    force_state_pose = is_fem
 
     # Prefer explicit pose getters when available (rigid-like entities).
     if (not force_state_pose) and hasattr(e, "get_pos"):
@@ -438,22 +556,26 @@ def _entity_pose(e) -> tuple[np.ndarray, tuple[float, float, float, float]]:
         pos_try = _vec3_from_xyz(x, y, z)
         # If pose getters return something clearly not in world space (e.g.
         # very large magnitudes), fall back to state-based heuristics below.
-        if np.isfinite(pos_try).all() and float(np.abs(pos_try).max()) <= 10.0:
+        if _pose_reasonable(pos_try) and float(np.abs(pos_try).max()) <= 10.0:
             if hasattr(e, "get_quat"):
                 qw, qx, qy, qz = e.get_quat()  # (w,x,y,z) -> (x,y,z,w)
                 quat = _quat_tuple_xyzw(qw, qx, qy, qz)
             else:
                 quat = (0.0, 0.0, 0.0, 1.0)
+            eid = int(_entity_id(e))
+            _LAST_GOOD_POSE[eid] = (np.asarray(pos_try, dtype=float).reshape(3), quat)
             return (pos_try, quat)
         # else: fall through to fallback extraction
-        if hasattr(e, "get_quat"):
-            qw, qx, qy, qz = e.get_quat()  # (w,x,y,z) -> (x,y,z,w)
-            quat = _quat_tuple_xyzw(qw, qx, qy, qz)
-        else:
-            quat = (0.0, 0.0, 0.0, 1.0)
-        # Keep the existing return for completeness; most callers will hit
-        # the magnitude guard above.
-        return (pos_try, quat)
+        # If the pose is still within a generous bound, accept it (some scenes are >10m).
+        if _pose_reasonable(pos_try) and float(np.abs(pos_try).max()) <= 500.0:
+            if hasattr(e, "get_quat"):
+                qw, qx, qy, qz = e.get_quat()  # (w,x,y,z) -> (x,y,z,w)
+                quat = _quat_tuple_xyzw(qw, qx, qy, qz)
+            else:
+                quat = (0.0, 0.0, 0.0, 1.0)
+            eid = int(_entity_id(e))
+            _LAST_GOOD_POSE[eid] = (np.asarray(pos_try, dtype=float).reshape(3), quat)
+            return (pos_try, quat)
 
     # Fallback: try entity state (post scene.build()) and compute centroid.
     try:
@@ -482,16 +604,42 @@ def _entity_pose(e) -> tuple[np.ndarray, tuple[float, float, float, float]]:
                     try:
                         x, y, z = e.get_pos()
                         pos_try = _vec3_from_xyz(x, y, z)
-                        if np.isfinite(pos_try).all() and float(np.abs(pos_try).max()) <= 500.0:
+                        if _pose_reasonable(pos_try) and float(np.abs(pos_try).max()) <= 500.0:
                             if hasattr(e, "get_quat"):
                                 qw, qx, qy, qz = e.get_quat()
                                 quat = _quat_tuple_xyzw(qw, qx, qy, qz)
                             else:
                                 quat = (0.0, 0.0, 0.0, 1.0)
+                            eid = int(_entity_id(e))
+                            _LAST_GOOD_POSE[eid] = (np.asarray(pos_try, dtype=float).reshape(3), quat)
                             return (pos_try, quat)
                     except Exception:
                         pass
-                return (best_pos, (0.0, 0.0, 0.0, 1.0))
+                # For MPM entities, prefer rigid-style getters if present to avoid using
+                # a potentially global/shared particle buffer centroid.
+                if is_mpm and hasattr(e, "get_pos"):
+                    try:
+                        x, y, z = e.get_pos()
+                        pos_try = _vec3_from_xyz(x, y, z)
+                        if _pose_reasonable(pos_try) and float(np.abs(pos_try).max()) <= 500.0:
+                            if hasattr(e, "get_quat"):
+                                qw, qx, qy, qz = e.get_quat()
+                                quat = _quat_tuple_xyzw(qw, qx, qy, qz)
+                            else:
+                                quat = (0.0, 0.0, 0.0, 1.0)
+                            eid = int(_entity_id(e))
+                            _LAST_GOOD_POSE[eid] = (np.asarray(pos_try, dtype=float).reshape(3), quat)
+                            return (pos_try, quat)
+                    except Exception:
+                        pass
+                # Cache state-centroid only when it looks reasonable; otherwise keep last good.
+                eid = int(_entity_id(e))
+                if _pose_reasonable(best_pos):
+                    pose = (np.asarray(best_pos, dtype=float).reshape(3), (0.0, 0.0, 0.0, 1.0))
+                    _LAST_GOOD_POSE[eid] = pose
+                    return pose
+                if eid in _LAST_GOOD_POSE:
+                    return _LAST_GOOD_POSE[eid]
     except Exception:
         pass
 
@@ -501,16 +649,21 @@ def _entity_pose(e) -> tuple[np.ndarray, tuple[float, float, float, float]]:
         try:
             x, y, z = e.get_pos()
             pos_try = _vec3_from_xyz(x, y, z)
-            if np.isfinite(pos_try).all():
+            if _pose_reasonable(pos_try):
                 if hasattr(e, "get_quat"):
                     qw, qx, qy, qz = e.get_quat()
                     quat = _quat_tuple_xyzw(qw, qx, qy, qz)
                 else:
                     quat = (0.0, 0.0, 0.0, 1.0)
+                eid = int(_entity_id(e))
+                _LAST_GOOD_POSE[eid] = (np.asarray(pos_try, dtype=float).reshape(3), quat)
                 return (pos_try, quat)
         except Exception:
             pass
 
+    eid = int(_entity_id(e))
+    if eid in _LAST_GOOD_POSE:
+        return _LAST_GOOD_POSE[eid]
     return (np.zeros((3,), dtype=float), (0.0, 0.0, 0.0, 1.0))
 
 
@@ -1196,6 +1349,7 @@ def spawn_particles(
     particle_restitution: float = PARTICLE_RESTITUTION,
     prior_fem_snapshots: Optional[list[dict]] = None,
     physics_norm: float = 1.0,
+    mpm_upper_y: Optional[float] = None,
 ) -> list:
     material = gs.materials.MPM.ElastoPlastic(
         E=float(E),
@@ -1208,6 +1362,60 @@ def spawn_particles(
     spread = float(drop_spread)
     char = float(max(float(extents[0]), float(extents[1]), float(extents[2]), 1e-9))
     stack_gap = max(char * 1.5, 1e-4)
+    mesh_scale = float(scale_factor) * float(physics_norm)
+
+    # If the caller knows the configured MPM domain ceiling, clamp spawns below it.
+    # Genesis shrinks the effective boundary vs requested domain; keep a conservative margin.
+    max_centroid_y = None
+    if mpm_upper_y is not None:
+        # Conservative "radius" from centroid to highest point under arbitrary rotation.
+        # Use scaled characteristic size with extra padding.
+        centroid_radius_y = max(0.75 * char * mesh_scale, 1e-4)
+        max_centroid_y = float(mpm_upper_y) - centroid_radius_y - 0.01
+        # If we're stacking a single column, ensure the whole stack fits.
+        if spread <= 1e-9 and n > 1:
+            spawn_y0 = min(spawn_y0, max_centroid_y - float(n - 1) * stack_gap)
+        else:
+            spawn_y0 = min(spawn_y0, max_centroid_y)
+
+    # Some particle assets are authored far from the local origin. Genesis uses mesh-local
+    # coordinates directly, so a non-centered mesh can be spawned outside the solver domain.
+    # Compute a local centroid offset and compensate spawn pose so world-space centroids land
+    # at the intended (x, y, z) positions.
+    local_centroid = np.zeros(3, dtype=float)
+    spawn_mesh_file = particle_file
+    try:
+        src_mesh = trimesh.load(particle_file, force="mesh")
+        if isinstance(src_mesh, trimesh.Scene):
+            geoms = [g for g in src_mesh.geometry.values() if isinstance(g, trimesh.Trimesh)]
+            src_mesh = trimesh.util.concatenate(geoms) if len(geoms) > 1 else (geoms[0] if geoms else None)
+        if isinstance(src_mesh, trimesh.Trimesh) and len(src_mesh.vertices) > 0:
+            # Genesis internals may request k=12 neighbors during MPM setup.
+            # Very low-vertex meshes can produce only ~5 sampled particles and fail with:
+            # "ValueError: kth(=11) out of bounds (5)". Upsample once into a cached proxy.
+            if len(src_mesh.vertices) < 12 and len(src_mesh.faces) > 0:
+                up = src_mesh.copy()
+                for _ in range(4):
+                    if len(up.vertices) >= 24:
+                        break
+                    try:
+                        v_sub, f_sub = trimesh.remesh.subdivide(up.vertices, up.faces)
+                    except Exception:
+                        break
+                    up = trimesh.Trimesh(vertices=v_sub, faces=f_sub, process=False)
+                if len(up.vertices) >= 12 and len(up.faces) > 0:
+                    try:
+                        p_abs = os.path.abspath(particle_file)
+                        p_mtime = os.path.getmtime(p_abs)
+                        key = f"{os.path.basename(p_abs)}_v{len(up.vertices)}_f{len(up.faces)}_m{p_mtime:.6f}"
+                        proxy_path = _container_mesh_proxy_path("particle_spawn_proxy", key)
+                        up.export(proxy_path)
+                        spawn_mesh_file = proxy_path
+                    except Exception:
+                        spawn_mesh_file = particle_file
+            local_centroid = np.asarray(src_mesh.centroid, dtype=float)
+    except Exception:
+        local_centroid = np.zeros(3, dtype=float)
 
     prior = prior_fem_snapshots or []
     if prior and len(prior) != n - 1:
@@ -1223,12 +1431,18 @@ def spawn_particles(
         c = arr.mean(axis=0)
         return (float(c[0]), float(c[1]), float(c[2]))
 
+    def _spawn_pos_for_centroid(cx: float, cy: float, cz: float, R_local_to_world: np.ndarray) -> tuple[float, float, float]:
+        # centroid_world = pos + R @ (scale * centroid_local)  =>  pos = desired - that offset
+        offset = R_local_to_world @ (local_centroid * mesh_scale)
+        return (float(cx - offset[0]), float(cy - offset[1]), float(cz - offset[2]))
+
     entities = []
     if spread <= 1e-9:
         # Single column above the plate: stack along +Y so bodies do not share one point (that breaks FEM contact).
         for i in range(n):
             if i < len(prior):
                 x, y, z = _centroid_from_snapshot(prior[i])
+                R = np.eye(3, dtype=float)
                 quat = gs.utils.geom.R_to_quat(np.eye(3, dtype=float))
             else:
                 x, z = 0.0, 0.0
@@ -1236,11 +1450,14 @@ def spawn_particles(
                 y = spawn_y0 + float(i) * stack_gap
                 R = trimesh.transformations.random_rotation_matrix()[:3, :3]
                 quat = gs.utils.geom.R_to_quat(R)
+            if max_centroid_y is not None:
+                y = min(float(y), float(max_centroid_y))
+            spawn_pos = _spawn_pos_for_centroid(x, y, z, R)
             ent = scene.add_entity(
                 gs.morphs.Mesh(
-                    file=particle_file,
-                    scale=float(scale_factor) * float(physics_norm),
-                    pos=(x, y, z),
+                    file=spawn_mesh_file,
+                    scale=mesh_scale,
+                    pos=spawn_pos,
                     quat=quat,
                     collision=True,
                     visualization=False,
@@ -1274,6 +1491,7 @@ def spawn_particles(
         for i in range(n):
             if i < len(prior):
                 x, y, z = _centroid_from_snapshot(prior[i])
+                R = np.eye(3, dtype=float)
                 quat = gs.utils.geom.R_to_quat(np.eye(3, dtype=float))
             else:
                 ri = r_max * math.sqrt((i + 0.5) / max(n, 1))
@@ -1290,12 +1508,15 @@ def spawn_particles(
                         y = max(y, py + dy_needed)
                 R = trimesh.transformations.random_rotation_matrix()[:3, :3]
                 quat = gs.utils.geom.R_to_quat(R)
+            if max_centroid_y is not None:
+                y = min(float(y), float(max_centroid_y))
             placed_positions.append((x, y, z))
+            spawn_pos = _spawn_pos_for_centroid(x, y, z, R)
             ent = scene.add_entity(
                 gs.morphs.Mesh(
-                    file=particle_file,
-                    scale=float(scale_factor) * float(physics_norm),
-                    pos=(x, y, z),
+                    file=spawn_mesh_file,
+                    scale=mesh_scale,
+                    pos=spawn_pos,
                     quat=quat,
                     collision=True,
                     visualization=False,
@@ -1350,6 +1571,8 @@ def compute_total_kinetic_energy(entities, particle_mass_kg: float) -> float:
             st = e.get_state()
             if hasattr(st, "vel"):
                 v = _tensor_to_numpy(st.vel).astype(float)
+                # NaNs can appear during unstable steps; don't poison metrics.
+                v = np.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
                 if v.size == 0:
                     continue
                 if v.ndim == 3:

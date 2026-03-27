@@ -4,6 +4,7 @@ import logging
 import math
 import os
 import sys
+import traceback
 import zipfile
 
 import asyncio
@@ -352,6 +353,16 @@ class SimulationRuntime:
             job = self._job_queue.get()
             if job is None:
                 break
+            if isinstance(job, tuple) and len(job) == 3 and job[0] == "preflight":
+                _, result_q, preferred_backend = job
+                try:
+                    if not self._gs_initialized:
+                        _init_genesis_on_sim_thread(str(preferred_backend or "auto"))
+                        self._gs_initialized = True
+                    result_q.put((True, f"Genesis preflight OK (backend={RUNTIME_BACKEND})"))
+                except Exception as exc:
+                    result_q.put((False, f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"))
+                continue
             if isinstance(job, tuple) and len(job) == 2 and job[0] == "clear":
                 _, done = job
                 try:
@@ -377,6 +388,19 @@ class SimulationRuntime:
                 _init_genesis_on_sim_thread(self.preferred_backend)
                 self._gs_initialized = True
             _simulation_thread_main(sync_q, cfg, payload)
+
+    def preflight_runtime(self, preferred_backend: str = "auto", timeout_s: float = 30.0) -> tuple[bool, str]:
+        """
+        Initialize Genesis on the worker thread before the API starts accepting requests.
+        Returns (ok, message) with traceback details on failure.
+        """
+        result_q: queue.Queue[tuple[bool, str]] = queue.Queue(maxsize=1)
+        self._job_queue.put(("preflight", result_q, preferred_backend))
+        try:
+            ok, msg = result_q.get(timeout=max(1.0, float(timeout_s)))
+            return bool(ok), str(msg)
+        except Exception as exc:
+            return False, f"Timeout/error waiting for preflight: {type(exc).__name__}: {exc}"
 
     def destroy_scene(self) -> None:
         """Tear down the current scene (safe to call multiple times)."""
@@ -407,22 +431,6 @@ class SimulationRuntime:
         if self.cancel_requested:
             raise SimulationAborted()
         _p("init", 0.0, "Creating scene…")
-        sim_options = simulation.make_sim_options(simulation.gs, cfg)
-        mpm_options = simulation.make_mpm_options(simulation.gs, cfg)
-        # Rigid container geometry uses the rigid solver; small dt/substeps => tiny
-        # _substep_dt and a warning unless GJK is enabled (see rigid_solver.py).
-        rigid_options = simulation.make_rigid_options(simulation.gs, cfg)
-        # Explicit FEM at E~1e8 Pa is unstable at typical dt; Genesis recommends implicit FEM.
-        fem_options = simulation.make_fem_options(simulation.gs, cfg)
-        self.scene = simulation.create_scene_compat(
-            simulation.gs,
-            sim_options=sim_options,
-            mpm_options=mpm_options,
-            rigid_options=rigid_options,
-            fem_options=fem_options,
-            show_viewer=False,
-            n_envs=max(1, int(cfg.get("N_ENVS", getattr(simulation, "N_ENVS", 1)))),
-        )
         particle_file = _resolve_particle_file(cfg.get("PARTICLE_FILE"))
         scale_factor = float(cfg.get("SCALE_FACTOR", 1.0))
         if abs(scale_factor - 1.0) < 1e-15:
@@ -444,53 +452,110 @@ class SimulationRuntime:
         # so Genesis sees a numerically stable world (e.g. particle.obj scale).
         # The original cfg is kept at display scale for the viewer / metrics.
         _phys_cfg = _scale_cfg_lengths(dict(cfg), physics_norm)
-        self._phys_cfg = _phys_cfg
+        base_grid_density = int(_phys_cfg.get("MPM_GRID_DENSITY", cfg.get("MPM_GRID_DENSITY", 64)))
+        build_grid_candidates = [max(32, base_grid_density), 96, 128, 160]
+        seen_gd: set[int] = set()
+        build_grid_candidates = [gd for gd in build_grid_candidates if not (gd in seen_gd or seen_gd.add(gd))]
+        last_exc: Optional[Exception] = None
+        entities: list[Any] = []
+        for attempt_i, gd in enumerate(build_grid_candidates):
+            _phys_cfg["MPM_GRID_DENSITY"] = int(gd)
+            # If we retry with a denser MPM grid, also retune DT/SUBSTEPS so substep_dt
+            # stays below Genesis' suggested_dt for this grid_density; otherwise the solver
+            # can generate NaNs and particles appear to "disappear" in the viewer.
+            _phys_cfg = simulation.tune_mpm_timestep(_phys_cfg)
+            self._phys_cfg = dict(_phys_cfg)
+            # Use the physics-scale tuned dt/substeps. We retune DT/SUBSTEPS alongside
+            # MPM grid_density retries; building SimOptions from the untuned display cfg
+            # can reintroduce the Genesis substep_dt > suggested_dt instability warning.
+            sim_options = simulation.make_sim_options(simulation.gs, self._phys_cfg)
+            mpm_options = simulation.make_mpm_options(simulation.gs, self._phys_cfg)
+            # Rigid container geometry uses the rigid solver; small dt/substeps => tiny
+            # _substep_dt and a warning unless GJK is enabled (see rigid_solver.py).
+            rigid_options = simulation.make_rigid_options(simulation.gs, cfg)
+            # Explicit FEM at E~1e8 Pa is unstable at typical dt; Genesis recommends implicit FEM.
+            fem_options = simulation.make_fem_options(simulation.gs, cfg)
+            self.scene = simulation.create_scene_compat(
+                simulation.gs,
+                sim_options=sim_options,
+                mpm_options=mpm_options,
+                rigid_options=rigid_options,
+                fem_options=fem_options,
+                show_viewer=False,
+                n_envs=max(1, int(cfg.get("N_ENVS", getattr(simulation, "N_ENVS", 1)))),
+            )
 
-        _p("environment", 0.35, "Building container geometry…")
-        containers, env_info = simulation.create_environment(
-            self.scene,
-            _phys_cfg["ENVIRONMENT_TYPE"],
-            _phys_cfg["PLATE_SIZE"],
-            _phys_cfg["CYLINDER_DIAMETER"],
-            _phys_cfg["CYLINDER_HEIGHT"],
-            _phys_cfg["CYLINDER_SEGMENTS"],
-            _phys_cfg["WALL_THICKNESS"],
-            float(_phys_cfg.get("PLATE_WALL_HEIGHT", simulation.PLATE_WALL_HEIGHT)),
-            env_restitution=float(_phys_cfg.get("ENV_RESTITUTION", 0.0)),
-            syringe_barrel_diameter=float(_phys_cfg.get("SYRINGE_BARREL_DIAMETER", simulation.SYRINGE_BARREL_DIAMETER)),
-            syringe_barrel_length=float(_phys_cfg.get("SYRINGE_BARREL_LENGTH", simulation.SYRINGE_BARREL_LENGTH)),
-            syringe_needle_diameter=float(_phys_cfg.get("SYRINGE_NEEDLE_DIAMETER", simulation.SYRINGE_NEEDLE_DIAMETER)),
-            syringe_needle_length=float(_phys_cfg.get("SYRINGE_NEEDLE_LENGTH", simulation.SYRINGE_NEEDLE_LENGTH)),
-            syringe_wall_thickness=float(_phys_cfg.get("SYRINGE_WALL_THICKNESS", simulation.SYRINGE_WALL_THICKNESS)),
-            syringe_bottom_thickness=float(_phys_cfg.get("SYRINGE_BOTTOM_THICKNESS", simulation.SYRINGE_BOTTOM_THICKNESS)),
-            syringe_plate_gap=float(_phys_cfg.get("SYRINGE_PLATE_GAP", simulation.SYRINGE_PLATE_GAP)),
-            syringe_segments=int(_phys_cfg.get("SYRINGE_SEGMENTS", simulation.SYRINGE_SEGMENTS)),
-            syringe_open_tip=bool(_phys_cfg.get("SYRINGE_OPEN_TIP", simulation.SYRINGE_OPEN_TIP)),
-        )
-        self.active_containers = list(containers)
-        _p("spawn", 0.55, f"Spawning {int(_phys_cfg['N_PARTICLES'])} particles…")
-        entities = simulation.spawn_particles(
-            self.scene,
-            self.physics_mesh,
-            _phys_cfg["N_PARTICLES"],
-            env_info,
-            _phys_cfg["DROP_HEIGHT"],
-            _phys_cfg["DROP_SPREAD"],
-            _phys_cfg["YOUNGS_MODULUS"],
-            _phys_cfg["POISSON_RATIO"],
-            _phys_cfg["DENSITY"],
-            particle_file=particle_file,
-            scale_factor=scale_factor,
-            particle_restitution=float(_phys_cfg.get("PARTICLE_RESTITUTION", 0.0)),
-            physics_norm=physics_norm,
-        )
-        self.active_entities = list(entities)
-        if not _use_cpu_backend(str(cfg.get("BACKEND", "auto"))):
-            _prepare_cuda_on_worker_thread()
-        _p("build", 0.72, "Compiling scene (Genesis / Taichi)…")
-        if self.cancel_requested:
-            raise SimulationAborted()
-        self.scene.build()
+            _p("environment", 0.35, f"Building container geometry (grid_density={gd})…")
+            containers, env_info = simulation.create_environment(
+                self.scene,
+                self._phys_cfg["ENVIRONMENT_TYPE"],
+                self._phys_cfg["PLATE_SIZE"],
+                self._phys_cfg["CYLINDER_DIAMETER"],
+                self._phys_cfg["CYLINDER_HEIGHT"],
+                self._phys_cfg["CYLINDER_SEGMENTS"],
+                self._phys_cfg["WALL_THICKNESS"],
+                float(self._phys_cfg.get("PLATE_WALL_HEIGHT", simulation.PLATE_WALL_HEIGHT)),
+                env_restitution=float(self._phys_cfg.get("ENV_RESTITUTION", 0.0)),
+                syringe_barrel_diameter=float(self._phys_cfg.get("SYRINGE_BARREL_DIAMETER", simulation.SYRINGE_BARREL_DIAMETER)),
+                syringe_barrel_length=float(self._phys_cfg.get("SYRINGE_BARREL_LENGTH", simulation.SYRINGE_BARREL_LENGTH)),
+                syringe_needle_diameter=float(self._phys_cfg.get("SYRINGE_NEEDLE_DIAMETER", simulation.SYRINGE_NEEDLE_DIAMETER)),
+                syringe_needle_length=float(self._phys_cfg.get("SYRINGE_NEEDLE_LENGTH", simulation.SYRINGE_NEEDLE_LENGTH)),
+                syringe_wall_thickness=float(self._phys_cfg.get("SYRINGE_WALL_THICKNESS", simulation.SYRINGE_WALL_THICKNESS)),
+                syringe_bottom_thickness=float(self._phys_cfg.get("SYRINGE_BOTTOM_THICKNESS", simulation.SYRINGE_BOTTOM_THICKNESS)),
+                syringe_plate_gap=float(self._phys_cfg.get("SYRINGE_PLATE_GAP", simulation.SYRINGE_PLATE_GAP)),
+                syringe_segments=int(self._phys_cfg.get("SYRINGE_SEGMENTS", simulation.SYRINGE_SEGMENTS)),
+                syringe_open_tip=bool(self._phys_cfg.get("SYRINGE_OPEN_TIP", simulation.SYRINGE_OPEN_TIP)),
+            )
+            self.active_containers = list(containers)
+            _p("spawn", 0.55, f"Spawning {int(self._phys_cfg['N_PARTICLES'])} particles…")
+            # Pass the configured domain ceiling so spawn can clamp inside the effective boundary.
+            mpm_upper_y = None
+            try:
+                ub = getattr(mpm_options, "upper_bound", None)
+                if ub is not None and len(ub) >= 2:
+                    mpm_upper_y = float(ub[1])
+            except Exception:
+                mpm_upper_y = None
+
+            entities = simulation.spawn_particles(
+                self.scene,
+                self.physics_mesh,
+                self._phys_cfg["N_PARTICLES"],
+                env_info,
+                self._phys_cfg["DROP_HEIGHT"],
+                self._phys_cfg["DROP_SPREAD"],
+                self._phys_cfg["YOUNGS_MODULUS"],
+                self._phys_cfg["POISSON_RATIO"],
+                self._phys_cfg["DENSITY"],
+                particle_file=particle_file,
+                scale_factor=scale_factor,
+                particle_restitution=float(self._phys_cfg.get("PARTICLE_RESTITUTION", 0.0)),
+                physics_norm=physics_norm,
+                mpm_upper_y=mpm_upper_y,
+            )
+            self.active_entities = list(entities)
+            if not _use_cpu_backend(str(cfg.get("BACKEND", "auto"))):
+                _prepare_cuda_on_worker_thread()
+            _p("build", 0.72, f"Compiling scene (Genesis / Taichi, grid_density={gd})…")
+            if self.cancel_requested:
+                raise SimulationAborted()
+            try:
+                self.scene.build()
+                break
+            except Exception as exc:
+                last_exc = exc
+                msg = f"{type(exc).__name__}: {exc}"
+                is_kth_oob = ("kth(" in msg.lower()) and ("out of bounds" in msg.lower())
+                if is_kth_oob and attempt_i < len(build_grid_candidates) - 1:
+                    logger.warning(
+                        "Scene build failed with low-sample neighbor error at grid_density=%d; retrying with denser MPM grid.",
+                        gd,
+                    )
+                    self.destroy_scene()
+                    continue
+                raise
+        if last_exc is not None and self.scene is None:
+            raise last_exc
         _p("ready", 1.0, "Scene ready")
         container_ids = {_entity_id(e) for e in self.active_containers}
         particle_ids = {_entity_id(e) for e in self.active_entities}
@@ -502,6 +567,12 @@ RUNTIME = SimulationRuntime()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Fail fast: surface Genesis/runtime init errors before Uvicorn reports startup complete.
+    ok, msg = await asyncio.to_thread(RUNTIME.preflight_runtime, os.environ.get("GENESIS_BACKEND", "auto"), 45.0)
+    if not ok:
+        logger.error("Startup preflight failed:\n%s", msg)
+        raise RuntimeError(f"Server preflight failed:\n{msg}")
+    logger.info("%s", msg)
     yield
     # Tear down Genesis on the same thread as gs.init() so OpenGL / Taichi contexts match.
     RUNTIME.cancel_requested = True
@@ -1326,7 +1397,9 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
         sync_q.put({"type": "cancelled"})
         sync_q.put({"type": "idle", "message": "Ready for next run"})
     except Exception as exc:
-        sync_q.put({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
+        tb = traceback.format_exc()
+        logger.error("Simulation worker failed: %s: %s\n%s", type(exc).__name__, exc, tb)
+        sync_q.put({"type": "error", "message": f"{type(exc).__name__}: {exc}", "traceback": tb})
         sync_q.put({"type": "idle", "message": "Ready after error"})
     finally:
         sync_q.put(None)
@@ -1431,5 +1504,11 @@ if __name__ == "__main__":
 
     # Pass `app` directly. Using "server:app" makes uvicorn import `server` again while
     # this file already ran as __main__, duplicating RUNTIME / genesis-worker / gs.init.
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        reload=False,
+        log_level=str(os.environ.get("UVICORN_LOG_LEVEL", "info")).lower(),
+    )
 
