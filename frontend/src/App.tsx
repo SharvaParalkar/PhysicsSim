@@ -128,6 +128,15 @@ const STANDARD_SCALE_SETTINGS = {
   SIM_DURATION: 5.0,
 }
 
+const DEFAULT_SYRINGE_SETTINGS = {
+  SYRINGE_BARREL_DIAMETER: 0.2,
+  SYRINGE_BARREL_LENGTH: 0.3,
+  SYRINGE_NEEDLE_DIAMETER: 0.04,
+  SYRINGE_NEEDLE_LENGTH: 0.2,
+  SYRINGE_PLATE_GAP: 0.01,
+  SYRINGE_SEGMENTS: 32,
+}
+
 export default function App() {
   const [mode, setMode] = useState<'idle' | 'falling' | 'settled'>('idle')
   const [logs, setLogs] = useState<string[]>([])
@@ -179,6 +188,7 @@ export default function App() {
     WALL_THICKNESS: 0.02,
     PLATE_WALL_HEIGHT: 0.15,
     STRESS_SIGMA: 0.4,
+    ...DEFAULT_SYRINGE_SETTINGS,
   })
   const [lengthUnit, setLengthUnit] = useState<LengthUnit>('cm')
   const { metersPerUnit, short: lengthUnitLabel } = LENGTH_UNITS[lengthUnit]
@@ -201,6 +211,8 @@ export default function App() {
   const [sectionOpen, setSectionOpen] = useState({ simulation: true, environment: true, advanced: false })
   const [logOpen, setLogOpen] = useState(false)
   const [showAdvancedHud, setShowAdvancedHud] = useState(false)
+  const [showSyringeOverlay, setShowSyringeOverlay] = useState(false)
+  const [syringePresetName, setSyringePresetName] = useState('syringe-config')
 
   const refreshParticleList = useCallback(async () => {
     const resp = (await fetch('http://localhost:8000/particles').then((r) => r.json())) as ParticlesResponse
@@ -252,6 +264,29 @@ export default function App() {
       }
     }
   }, [logs])
+
+  const saveSyringeConfiguration = useCallback(async () => {
+    const payload = {
+      name: syringePresetName,
+      config: {
+        SYRINGE_BARREL_DIAMETER: simConfig.SYRINGE_BARREL_DIAMETER ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_BARREL_DIAMETER,
+        SYRINGE_BARREL_LENGTH: simConfig.SYRINGE_BARREL_LENGTH ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_BARREL_LENGTH,
+        SYRINGE_NEEDLE_DIAMETER: simConfig.SYRINGE_NEEDLE_DIAMETER ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_NEEDLE_DIAMETER,
+        SYRINGE_NEEDLE_LENGTH: simConfig.SYRINGE_NEEDLE_LENGTH ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_NEEDLE_LENGTH,
+        SYRINGE_PLATE_GAP: simConfig.SYRINGE_PLATE_GAP ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_PLATE_GAP,
+        SYRINGE_SEGMENTS: simConfig.SYRINGE_SEGMENTS ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_SEGMENTS,
+      },
+    }
+    const r = await fetch('http://localhost:8000/environment/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!r.ok) throw new Error(await r.text())
+    const data = (await r.json()) as { path?: string }
+    appendLog(`[info] Syringe config saved to ${data.path ?? 'environment folder'}`)
+    setShowSyringeOverlay(false)
+  }, [appendLog, simConfig, syringePresetName])
 
   const handleRunComplete = useCallback(async () => {
     const particles = await refreshResults()
@@ -984,6 +1019,22 @@ export default function App() {
                           style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
                         />
                       </label>
+                      <button
+                        type="button"
+                        onClick={() => setShowSyringeOverlay(true)}
+                        style={{
+                          width: '100%',
+                          border: '1px solid #95b4d9',
+                          background: '#edf4fd',
+                          color: '#1d3553',
+                          borderRadius: 8,
+                          padding: '8px 10px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Configure syringe
+                      </button>
                     </>
                   ) : (
                     <>
@@ -1390,6 +1441,13 @@ export default function App() {
                 transparentContainer={transparentContainer}
                 lengthScale={lengthScale}
                 meshScale={meshScale}
+                showSyringeInPlate={simConfig.ENVIRONMENT_TYPE === 'plate'}
+                syringeBarrelDiameter={simConfig.SYRINGE_BARREL_DIAMETER}
+                syringeBarrelLength={simConfig.SYRINGE_BARREL_LENGTH}
+                syringeNeedleDiameter={simConfig.SYRINGE_NEEDLE_DIAMETER}
+                syringeNeedleLength={simConfig.SYRINGE_NEEDLE_LENGTH}
+                syringePlateGap={simConfig.SYRINGE_PLATE_GAP}
+                syringeSegments={simConfig.SYRINGE_SEGMENTS}
               />
             </div>
           </div>
@@ -1406,6 +1464,170 @@ export default function App() {
           onClose={() => setShowResults(false)}
         />
       )}
+      {showSyringeOverlay ? (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 60,
+            background: 'rgba(10, 22, 40, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 18,
+          }}
+          onClick={() => setShowSyringeOverlay(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: 'min(980px, 95vw)',
+              height: 'min(760px, 92vh)',
+              background: '#f8fbff',
+              border: '1px solid #c5d6eb',
+              borderRadius: 12,
+              boxShadow: '0 18px 50px rgba(8, 24, 48, 0.3)',
+              display: 'grid',
+              gridTemplateColumns: '320px 1fr',
+              gap: 12,
+              padding: 12,
+            }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ fontSize: 15, fontWeight: 800, color: '#1d3553' }}>Configure syringe</div>
+              <label style={labelStyle}>
+                Preset name
+                <input
+                  type="text"
+                  value={syringePresetName}
+                  onChange={(e) => setSyringePresetName(e.target.value)}
+                  style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                />
+              </label>
+              <label style={labelStyle}>
+                Barrel diameter ({lengthUnitLabel})
+                <input
+                  type="number"
+                  min={0.01 / metersPerUnit}
+                  step={0.005 / metersPerUnit}
+                  value={(simConfig.SYRINGE_BARREL_DIAMETER ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_BARREL_DIAMETER) / metersPerUnit}
+                  onChange={(e) =>
+                    setSimConfig((p) => ({ ...p, SYRINGE_BARREL_DIAMETER: Number(e.target.value) * metersPerUnit }))
+                  }
+                  style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                />
+              </label>
+              <label style={labelStyle}>
+                Barrel length ({lengthUnitLabel})
+                <input
+                  type="number"
+                  min={0.01 / metersPerUnit}
+                  step={0.005 / metersPerUnit}
+                  value={(simConfig.SYRINGE_BARREL_LENGTH ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_BARREL_LENGTH) / metersPerUnit}
+                  onChange={(e) =>
+                    setSimConfig((p) => ({ ...p, SYRINGE_BARREL_LENGTH: Number(e.target.value) * metersPerUnit }))
+                  }
+                  style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                />
+              </label>
+              <label style={labelStyle}>
+                Needle diameter ({lengthUnitLabel})
+                <input
+                  type="number"
+                  min={0.001 / metersPerUnit}
+                  step={0.002 / metersPerUnit}
+                  value={(simConfig.SYRINGE_NEEDLE_DIAMETER ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_NEEDLE_DIAMETER) / metersPerUnit}
+                  onChange={(e) =>
+                    setSimConfig((p) => ({ ...p, SYRINGE_NEEDLE_DIAMETER: Number(e.target.value) * metersPerUnit }))
+                  }
+                  style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                />
+              </label>
+              <label style={labelStyle}>
+                Needle length ({lengthUnitLabel})
+                <input
+                  type="number"
+                  min={0.005 / metersPerUnit}
+                  step={0.005 / metersPerUnit}
+                  value={(simConfig.SYRINGE_NEEDLE_LENGTH ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_NEEDLE_LENGTH) / metersPerUnit}
+                  onChange={(e) =>
+                    setSimConfig((p) => ({ ...p, SYRINGE_NEEDLE_LENGTH: Number(e.target.value) * metersPerUnit }))
+                  }
+                  style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                />
+              </label>
+              <label style={labelStyle}>
+                Gap above plate ({lengthUnitLabel})
+                <input
+                  type="number"
+                  min={0}
+                  step={0.005 / metersPerUnit}
+                  value={(simConfig.SYRINGE_PLATE_GAP ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_PLATE_GAP) / metersPerUnit}
+                  onChange={(e) =>
+                    setSimConfig((p) => ({ ...p, SYRINGE_PLATE_GAP: Math.max(0, Number(e.target.value) * metersPerUnit) }))
+                  }
+                  style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                />
+              </label>
+              <label style={labelStyle}>
+                Syringe facets
+                <input
+                  type="number"
+                  min={8}
+                  step={1}
+                  value={simConfig.SYRINGE_SEGMENTS ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_SEGMENTS}
+                  onChange={(e) => setSimConfig((p) => ({ ...p, SYRINGE_SEGMENTS: Math.max(8, Math.round(Number(e.target.value))) }))}
+                  style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                />
+              </label>
+              <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowSyringeOverlay(false)}
+                  style={{ flex: 1, border: '1px solid #bccbe0', background: '#fff', borderRadius: 8, padding: '8px', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    saveSyringeConfiguration().catch((err) => appendLog(`[error] Failed to save syringe config: ${err}`))
+                  }}
+                  style={{ flex: 1, border: '1px solid #3b73b8', background: '#3f86d9', color: '#fff', borderRadius: 8, padding: '8px', cursor: 'pointer' }}
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+            <div style={{ minHeight: 280, border: '1px solid #d6e3f2', borderRadius: 10, overflow: 'hidden' }}>
+              <Viewer3D
+                particleCount={0}
+                particleObjectUrl={particleObjectUrl}
+                liveFrameRef={liveFrameRef}
+                simRunId={runSignal + 1_000_000}
+                settledVertexStress={null}
+                environmentType="plate"
+                plateSize={Math.max(simConfig.PLATE_SIZE, (simConfig.SYRINGE_BARREL_DIAMETER ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_BARREL_DIAMETER) * 1.8)}
+                wallThickness={simConfig.WALL_THICKNESS}
+                plateWallHeight={simConfig.PLATE_WALL_HEIGHT}
+                cylinderDiameter={simConfig.CYLINDER_DIAMETER}
+                cylinderHeight={simConfig.CYLINDER_HEIGHT}
+                cylinderSegments={32}
+                transparentContainer={false}
+                lengthScale={lengthScale}
+                meshScale={meshScale}
+                showSyringeInPlate
+                syringeBarrelDiameter={simConfig.SYRINGE_BARREL_DIAMETER}
+                syringeBarrelLength={simConfig.SYRINGE_BARREL_LENGTH}
+                syringeNeedleDiameter={simConfig.SYRINGE_NEEDLE_DIAMETER}
+                syringeNeedleLength={simConfig.SYRINGE_NEEDLE_LENGTH}
+                syringePlateGap={simConfig.SYRINGE_PLATE_GAP}
+                syringeSegments={simConfig.SYRINGE_SEGMENTS}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

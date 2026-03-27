@@ -85,12 +85,18 @@ DENSITY              = 1200            # kg/m³
 PARTICLE_RESTITUTION = 0.0             # particle–contact bounciness (was 0.2)
 ENV_RESTITUTION      = 0.0             # floor/walls (was 0.05)
 # ── Environment ────────────────────────────────────────────────────────────  # environment settings
-ENVIRONMENT_TYPE     = "plate"      # "cylinder" or "plate"
+ENVIRONMENT_TYPE     = "plate"      # "cylinder", "plate", or "syringe"
 PLATE_SIZE           = 0.25            # square plate side length (m)
 CYLINDER_DIAMETER    = 0.20            # inner diameter (m)
 CYLINDER_HEIGHT      = 0.30            # wall height (m)
 CYLINDER_SEGMENTS    = 32              # wall facets — use 24+ to avoid gaps
 WALL_THICKNESS       = 0.02            # m — plate slab thickness (too thin + coarse dt → FEM tunneling)
+# Syringe geometry (ENVIRONMENT_TYPE="syringe")
+SYRINGE_BARREL_DIAMETER = 0.20         # m — large tube inner diameter
+SYRINGE_BARREL_LENGTH = 0.30           # m — large tube inner length
+SYRINGE_NEEDLE_DIAMETER = 0.04         # m — outlet hole / needle inner diameter
+SYRINGE_NEEDLE_LENGTH = 0.20           # m — small tube inner length below the barrel
+SYRINGE_SEGMENTS = 32                  # wall facets for barrel/needle/hole rings
 # Rim height for ENVIRONMENT_TYPE="plate" — keeps particles on the plate (0 = flat open plate).
 PLATE_WALL_HEIGHT    = 0.15            # m — vertical walls along the square perimeter
 # ── Drop ───────────────────────────────────────────────────────────────────  # drop settings
@@ -254,6 +260,11 @@ DEFAULT_CONFIG = {
     "CYLINDER_DIAMETER": CYLINDER_DIAMETER,
     "CYLINDER_HEIGHT": CYLINDER_HEIGHT,
     "CYLINDER_SEGMENTS": CYLINDER_SEGMENTS,
+    "SYRINGE_BARREL_DIAMETER": SYRINGE_BARREL_DIAMETER,
+    "SYRINGE_BARREL_LENGTH": SYRINGE_BARREL_LENGTH,
+    "SYRINGE_NEEDLE_DIAMETER": SYRINGE_NEEDLE_DIAMETER,
+    "SYRINGE_NEEDLE_LENGTH": SYRINGE_NEEDLE_LENGTH,
+    "SYRINGE_SEGMENTS": SYRINGE_SEGMENTS,
     "WALL_THICKNESS": WALL_THICKNESS,
     "PLATE_WALL_HEIGHT": PLATE_WALL_HEIGHT,
     "DROP_HEIGHT": DROP_HEIGHT,
@@ -309,6 +320,13 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["PARTICLE_RESTITUTION"] = float(cfg["PARTICLE_RESTITUTION"])
     cfg["ENV_RESTITUTION"] = float(cfg["ENV_RESTITUTION"])
     cfg["CYLINDER_DIAMETER"] = float(cfg["CYLINDER_DIAMETER"])
+    cfg["CYLINDER_HEIGHT"] = float(cfg.get("CYLINDER_HEIGHT", CYLINDER_HEIGHT))
+    cfg["CYLINDER_SEGMENTS"] = max(8, int(cfg.get("CYLINDER_SEGMENTS", CYLINDER_SEGMENTS)))
+    cfg["SYRINGE_BARREL_DIAMETER"] = float(cfg.get("SYRINGE_BARREL_DIAMETER", SYRINGE_BARREL_DIAMETER))
+    cfg["SYRINGE_BARREL_LENGTH"] = float(cfg.get("SYRINGE_BARREL_LENGTH", SYRINGE_BARREL_LENGTH))
+    cfg["SYRINGE_NEEDLE_DIAMETER"] = float(cfg.get("SYRINGE_NEEDLE_DIAMETER", SYRINGE_NEEDLE_DIAMETER))
+    cfg["SYRINGE_NEEDLE_LENGTH"] = float(cfg.get("SYRINGE_NEEDLE_LENGTH", SYRINGE_NEEDLE_LENGTH))
+    cfg["SYRINGE_SEGMENTS"] = max(8, int(cfg.get("SYRINGE_SEGMENTS", SYRINGE_SEGMENTS)))
     cfg["DROP_HEIGHT"] = float(cfg["DROP_HEIGHT"])
     cfg["DROP_SPREAD"] = float(cfg["DROP_SPREAD"])
     cfg["PLATE_WALL_HEIGHT"] = float(cfg.get("PLATE_WALL_HEIGHT", PLATE_WALL_HEIGHT))
@@ -733,6 +751,106 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
                     e.set_pos(pos, zero_velocity=False)
                 except Exception:
                     pass
+        return
+
+    if env == "syringe":
+        barrel_r = float(cfg.get("SYRINGE_BARREL_DIAMETER", SYRINGE_BARREL_DIAMETER)) * 0.5
+        barrel_h = float(cfg.get("SYRINGE_BARREL_LENGTH", SYRINGE_BARREL_LENGTH))
+        needle_r = float(cfg.get("SYRINGE_NEEDLE_DIAMETER", SYRINGE_NEEDLE_DIAMETER)) * 0.5
+        needle_h = float(cfg.get("SYRINGE_NEEDLE_LENGTH", SYRINGE_NEEDLE_LENGTH))
+        barrel_y_min = t
+        barrel_y_max = t + barrel_h
+        needle_y_min = -needle_h
+        needle_y_max = t
+        for e in entities:
+            name = type(e).__name__
+            if name == "FEMEntity":
+                try:
+                    st = e.get_state()
+                    pos = _tensor_to_numpy(st.pos).astype(float)
+                    if pos.ndim == 3:
+                        pos = pos[0]
+                    if pos.ndim != 2 or pos.shape[-1] != 3:
+                        continue
+                    pos = np.ascontiguousarray(pos)
+                    y = pos[:, 1]
+                    in_barrel = (y >= barrel_y_min - eps) & (y <= barrel_y_max + eps)
+                    if np.any(in_barrel):
+                        xz = pos[in_barrel, [0, 2]]
+                        r = np.hypot(xz[:, 0], xz[:, 1])
+                        mask = r > barrel_r - eps
+                        if np.any(mask):
+                            idx = np.where(in_barrel)[0][mask]
+                            for i in idx:
+                                x, z = float(pos[i, 0]), float(pos[i, 2])
+                                rv = math.hypot(x, z)
+                                if rv > 1e-12:
+                                    sc = (barrel_r - eps) / rv
+                                    pos[i, 0] *= sc
+                                    pos[i, 2] *= sc
+                    in_needle = (y >= needle_y_min - eps) & (y <= needle_y_max + eps)
+                    if np.any(in_needle):
+                        xz = pos[in_needle, [0, 2]]
+                        r = np.hypot(xz[:, 0], xz[:, 1])
+                        mask = r > needle_r - eps
+                        if np.any(mask):
+                            idx = np.where(in_needle)[0][mask]
+                            for i in idx:
+                                x, z = float(pos[i, 0]), float(pos[i, 2])
+                                rv = math.hypot(x, z)
+                                if rv > 1e-12:
+                                    sc = (needle_r - eps) / rv
+                                    pos[i, 0] *= sc
+                                    pos[i, 2] *= sc
+                    with _suppress_gs_manual_pose_warnings():
+                        e.set_position(pos)
+                except Exception:
+                    pass
+            elif name == "RigidEntity":
+                try:
+                    p0, quat = _entity_pose(e)
+                    pos = np.asarray(p0, dtype=float).copy()
+                    for _ in range(8):
+                        corners = _obb_world_corners(pos, quat, half_ext)
+                        moved = False
+                        in_barrel = (corners[:, 1] >= barrel_y_min - eps) & (corners[:, 1] <= barrel_y_max + eps)
+                        if np.any(in_barrel):
+                            cr = corners[in_barrel]
+                            xy = cr[:, [0, 2]]
+                            r = np.sqrt(xy[:, 0] ** 2 + xy[:, 1] ** 2)
+                            j = int(np.argmax(r))
+                            rmax = float(r[j])
+                            if rmax > barrel_r - eps:
+                                c = cr[j]
+                                xv, zv = float(c[0]), float(c[2])
+                                rv = math.hypot(xv, zv)
+                                if rv > 1e-12:
+                                    dr = rmax - (barrel_r - eps)
+                                    pos[0] -= (xv / rv) * dr
+                                    pos[2] -= (zv / rv) * dr
+                                    moved = True
+                                    corners = _obb_world_corners(pos, quat, half_ext)
+                        in_needle = (corners[:, 1] >= needle_y_min - eps) & (corners[:, 1] <= needle_y_max + eps)
+                        if np.any(in_needle):
+                            cr = corners[in_needle]
+                            xy = cr[:, [0, 2]]
+                            r = np.sqrt(xy[:, 0] ** 2 + xy[:, 1] ** 2)
+                            j = int(np.argmax(r))
+                            rmax = float(r[j])
+                            if rmax > needle_r - eps:
+                                c = cr[j]
+                                xv, zv = float(c[0]), float(c[2])
+                                rv = math.hypot(xv, zv)
+                                if rv > 1e-12:
+                                    dr = rmax - (needle_r - eps)
+                                    pos[0] -= (xv / rv) * dr
+                                    pos[2] -= (zv / rv) * dr
+                                    moved = True
+                        if not moved:
+                            break
+                    e.set_pos(pos, zero_velocity=False)
+                except Exception:
+                    pass
 
 
 def enforce_particle_separation(
@@ -877,6 +995,194 @@ def _write_coacd_compound_obj(parts: list, filepath: str) -> None:
         fh.write("\n".join(lines) + "\n")
 
 
+def _cup_mesh_proxy_path(inner_diameter: float, wall_thickness: float, wall_height: float, segments: int) -> str:
+    """Deterministic cache path for a hollow cylinder cup collision mesh."""
+    root = os.path.dirname(os.path.abspath(__file__))
+    cache_dir = os.path.join(root, ".cache", "containers")
+    os.makedirs(cache_dir, exist_ok=True)
+    key = f"cup_d{inner_diameter:.9f}_t{wall_thickness:.9f}_h{wall_height:.9f}_n{int(segments)}"
+    return os.path.join(cache_dir, f"{key}.obj")
+
+
+def _container_mesh_proxy_path(kind: str, key: str) -> str:
+    """Deterministic cache path for generated container collision meshes."""
+    root = os.path.dirname(os.path.abspath(__file__))
+    cache_dir = os.path.join(root, ".cache", "containers")
+    os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, f"{kind}_{key}.obj")
+
+
+def _write_cup_obj(
+    filepath: str,
+    *,
+    inner_radius: float,
+    wall_thickness: float,
+    wall_height: float,
+    segments: int,
+) -> None:
+    """
+    Write a watertight hollow-cylinder cup OBJ:
+    - open top
+    - closed bottom (thickness = wall_thickness)
+    - true circular inner/outer walls.
+    """
+    n = max(12, int(segments))
+    r_in = max(float(inner_radius), 1e-9)
+    t = max(float(wall_thickness), 1e-9)
+    h = max(float(wall_height), 1e-9)
+    r_out = r_in + t
+    y_bot = 0.0
+    y_floor = t
+    y_top = t + h
+
+    verts: list[tuple[float, float, float]] = []
+
+    def ring(radius: float, y: float) -> list[int]:
+        idx: list[int] = []
+        for i in range(n):
+            a = 2.0 * math.pi * i / n
+            verts.append((radius * math.cos(a), y, radius * math.sin(a)))
+            idx.append(len(verts))
+        return idx
+
+    outer_bottom = ring(r_out, y_bot)
+    outer_top = ring(r_out, y_top)
+    inner_floor = ring(r_in, y_floor)
+    inner_top = ring(r_in, y_top)
+    verts.append((0.0, y_bot, 0.0))
+    c_bot = len(verts)
+    verts.append((0.0, y_floor, 0.0))
+    c_floor = len(verts)
+
+    faces: list[tuple[int, int, int]] = []
+
+    def add_quad(a: int, b: int, c: int, d: int) -> None:
+        faces.append((a, b, c))
+        faces.append((a, c, d))
+
+    for i in range(n):
+        j = (i + 1) % n
+        # Outer wall (normal outward).
+        add_quad(outer_bottom[i], outer_top[i], outer_top[j], outer_bottom[j])
+        # Inner wall (normal inward).
+        add_quad(inner_top[i], inner_floor[i], inner_floor[j], inner_top[j])
+        # Top rim annulus.
+        add_quad(outer_top[i], inner_top[i], inner_top[j], outer_top[j])
+        # Underside disk (normal down).
+        faces.append((c_bot, outer_bottom[j], outer_bottom[i]))
+        # Inner floor disk (normal up).
+        faces.append((c_floor, inner_floor[i], inner_floor[j]))
+
+    lines = ["# Hollow cylinder cup collision mesh"]
+    lines += [f"v {x:.9g} {y:.9g} {z:.9g}" for (x, y, z) in verts]
+    lines += [f"f {a} {b} {c}" for (a, b, c) in faces]
+    with open(filepath, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
+def _write_open_tube_obj(
+    filepath: str,
+    *,
+    inner_radius: float,
+    wall_thickness: float,
+    height: float,
+    segments: int,
+) -> None:
+    """Write a hollow tube solid (ring with open center through-height)."""
+    n = max(12, int(segments))
+    r_in = max(float(inner_radius), 1e-9)
+    t = max(float(wall_thickness), 1e-9)
+    h = max(float(height), 1e-9)
+    r_out = r_in + t
+    y0 = -0.5 * h
+    y1 = 0.5 * h
+
+    verts: list[tuple[float, float, float]] = []
+
+    def ring(radius: float, y: float) -> list[int]:
+        idx: list[int] = []
+        for i in range(n):
+            a = 2.0 * math.pi * i / n
+            verts.append((radius * math.cos(a), y, radius * math.sin(a)))
+            idx.append(len(verts))
+        return idx
+
+    ob = ring(r_out, y0)
+    ot = ring(r_out, y1)
+    ib = ring(r_in, y0)
+    it = ring(r_in, y1)
+
+    faces: list[tuple[int, int, int]] = []
+
+    def add_quad(a: int, b: int, c: int, d: int) -> None:
+        faces.append((a, b, c))
+        faces.append((a, c, d))
+
+    for i in range(n):
+        j = (i + 1) % n
+        add_quad(ob[i], ot[i], ot[j], ob[j])  # outer wall
+        add_quad(it[i], ib[i], ib[j], it[j])  # inner wall
+        add_quad(ot[i], it[i], it[j], ot[j])  # top annulus
+        add_quad(ib[i], ob[i], ob[j], ib[j])  # bottom annulus
+
+    lines = ["# Hollow tube mesh"]
+    lines += [f"v {x:.9g} {y:.9g} {z:.9g}" for (x, y, z) in verts]
+    lines += [f"f {a} {b} {c}" for (a, b, c) in faces]
+    with open(filepath, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
+def _write_annulus_slab_obj(
+    filepath: str,
+    *,
+    inner_radius: float,
+    outer_radius: float,
+    thickness: float,
+    segments: int,
+) -> None:
+    """Write a thick annulus slab (washer) mesh."""
+    n = max(12, int(segments))
+    r_in = max(float(inner_radius), 1e-9)
+    r_out = max(float(outer_radius), r_in + 1e-9)
+    t = max(float(thickness), 1e-9)
+    y0 = -0.5 * t
+    y1 = 0.5 * t
+
+    verts: list[tuple[float, float, float]] = []
+
+    def ring(radius: float, y: float) -> list[int]:
+        idx: list[int] = []
+        for i in range(n):
+            a = 2.0 * math.pi * i / n
+            verts.append((radius * math.cos(a), y, radius * math.sin(a)))
+            idx.append(len(verts))
+        return idx
+
+    ob = ring(r_out, y0)
+    ot = ring(r_out, y1)
+    ib = ring(r_in, y0)
+    it = ring(r_in, y1)
+
+    faces: list[tuple[int, int, int]] = []
+
+    def add_quad(a: int, b: int, c: int, d: int) -> None:
+        faces.append((a, b, c))
+        faces.append((a, c, d))
+
+    for i in range(n):
+        j = (i + 1) % n
+        add_quad(ob[i], ot[i], ot[j], ob[j])  # outer wall
+        add_quad(it[i], ib[i], ib[j], it[j])  # inner wall
+        add_quad(ot[i], it[i], it[j], ot[j])  # top
+        add_quad(ib[i], ob[i], ob[j], ib[j])  # bottom
+
+    lines = ["# Annulus slab mesh"]
+    lines += [f"v {x:.9g} {y:.9g} {z:.9g}" for (x, y, z) in verts]
+    lines += [f"f {a} {b} {c}" for (a, b, c) in faces]
+    with open(filepath, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
 def load_particle_mesh(filepath: str, scale: float = 1.0):
     ext = os.path.splitext(filepath)[1].lower().lstrip(".")
     if ext not in {"obj", "stl"}:
@@ -962,10 +1268,22 @@ def _rigid_material(friction: float, restitution: float, rho: Optional[float] = 
         return gs.materials.Rigid(rho=float(rho), friction=friction, coup_restitution=restitution)
 
 
-def create_environment(scene, kind, plate_size=0.6, cyl_diameter=0.20,
-cyl_height=0.30, cyl_segments=32,
-wall_thickness=WALL_THICKNESS, plate_wall_height=PLATE_WALL_HEIGHT,
-env_restitution: float = ENV_RESTITUTION) -> tuple[set, dict]:
+def create_environment(
+    scene,
+    kind,
+    plate_size=0.6,
+    cyl_diameter=0.20,
+    cyl_height=0.30,
+    cyl_segments=32,
+    wall_thickness=WALL_THICKNESS,
+    plate_wall_height=PLATE_WALL_HEIGHT,
+    env_restitution: float = ENV_RESTITUTION,
+    syringe_barrel_diameter: float = SYRINGE_BARREL_DIAMETER,
+    syringe_barrel_length: float = SYRINGE_BARREL_LENGTH,
+    syringe_needle_diameter: float = SYRINGE_NEEDLE_DIAMETER,
+    syringe_needle_length: float = SYRINGE_NEEDLE_LENGTH,
+    syringe_segments: int = SYRINGE_SEGMENTS,
+) -> tuple[set, dict]:
     container_ids = set()
     mat = _rigid_material(0.55, float(env_restitution))
 
@@ -1016,44 +1334,130 @@ env_restitution: float = ENV_RESTITUTION) -> tuple[set, dict]:
         return (container_ids, env_info)
 
     if kind == "cylinder":
-        r_inner = cyl_diameter / 2
-        bottom = scene.add_entity(
-            gs.morphs.Cylinder(
-                radius=r_inner + wall_thickness,
-                height=wall_thickness,
-                pos=(0, wall_thickness / 2, 0),
+        r_inner = cyl_diameter / 2.0
+        cup_mesh_path = _cup_mesh_proxy_path(cyl_diameter, wall_thickness, cyl_height, cyl_segments)
+        _write_cup_obj(
+            cup_mesh_path,
+            inner_radius=r_inner,
+            wall_thickness=wall_thickness,
+            wall_height=cyl_height,
+            segments=cyl_segments,
+        )
+        cup = scene.add_entity(
+            gs.morphs.Mesh(
+                file=cup_mesh_path,
+                scale=1.0,
+                pos=(0.0, 0.0, 0.0),
                 fixed=True,
+                convexify=False,
+                collision=True,
+                visualization=False,
             ),
             material=mat,
         )
-        container_ids.add(bottom)
-
-        angle_step = 2 * math.pi / cyl_segments
-        chord_width = 2 * (cyl_diameter / 2) * math.sin(angle_step / 2)
-        for i in range(cyl_segments):
-            angle = 2 * math.pi * i / cyl_segments
-            cx = (cyl_diameter / 2 + wall_thickness / 2) * math.cos(angle)
-            cz = (cyl_diameter / 2 + wall_thickness / 2) * math.sin(angle)
-            cy = wall_thickness + cyl_height / 2
-            # Genesis quaternion helper expects Euler angles in degrees.
-            angle_deg = angle * 180.0 / math.pi
-            quat = gs.utils.geom.euler_to_quat((0.0, angle_deg, 0.0))
-            panel = scene.add_entity(
-                gs.morphs.Box(
-                    size=(chord_width, cyl_height, wall_thickness),
-                    pos=(cx, cy, cz),
-                    quat=quat,
-                    fixed=True,
-                ),
-                material=mat,
-            )
-            container_ids.add(panel)
+        container_ids.add(cup)
 
         env_info = {
             "surface_y": wall_thickness,
             "top_y": wall_thickness + cyl_height,
             "inner_radius": r_inner,
             "spread_radius": r_inner,
+        }
+        return (container_ids, env_info)
+
+    if kind == "syringe":
+        t = float(wall_thickness)
+        barrel_d = float(syringe_barrel_diameter)
+        barrel_h = float(syringe_barrel_length)
+        needle_d = float(syringe_needle_diameter)
+        needle_h = float(syringe_needle_length)
+        seg = max(8, int(syringe_segments))
+        if needle_d >= barrel_d:
+            raise ValueError(
+                f"Syringe requires needle diameter < barrel diameter, got {needle_d} >= {barrel_d}"
+            )
+
+        barrel_r = 0.5 * barrel_d
+        needle_r = 0.5 * needle_d
+        key = (
+            f"dB{barrel_d:.9f}_hB{barrel_h:.9f}_dN{needle_d:.9f}_hN{needle_h:.9f}_"
+            f"t{t:.9f}_n{seg}"
+        )
+
+        barrel_path = _container_mesh_proxy_path("syringe_barrel", key)
+        annulus_path = _container_mesh_proxy_path("syringe_annulus", key)
+        needle_path = _container_mesh_proxy_path("syringe_needle", key)
+
+        _write_open_tube_obj(
+            barrel_path,
+            inner_radius=barrel_r,
+            wall_thickness=t,
+            height=barrel_h,
+            segments=seg,
+        )
+        _write_annulus_slab_obj(
+            annulus_path,
+            inner_radius=needle_r,
+            outer_radius=barrel_r,
+            thickness=t,
+            segments=seg,
+        )
+        _write_open_tube_obj(
+            needle_path,
+            inner_radius=needle_r,
+            wall_thickness=t,
+            height=needle_h,
+            segments=seg,
+        )
+        junction_y = t * 0.5
+
+        barrel = scene.add_entity(
+            gs.morphs.Mesh(
+                file=barrel_path,
+                scale=1.0,
+                pos=(0.0, junction_y + barrel_h / 2.0, 0.0),
+                fixed=True,
+                convexify=False,
+                collision=True,
+                visualization=False,
+            ),
+            material=mat,
+        )
+        container_ids.add(barrel)
+        annulus = scene.add_entity(
+            gs.morphs.Mesh(
+                file=annulus_path,
+                scale=1.0,
+                pos=(0.0, junction_y, 0.0),
+                fixed=True,
+                convexify=False,
+                collision=True,
+                visualization=False,
+            ),
+            material=mat,
+        )
+        container_ids.add(annulus)
+        needle = scene.add_entity(
+            gs.morphs.Mesh(
+                file=needle_path,
+                scale=1.0,
+                pos=(0.0, junction_y - needle_h / 2.0, 0.0),
+                fixed=True,
+                convexify=False,
+                collision=True,
+                visualization=False,
+            ),
+            material=mat,
+        )
+        container_ids.add(needle)
+
+        env_info = {
+            "surface_y": t,
+            "top_y": junction_y + barrel_h,
+            "inner_radius": barrel_r,
+            "spread_radius": barrel_r,
+            "outlet_radius": needle_r,
+            "needle_bottom_y": junction_y - needle_h,
         }
         return (container_ids, env_info)
 
@@ -1301,7 +1705,9 @@ def container_surface_area_m2(environment_type: str, cfg: dict) -> float:
     """
     Inner container surface area (m²) for system pressure: sum(|F_contact|) / area → Pa.
 
-    Plate: horizontal floor + inner rim (four sides). Cylinder: inner bottom disk + inner cylindrical wall.
+    Plate: horizontal floor + inner rim (four sides).
+    Cylinder: inner bottom disk + inner cylindrical wall.
+    Syringe: barrel inner wall + bottom annulus + needle inner wall.
     """
     k = str(environment_type).strip().lower()
     if k == "plate":
@@ -1315,6 +1721,17 @@ def container_surface_area_m2(environment_type: str, cfg: dict) -> float:
         h = float(cfg.get("CYLINDER_HEIGHT", CYLINDER_HEIGHT))
         r = d * 0.5
         return max(math.pi * r * r + 2.0 * math.pi * r * h, 1e-18)
+    if k == "syringe":
+        barrel_d = float(cfg.get("SYRINGE_BARREL_DIAMETER", SYRINGE_BARREL_DIAMETER))
+        barrel_h = float(cfg.get("SYRINGE_BARREL_LENGTH", SYRINGE_BARREL_LENGTH))
+        needle_d = float(cfg.get("SYRINGE_NEEDLE_DIAMETER", SYRINGE_NEEDLE_DIAMETER))
+        needle_h = float(cfg.get("SYRINGE_NEEDLE_LENGTH", SYRINGE_NEEDLE_LENGTH))
+        r_barrel = barrel_d * 0.5
+        r_needle = needle_d * 0.5
+        annulus = math.pi * max(r_barrel * r_barrel - r_needle * r_needle, 0.0)
+        barrel_wall = 2.0 * math.pi * r_barrel * max(barrel_h, 0.0)
+        needle_wall = 2.0 * math.pi * r_needle * max(needle_h, 0.0)
+        return max(annulus + barrel_wall + needle_wall, 1e-18)
     return 1.0
 
 
@@ -2325,6 +2742,11 @@ def main():
         WALL_THICKNESS,
         PLATE_WALL_HEIGHT,
         env_restitution=ENV_RESTITUTION,
+        syringe_barrel_diameter=SYRINGE_BARREL_DIAMETER,
+        syringe_barrel_length=SYRINGE_BARREL_LENGTH,
+        syringe_needle_diameter=SYRINGE_NEEDLE_DIAMETER,
+        syringe_needle_length=SYRINGE_NEEDLE_LENGTH,
+        syringe_segments=SYRINGE_SEGMENTS,
     )
     container_ids = {_entity_id(e) for e in container_ids}
     entities = spawn_particles(

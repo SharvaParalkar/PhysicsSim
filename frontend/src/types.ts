@@ -105,7 +105,7 @@ export interface SimulationConfig {
   /** Max simulated seconds per staging step; omit for max(SIM_DURATION / N_PARTICLES, 0.25). */
   SEQUENTIAL_STAGE_DURATION?: number | null
   SIM_DURATION: number
-  ENVIRONMENT_TYPE: 'plate' | 'cylinder'
+  ENVIRONMENT_TYPE: 'plate' | 'cylinder' | 'syringe'
   CYLINDER_DIAMETER: number
   CYLINDER_HEIGHT: number
   DROP_HEIGHT: number
@@ -118,6 +118,18 @@ export interface SimulationConfig {
   PLATE_WALL_HEIGHT: number
   /** Radians — Hertzian angular falloff for post-process vertex stress (backend STRESS_SIGMA). */
   STRESS_SIGMA?: number
+  /** Syringe barrel inner diameter (m). */
+  SYRINGE_BARREL_DIAMETER?: number
+  /** Syringe barrel inner length (m). */
+  SYRINGE_BARREL_LENGTH?: number
+  /** Syringe needle inner diameter (m). */
+  SYRINGE_NEEDLE_DIAMETER?: number
+  /** Syringe needle inner length (m). */
+  SYRINGE_NEEDLE_LENGTH?: number
+  /** Vertical gap from syringe needle tip to plate top (m) in plate preview mode. */
+  SYRINGE_PLATE_GAP?: number
+  /** Facet count for syringe wall approximation. */
+  SYRINGE_SEGMENTS?: number
 }
 
 export type WsLog = { type: 'log'; line: string }

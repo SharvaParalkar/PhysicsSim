@@ -150,6 +150,7 @@ except Exception:
 
 OUTPUT_DIR = getattr(simulation, "OUTPUT_DIR", "./results")
 PARTICLES_DIR = Path(__file__).resolve().parent / "Particles"
+ENVIRONMENT_DIR = Path(__file__).resolve().parent / "environment"
 DEFAULT_PARTICLE_NAME = "particle.obj"
 LATEST_Z_HISTORY: list[dict[str, float]] = []
 LATEST_MAX_VEL_HISTORY: list[dict[str, float]] = []
@@ -263,6 +264,10 @@ _PHYS_LENGTH_KEYS: tuple[str, ...] = (
     "DROP_HEIGHT",
     "CYLINDER_DIAMETER",
     "CYLINDER_HEIGHT",
+    "SYRINGE_BARREL_DIAMETER",
+    "SYRINGE_BARREL_LENGTH",
+    "SYRINGE_NEEDLE_DIAMETER",
+    "SYRINGE_NEEDLE_LENGTH",
 )
 
 
@@ -458,6 +463,11 @@ class SimulationRuntime:
             _phys_cfg["WALL_THICKNESS"],
             float(_phys_cfg.get("PLATE_WALL_HEIGHT", simulation.PLATE_WALL_HEIGHT)),
             env_restitution=float(_phys_cfg.get("ENV_RESTITUTION", 0.0)),
+            syringe_barrel_diameter=float(_phys_cfg.get("SYRINGE_BARREL_DIAMETER", simulation.SYRINGE_BARREL_DIAMETER)),
+            syringe_barrel_length=float(_phys_cfg.get("SYRINGE_BARREL_LENGTH", simulation.SYRINGE_BARREL_LENGTH)),
+            syringe_needle_diameter=float(_phys_cfg.get("SYRINGE_NEEDLE_DIAMETER", simulation.SYRINGE_NEEDLE_DIAMETER)),
+            syringe_needle_length=float(_phys_cfg.get("SYRINGE_NEEDLE_LENGTH", simulation.SYRINGE_NEEDLE_LENGTH)),
+            syringe_segments=int(_phys_cfg.get("SYRINGE_SEGMENTS", simulation.SYRINGE_SEGMENTS)),
         )
         self.active_containers = list(containers)
         _p("spawn", 0.55, f"Spawning {int(_phys_cfg['N_PARTICLES'])} particles…")
@@ -629,6 +639,39 @@ def get_metrics():
             return _sanitize_floats(out)
     except Exception:
         return _sanitize_floats(out)
+
+
+@app.post("/environment/save")
+def save_environment_config(payload: dict[str, Any]):
+    """Persist syringe/environment presets as JSON files in ./environment."""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    name = str(payload.get("name", "environment")).strip()
+    raw_cfg = payload.get("config", {})
+    if not isinstance(raw_cfg, dict):
+        raise HTTPException(status_code=400, detail="'config' must be an object")
+
+    safe = "".join(ch if (ch.isalnum() or ch in ("-", "_")) else "_" for ch in name).strip("_")
+    if not safe:
+        safe = "environment"
+
+    cfg = simulation.build_runtime_config(dict(raw_cfg))
+    wanted = {
+        "SYRINGE_BARREL_DIAMETER": float(cfg.get("SYRINGE_BARREL_DIAMETER", simulation.SYRINGE_BARREL_DIAMETER)),
+        "SYRINGE_BARREL_LENGTH": float(cfg.get("SYRINGE_BARREL_LENGTH", simulation.SYRINGE_BARREL_LENGTH)),
+        "SYRINGE_NEEDLE_DIAMETER": float(cfg.get("SYRINGE_NEEDLE_DIAMETER", simulation.SYRINGE_NEEDLE_DIAMETER)),
+        "SYRINGE_NEEDLE_LENGTH": float(cfg.get("SYRINGE_NEEDLE_LENGTH", simulation.SYRINGE_NEEDLE_LENGTH)),
+        "SYRINGE_SEGMENTS": int(cfg.get("SYRINGE_SEGMENTS", simulation.SYRINGE_SEGMENTS)),
+    }
+    if wanted["SYRINGE_NEEDLE_DIAMETER"] >= wanted["SYRINGE_BARREL_DIAMETER"]:
+        raise HTTPException(status_code=400, detail="Needle diameter must be less than barrel diameter")
+
+    ENVIRONMENT_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = ENVIRONMENT_DIR / f"{safe}.json"
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump({"name": safe, "type": "syringe", "config": wanted}, f, indent=2)
+
+    return {"ok": True, "path": str(out_path.relative_to(Path(__file__).resolve().parent))}
 
 
 def _build_export_payload() -> dict[str, Any]:

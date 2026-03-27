@@ -693,8 +693,7 @@ function ShallowBasket(props: {
   const rInner = diameter / 2
   const py = wallThickness / 2
   const wallY = wallThickness + height / 2
-  const angleStep = (2 * Math.PI) / segments
-  const chordW = diameter * Math.sin(angleStep / 2)
+  const seg = Math.max(16, Math.round(segments))
 
   const wallMat = useMemo(() => {
     if (transparent) {
@@ -711,7 +710,7 @@ function ShallowBasket(props: {
         clearcoat: 0.2,
       })
     }
-    return new THREE.MeshStandardMaterial({ color: '#b8c4d4', roughness: 0.55, metalness: 0.12 })
+    return new THREE.MeshStandardMaterial({ color: '#b8c4d4', roughness: 0.55, metalness: 0.12, side: THREE.DoubleSide })
   }, [transparent])
 
   const bottomMat = wallMat
@@ -722,27 +721,120 @@ function ShallowBasket(props: {
     }
   }, [wallMat])
 
-  const panels = useMemo(() => {
-    const items: { pos: [number, number, number]; rotY: number }[] = []
-    for (let i = 0; i < segments; i++) {
-      const angle = (2 * Math.PI * i) / segments
-      const cx = (diameter / 2 + wallThickness / 2) * Math.cos(angle)
-      const cz = (diameter / 2 + wallThickness / 2) * Math.sin(angle)
-      items.push({ pos: [cx, wallY, cz], rotY: angle })
-    }
-    return items
-  }, [diameter, wallThickness, wallY, segments])
-
   return (
     <group>
       <mesh position={[0, py, 0]} receiveShadow material={bottomMat}>
-        <cylinderGeometry args={[rInner + wallThickness, rInner + wallThickness, wallThickness, segments]} />
+        <cylinderGeometry args={[rInner + wallThickness, rInner + wallThickness, wallThickness, seg]} />
       </mesh>
-      {panels.map((p, i) => (
-        <mesh key={i} position={p.pos} rotation={[0, p.rotY, 0]} receiveShadow material={wallMat}>
-          <boxGeometry args={[chordW, height, wallThickness]} />
-        </mesh>
-      ))}
+      <mesh position={[0, wallY, 0]} receiveShadow material={wallMat}>
+        <cylinderGeometry args={[rInner + wallThickness, rInner + wallThickness, height, seg, 1, true]} />
+      </mesh>
+      <mesh position={[0, wallY, 0]} receiveShadow material={wallMat}>
+        <cylinderGeometry args={[rInner, rInner, height, seg, 1, true]} />
+      </mesh>
+      <mesh position={[0, wallThickness + height, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={wallMat}>
+        <ringGeometry args={[rInner, rInner + wallThickness, seg]} />
+      </mesh>
+    </group>
+  )
+}
+
+function SyringePreview(props: {
+  wallThickness: number
+  barrelDiameter: number
+  barrelLength: number
+  needleDiameter: number
+  needleLength: number
+  plateGap?: number
+  segments: number
+}) {
+  const { wallThickness, barrelDiameter, barrelLength, needleDiameter, needleLength, plateGap = 0.01, segments } = props
+  const t = Math.max(wallThickness, 1e-6)
+  const seg = Math.max(8, Math.round(segments))
+  const barrelR = Math.max(barrelDiameter * 0.5, 1e-6)
+  const needleR = Math.max(needleDiameter * 0.5, 1e-6)
+  const gap = Math.max(plateGap, 0)
+  if (needleR >= barrelR) return null
+
+  const barrelMat = useMemo(
+    () =>
+      new THREE.MeshPhysicalMaterial({
+        color: '#80a7d9',
+        roughness: 0.12,
+        metalness: 0.02,
+        transparent: true,
+        opacity: 0.26,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        transmission: 0.8,
+        thickness: 0.12,
+        ior: 1.42,
+      }),
+    [],
+  )
+  const needleMat = useMemo(
+    () =>
+      new THREE.MeshPhysicalMaterial({
+        color: '#6694cc',
+        roughness: 0.15,
+        metalness: 0.03,
+        transparent: true,
+        opacity: 0.32,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        transmission: 0.74,
+        thickness: 0.08,
+        ior: 1.42,
+      }),
+    [],
+  )
+  const bottomMat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: '#7d99bb',
+        roughness: 0.38,
+        metalness: 0.08,
+        side: THREE.DoubleSide,
+      }),
+    [],
+  )
+  useEffect(() => {
+    return () => {
+      barrelMat.dispose()
+      needleMat.dispose()
+      bottomMat.dispose()
+    }
+  }, [barrelMat, needleMat, bottomMat])
+  const plateTopY = t / 2
+  const needleCenterY = t / 2 - needleLength / 2
+  const needleTipLocalY = needleCenterY - needleLength / 2
+  const syringeLiftY = plateTopY + gap - needleTipLocalY
+
+  return (
+    <group position={[0, syringeLiftY, 0]}>
+      <mesh position={[0, t / 2 + barrelLength / 2, 0]} receiveShadow material={barrelMat}>
+        <cylinderGeometry args={[barrelR + t, barrelR + t, barrelLength, seg, 1, true]} />
+      </mesh>
+      <mesh position={[0, t / 2 + barrelLength / 2, 0]} receiveShadow material={barrelMat}>
+        <cylinderGeometry args={[barrelR, barrelR, barrelLength, seg, 1, true]} />
+      </mesh>
+      <mesh position={[0, t / 2 + barrelLength, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={barrelMat}>
+        <ringGeometry args={[barrelR, barrelR + t, seg]} />
+      </mesh>
+
+      <mesh position={[0, t / 2, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={bottomMat}>
+        <ringGeometry args={[needleR, barrelR, seg]} />
+      </mesh>
+
+      <mesh position={[0, needleCenterY, 0]} receiveShadow material={needleMat}>
+        <cylinderGeometry args={[needleR + t, needleR + t, needleLength, seg, 1, true]} />
+      </mesh>
+      <mesh position={[0, needleCenterY, 0]} receiveShadow material={needleMat}>
+        <cylinderGeometry args={[needleR, needleR, needleLength, seg, 1, true]} />
+      </mesh>
+      <mesh position={[0, t / 2, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={needleMat}>
+        <ringGeometry args={[needleR, needleR + t, seg]} />
+      </mesh>
     </group>
   )
 }
@@ -758,7 +850,7 @@ function Scene(props: {
   lengthScale: number
   /** Scale OBJ geometry vertices to physics world metres (e.g. 1e-6 for µm-authored meshes). */
   meshScale?: number
-  environmentType: 'plate' | 'cylinder'
+  environmentType: 'plate' | 'cylinder' | 'syringe'
   plateSize: number
   wallThickness: number
   plateWallHeight: number
@@ -766,6 +858,13 @@ function Scene(props: {
   cylinderHeight: number
   cylinderSegments: number
   transparentContainer: boolean
+  showSyringeInPlate?: boolean
+  syringeBarrelDiameter?: number
+  syringeBarrelLength?: number
+  syringeNeedleDiameter?: number
+  syringeNeedleLength?: number
+  syringePlateGap?: number
+  syringeSegments?: number
 }) {
   const {
     count,
@@ -784,6 +883,13 @@ function Scene(props: {
     cylinderHeight,
     cylinderSegments,
     transparentContainer,
+    showSyringeInPlate,
+    syringeBarrelDiameter = 0.2,
+    syringeBarrelLength = 0.3,
+    syringeNeedleDiameter = 0.04,
+    syringeNeedleLength = 0.2,
+    syringePlateGap = 0.01,
+    syringeSegments = 32,
   } = props
   const py = wallThickness / 2
   const s = plateSize
@@ -857,6 +963,17 @@ function Scene(props: {
                 </mesh>
               </>
             ) : null}
+            {showSyringeInPlate ? (
+              <SyringePreview
+                wallThickness={wallThickness}
+                barrelDiameter={syringeBarrelDiameter}
+                barrelLength={syringeBarrelLength}
+                needleDiameter={syringeNeedleDiameter}
+                needleLength={syringeNeedleLength}
+                plateGap={syringePlateGap}
+                segments={syringeSegments}
+              />
+            ) : null}
           </group>
         ) : (
           <ShallowBasket
@@ -893,7 +1010,7 @@ type Viewer3DProps = {
   lengthScale?: number
   /** Scale OBJ geometry vertices to physics world metres (e.g. 1e-6 for µm-authored meshes). */
   meshScale?: number
-  environmentType: 'plate' | 'cylinder'
+  environmentType: 'plate' | 'cylinder' | 'syringe'
   plateSize: number
   wallThickness: number
   plateWallHeight: number
@@ -901,6 +1018,13 @@ type Viewer3DProps = {
   cylinderHeight: number
   cylinderSegments: number
   transparentContainer: boolean
+  showSyringeInPlate?: boolean
+  syringeBarrelDiameter?: number
+  syringeBarrelLength?: number
+  syringeNeedleDiameter?: number
+  syringeNeedleLength?: number
+  syringePlateGap?: number
+  syringeSegments?: number
 }
 
 /** 3D view only — WebSocket lives in App (shared socket survives React Strict Mode). */
@@ -922,6 +1046,13 @@ export default function Viewer3D(props: Viewer3DProps) {
     cylinderHeight,
     cylinderSegments,
     transparentContainer,
+    showSyringeInPlate,
+    syringeBarrelDiameter,
+    syringeBarrelLength,
+    syringeNeedleDiameter,
+    syringeNeedleLength,
+    syringePlateGap,
+    syringeSegments,
   } = props
   const [meshVerts, setMeshVerts] = useState<number | null>(null)
   const [sphereFallbackMesh, setSphereFallbackMesh] = useState(false)
@@ -929,14 +1060,38 @@ export default function Viewer3D(props: Viewer3DProps) {
     if (environmentType === 'cylinder') {
       return Math.max(cylinderDiameter, cylinderHeight + wallThickness)
     }
+    if (environmentType === 'syringe') {
+      const barrelD = Math.max(syringeBarrelDiameter ?? 0.2, 1e-6)
+      const barrelL = Math.max(syringeBarrelLength ?? 0.3, 1e-6)
+      const needleL = Math.max(syringeNeedleLength ?? 0.2, 1e-6)
+      return Math.max(barrelD + 2 * wallThickness, barrelL + needleL + wallThickness)
+    }
     return Math.max(plateSize + 2 * wallThickness, plateWallHeight + wallThickness)
-  }, [environmentType, cylinderDiameter, cylinderHeight, wallThickness, plateSize, plateWallHeight])
+  }, [
+    environmentType,
+    cylinderDiameter,
+    cylinderHeight,
+    wallThickness,
+    plateSize,
+    plateWallHeight,
+    syringeBarrelDiameter,
+    syringeBarrelLength,
+    syringeNeedleLength,
+  ])
   const envSpanDisplay = Math.max(envSpanMeters * lengthScale, 1e-6)
   const cameraDistance = Math.max(envSpanDisplay * 2.2, 1.2)
   // Scale near-plane with scene span so it doesn't clip geometry in µm mode (lengthScale=1e6).
   const cameraNear = Math.max(cameraDistance / 5000, envSpanDisplay * 0.0005)
   const cameraFar = Math.max(cameraDistance * 25, 2000)
-  const cameraY = (wallThickness + (environmentType === 'plate' ? plateWallHeight : cylinderHeight) * 0.5) * lengthScale
+  const cameraY =
+    (wallThickness +
+      (environmentType === 'plate'
+        ? plateWallHeight
+        : environmentType === 'syringe'
+          ? Math.max(syringeBarrelLength ?? 0.3, 1e-6)
+          : cylinderHeight) *
+        0.5) *
+    lengthScale
   const cameraConfig = useMemo(
     () => ({
       position: [cameraDistance * 0.7, cameraY + cameraDistance * 0.9, cameraDistance * 0.9] as [number, number, number],
@@ -1043,6 +1198,13 @@ export default function Viewer3D(props: Viewer3DProps) {
           cylinderHeight={cylinderHeight}
           cylinderSegments={cylinderSegments}
           transparentContainer={transparentContainer}
+          showSyringeInPlate={showSyringeInPlate}
+          syringeBarrelDiameter={syringeBarrelDiameter}
+          syringeBarrelLength={syringeBarrelLength}
+          syringeNeedleDiameter={syringeNeedleDiameter}
+          syringeNeedleLength={syringeNeedleLength}
+          syringePlateGap={syringePlateGap}
+          syringeSegments={syringeSegments}
         />
       </Canvas>
     </div>
