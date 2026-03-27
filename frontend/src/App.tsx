@@ -110,6 +110,7 @@ const MICRON_SCALE_SETTINGS = {
   SIM_DURATION: 3.0,
   ANALYTICAL_MODE: false,
   GRAVITY: [0, -9.81, 0] as [number, number, number],
+  BACKEND: 'gpu' as const,
 }
 
 /** Standard environment + physics reset used when switching away from µm-scale particles. */
@@ -126,6 +127,15 @@ const STANDARD_SCALE_SETTINGS = {
   DROP_SPREAD: 0,
   ...STANDARD_PHYSICS_TUNING,
   SIM_DURATION: 5.0,
+  BACKEND: 'gpu' as const,
+}
+
+function getAdaptiveStreamCadence(nParticles: number): { frameEvery: number; liveMetricsEvery: number } {
+  if (nParticles >= 1200) return { frameEvery: 120, liveMetricsEvery: 240 }
+  if (nParticles >= 800) return { frameEvery: 90, liveMetricsEvery: 180 }
+  if (nParticles >= 400) return { frameEvery: 60, liveMetricsEvery: 120 }
+  if (nParticles >= 200) return { frameEvery: 45, liveMetricsEvery: 90 }
+  return { frameEvery: 30, liveMetricsEvery: 60 }
 }
 
 const DEFAULT_SYRINGE_SETTINGS = {
@@ -150,6 +160,9 @@ const MICRON_SYRINGE_SETTINGS = {
   SYRINGE_PLATE_GAP: 0.0002,
   SYRINGE_SEGMENTS: 32,
 }
+
+// Spawn particles from the lower section of the syringe barrel rather than near the top.
+const SYRINGE_DROP_HEIGHT_FACTOR = 0.2
 
 export default function App() {
   const [mode, setMode] = useState<'idle' | 'falling' | 'settled'>('idle')
@@ -416,7 +429,10 @@ export default function App() {
     // Single supported environment: flat plate + syringe.
     // Drop height is derived from syringe barrel length.
     setSimConfig((p) => {
-      const derivedDropHeight = Math.max(0, (p.SYRINGE_BARREL_LENGTH ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_BARREL_LENGTH) * 0.5)
+      const derivedDropHeight = Math.max(
+        0,
+        (p.SYRINGE_BARREL_LENGTH ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_BARREL_LENGTH) * SYRINGE_DROP_HEIGHT_FACTOR,
+      )
       if (p.ENVIRONMENT_TYPE === 'plate' && Math.abs(p.DROP_HEIGHT - derivedDropHeight) < 1e-12) return p
       return {
         ...p,
@@ -620,11 +636,17 @@ export default function App() {
   useEffect(() => {
     if (runSignal === 0) return
     const ws = getSharedSimulationSocket()
+    const nParticles = Math.max(1, Math.trunc(Number(simConfigRef.current.N_PARTICLES) || 1))
+    const cadence = getAdaptiveStreamCadence(nParticles)
+    const runConfig: SimulationConfig = {
+      ...simConfigRef.current,
+      BACKEND: simConfigRef.current.BACKEND ?? 'gpu',
+    }
     const payload = JSON.stringify({
       type: 'start',
-      frame_every: 30,
-      live_metrics_every: 60,
-      config: simConfigRef.current,
+      frame_every: cadence.frameEvery,
+      live_metrics_every: cadence.liveMetricsEvery,
+      config: runConfig,
     })
     liveFrameSerialRef.current = 0
     liveFrameRef.current = { step: -99999, t: 0, particles: [], serial: 0 }
@@ -1427,6 +1449,7 @@ export default function App() {
                 syringeBottomThickness={simConfig.SYRINGE_BOTTOM_THICKNESS}
                 syringePlateGap={simConfig.SYRINGE_PLATE_GAP}
                 syringeSegments={simConfig.SYRINGE_SEGMENTS}
+                renderMode={mode === 'falling' ? 'live' : 'settled'}
               />
             </div>
           </div>
@@ -1639,6 +1662,7 @@ export default function App() {
                 syringeBottomThickness={simConfig.SYRINGE_BOTTOM_THICKNESS}
                 syringePlateGap={simConfig.SYRINGE_PLATE_GAP}
                 syringeSegments={simConfig.SYRINGE_SEGMENTS}
+                renderMode="live"
               />
             </div>
           </div>

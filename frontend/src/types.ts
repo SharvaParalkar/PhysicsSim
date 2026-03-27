@@ -134,6 +134,10 @@ export interface SimulationConfig {
   SYRINGE_PLATE_GAP?: number
   /** Facet count for syringe wall approximation. */
   SYRINGE_SEGMENTS?: number
+  /** When true, syringe needle outlet is open so particles can exit through the tip. */
+  SYRINGE_OPEN_TIP?: boolean
+  /** Preferred backend: `auto` (default), `cpu`, or `gpu` (server may fallback to CPU if GPU init fails). */
+  BACKEND?: 'auto' | 'cpu' | 'gpu'
 }
 
 export type WsLog = { type: 'log'; line: string }

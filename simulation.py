@@ -1,4 +1,5 @@
 import os, math
+import itertools
 import argparse
 import logging
 import sys
@@ -7,10 +8,9 @@ import torch
 import pandas as pd
 import h5py
 import trimesh
-import coacd
 import networkx as nx
 from scipy.spatial.transform import Rotation
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
@@ -108,9 +108,8 @@ PARTICLE_FILE        = "Star600M.obj"   # OBJ or STL path
 N_PARTICLES          = 50               # number of particle copies to drop
 SCALE_FACTOR         = 1.0             # 0.001 converts mm mesh → metres
 # ── Material ───────────────────────────────────────────────────────────────  # material settings
-# YOUNGS_MODULUS: FEM jamming uses E ≤ 1e8; above 1e8 Genesis uses rigid particles (see spawn_particles).
-FEM_JAMMING_E_MAX  = 100_000_000.0   # Pa — upper FEM bound (1e8)
-YOUNGS_MODULUS       = 200_000_000.0  # Pa — forces Rigid solver path (E > 1e8)
+# YOUNGS_MODULUS: used directly by MPM elastoplastic particles.
+YOUNGS_MODULUS       = 200_000_000.0  # Pa
 POISSON_RATIO        = 0.45            # 0.5 = fully incompressible; use 0.45+ to limit volume loss
 DENSITY              = 1200            # kg/m³
 # Rigid-body restitution (Genesis maps this to internal coupling restitution).
@@ -133,6 +132,8 @@ SYRINGE_WALL_THICKNESS = 0.003         # m — syringe tube wall thickness (barr
 SYRINGE_BOTTOM_THICKNESS = 0.003       # m — annulus slab thickness at barrel/needle junction
 SYRINGE_PLATE_GAP = 0.01               # m — visual/placement gap between needle tip and plate top
 SYRINGE_SEGMENTS = 32                  # wall facets for barrel/needle/hole rings
+# When True, do not add a cap collider at the needle outlet so particles can flow through.
+SYRINGE_OPEN_TIP = True
 # Rim height for ENVIRONMENT_TYPE="plate" — keeps particles on the plate (0 = flat open plate).
 PLATE_WALL_HEIGHT    = 0.15            # m — vertical walls along the square perimeter
 # ── Drop ───────────────────────────────────────────────────────────────────  # drop settings
@@ -142,10 +143,9 @@ DROP_SPREAD          = 0.5
 # ── Gravity ────────────────────────────────────────────────────────────────  # gravity settings
 GRAVITY              = (0, -9.81, 0)   # Y is up; change to (0,-1.62,0) for Moon
 # ── Simulation ─────────────────────────────────────────────────────────────  # simulation settings
-# Throughput-first defaults: larger outer dt, fewer substeps; implicit FEM + low Newton count (see FEMOptions).
-# For thin rigid plates, use Analytical Mode (large dt while falling, then rebuild at 500 Hz / 16 substeps).
-DT                   = 1 / 240       # s — outer step (with SUBSTEPS)
-SUBSTEPS             = 4              # inner substeps per dt (higher → less rigid/FEM tunneling)
+# MPM defaults for this container scale.
+DT                   = 4e-3           # s — outer step (with SUBSTEPS)
+SUBSTEPS             = 10             # inner substeps per dt
 SIM_DURATION         = 10.0            # max simulated time (s)
 SETTLE_THRESHOLD     = 1e-3            # m/s — stop early when all particles slow
 # ── Runtime / performance ───────────────────────────────────────────────────  # runtime settings
@@ -153,9 +153,6 @@ SETTLE_THRESHOLD     = 1e-3            # m/s — stop early when all particles s
 # Keep it off by default so simulation runs as fast as possible.
 SHOW_VIEWER          = False
 # ── Contact analysis ───────────────────────────────────────────────────────  # contact analysis settings
-CONTACT_SAMPLE_EVERY = 20              # legacy doc alignment: prefer CONTACT_EXTRACT_FALLING_EVERY for live runs
-# During fast motion, skip scene.get_contacts() most steps (see extract_contacts_resampled).
-CONTACT_EXTRACT_FALLING_EVERY = 60
 CONTACT_DEPTH_TOL    = 5e-5            # min penetration depth to count as contact
 STRESS_FLOOR         = 0.05            # normalized intensities below this are clamped to 0 (kills noise on non-touching particles)
 # STRESS_SIGMA: fraction of mesh characteristic radius used as local-space Gaussian width.
@@ -184,32 +181,8 @@ PHYSICS_NORM_TARGET    = 0.025  # m — target char size (≈ default particle.o
 class ThroughputSimTuning:
     """Default SimOptions tuning: prioritize wall-clock throughput."""
 
-    dt: float = 1.0 / 240.0
-    substeps: int = 8
-
-
-@dataclass(frozen=True)
-class ThroughputFEMTuning:
-    """Default FEMOptions tuning: fewer Newton iterations per implicit step."""
-
-    n_newton_iterations: int = 4
-
-
-@dataclass(frozen=True)
-class AnalyticalFallingTuning:
-    """Falling phase timestep — match throughput defaults so thin plate contacts are not skipped (tunneling)."""
-
-    dt: float = 1.0 / 240.0
-    substeps: int = 8
-
-
-@dataclass(frozen=True)
-class AnalyticalPrecisionTuning:
-    """Settling phase once max speed drops below ANALYTICAL_VEL_THRESHOLD: 500 Hz, 16 substeps."""
-
-    dt: float = 1.0 / 500.0
-    substeps: int = 16
-    n_newton_iterations: int = 8
+    dt: float = 4e-3
+    substeps: int = 10
 
 
 def make_sim_options(gs_mod, cfg: dict):
@@ -222,12 +195,24 @@ def make_sim_options(gs_mod, cfg: dict):
     )
 
 
-def make_fem_options(gs_mod, cfg: dict):
+def make_fem_options(gs_mod, cfg: Optional[dict] = None):
     """Build `gs.options.FEMOptions` from a runtime config dict."""
     g = getattr(gs_mod, "options", gs_mod)
+    cfg = cfg or {}
     return g.FEMOptions(
         use_implicit_solver=True,
-        n_newton_iterations=int(cfg.get("FEM_NEWTON_ITERATIONS", ThroughputFEMTuning.n_newton_iterations)),
+        n_newton_iterations=int(cfg.get("FEM_NEWTON_ITERATIONS", 4)),
+    )
+
+
+def make_mpm_options(gs_mod, _cfg: Optional[dict] = None):
+    """Explicit MPM grid domain and resolution for syringe/plate scenes."""
+    g = getattr(gs_mod, "options", gs_mod)
+    return g.MPMOptions(
+        lower_bound=(-0.2, -0.05, -0.2),
+        upper_bound=(0.2, 0.6, 0.2),
+        # Genesis >=0.4 uses scalar grid_density instead of per-axis `res`.
+        grid_density=64,
     )
 
 
@@ -250,43 +235,11 @@ def make_rigid_options(gs_mod, _cfg: Optional[dict] = None):
     )
 
 
-def snapshot_fem_entities(entities) -> list[dict]:
-    """Per-vertex pos/vel for FEM entities (for scene rebuild handoff). Skips non-FEM."""
-    out: list[dict] = []
-    for e in entities:
-        if type(e).__name__ != "FEMEntity":
-            continue
-        st = e.get_state()
-        pos = _tensor_to_numpy(st.pos).astype(float)
-        vel = _tensor_to_numpy(st.vel).astype(float)
-        if pos.ndim == 3:
-            pos = pos[0]
-        if vel.ndim == 3:
-            vel = vel[0]
-        out.append({"pos": np.ascontiguousarray(pos), "vel": np.ascontiguousarray(vel)})
-    return out
-
-
-def restore_fem_entities(entities, snapshots: list[dict]) -> None:
-    """Apply `snapshot_fem_entities` output to a fresh scene's FEM entities (same spawn order)."""
-    i = 0
-    for e in entities:
-        if type(e).__name__ != "FEMEntity":
-            continue
-        if i >= len(snapshots):
-            break
-        snap = snapshots[i]
-        i += 1
-        e.set_position(snap["pos"])
-        e.set_velocity(snap["vel"])
-
-
 DEFAULT_CONFIG = {
     "PARTICLE_FILE": PARTICLE_FILE,
     "N_PARTICLES": N_PARTICLES,
     "N_ENVS": N_ENVS,
     "SCALE_FACTOR": SCALE_FACTOR,
-    "FEM_JAMMING_E_MAX": FEM_JAMMING_E_MAX,
     "YOUNGS_MODULUS": YOUNGS_MODULUS,
     "POISSON_RATIO": POISSON_RATIO,
     "DENSITY": DENSITY,
@@ -305,39 +258,25 @@ DEFAULT_CONFIG = {
     "SYRINGE_BOTTOM_THICKNESS": SYRINGE_BOTTOM_THICKNESS,
     "SYRINGE_PLATE_GAP": SYRINGE_PLATE_GAP,
     "SYRINGE_SEGMENTS": SYRINGE_SEGMENTS,
+    "SYRINGE_OPEN_TIP": SYRINGE_OPEN_TIP,
     "WALL_THICKNESS": WALL_THICKNESS,
     "PLATE_WALL_HEIGHT": PLATE_WALL_HEIGHT,
     "DROP_HEIGHT": DROP_HEIGHT,
     "DROP_SPREAD": DROP_SPREAD,
-    # Genesis FEM explicit integration is unstable at ~1e8 Pa with typical dt; implicit is recommended.
-    "FEM_USE_IMPLICIT": True,
-    "FEM_NEWTON_ITERATIONS": 4,
-    "FEM_NEWTON_ITERATIONS_PRECISION": 8,
-    "ANALYTICAL_MODE": False,  # No-op with rigid bodies (E > 1e8); enable only for FEM (E ≤ 1e8)
-    "ANALYTICAL_FALLING_DT": AnalyticalFallingTuning.dt,
-    "ANALYTICAL_FALLING_SUBSTEPS": AnalyticalFallingTuning.substeps,
-    "ANALYTICAL_PRECISION_DT": AnalyticalPrecisionTuning.dt,
-    "ANALYTICAL_PRECISION_SUBSTEPS": AnalyticalPrecisionTuning.substeps,
-    "ANALYTICAL_VEL_THRESHOLD": 0.1,
     "GRAVITY": GRAVITY,
     "DT": DT,
-    # Use ThroughputSimTuning.substeps (8) as the default; the module-level SUBSTEPS=4 is
-    # kept for the standalone CLI but the server should use the tuning-class value.
+    # Use ThroughputSimTuning defaults for both server and standalone runs.
     "SUBSTEPS": ThroughputSimTuning.substeps,
     "SIM_DURATION": SIM_DURATION,
     "SETTLE_THRESHOLD": SETTLE_THRESHOLD,
-    "CONTACT_EXTRACT_FALLING_EVERY": CONTACT_EXTRACT_FALLING_EVERY,
     "CONTACT_DEPTH_TOL": CONTACT_DEPTH_TOL,
     "OUTPUT_DIR": OUTPUT_DIR,
     "SAVE_HDF5": SAVE_HDF5,
     "SAVE_CSV": SAVE_CSV,
     "STRESS_SIGMA": 0.30,  # fraction of mesh char-size used as Gaussian sigma_local (0.30 = 30 % of half-diagonal)
     "STRESS_FLOOR": 0.05,  # clamp post-normalization noise below this to 0.0 (kills ghost gradients on non-touching particles)
-    # When True: rebuild scene repeatedly — simulate k particles, snapshot FEM state, add one more at the drop height.
-    # Disables analytical handoff in the server (stages conflict with mid-run scene rebuilds).
-    "SEQUENTIAL_DROP": False,
-    # Max simulated time per staging step (s). None → max(SIM_DURATION / N_PARTICLES, 0.25).
-    "SEQUENTIAL_STAGE_DURATION": None,
+    # Preferred Genesis backend for server runs: auto | cpu | gpu.
+    "BACKEND": "auto",
 }
 
 
@@ -350,11 +289,7 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
 
     cfg["N_PARTICLES"] = int(cfg["N_PARTICLES"])
     cfg["N_ENVS"] = max(1, int(cfg.get("N_ENVS", N_ENVS)))
-    cfg["FEM_JAMMING_E_MAX"] = float(cfg["FEM_JAMMING_E_MAX"])
     cfg["YOUNGS_MODULUS"] = float(cfg["YOUNGS_MODULUS"])
-    # Clamp to FEM band only when staying in FEM/MPM (E ≤ 1e8). Larger E selects rigid particles in spawn_particles.
-    if cfg["YOUNGS_MODULUS"] <= 1e8 and cfg["YOUNGS_MODULUS"] > cfg["FEM_JAMMING_E_MAX"]:
-        cfg["YOUNGS_MODULUS"] = cfg["FEM_JAMMING_E_MAX"]
     cfg["STRESS_SIGMA"] = float(cfg.get("STRESS_SIGMA", 0.12))
     cfg["STRESS_FLOOR"] = float(cfg.get("STRESS_FLOOR", 0.05))
     cfg["POISSON_RATIO"] = float(cfg["POISSON_RATIO"])
@@ -387,6 +322,7 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["SYRINGE_BOTTOM_THICKNESS"] = max(raw_bottom_t, min_bottom_t)
     cfg["SYRINGE_PLATE_GAP"] = max(0.0, float(cfg.get("SYRINGE_PLATE_GAP", SYRINGE_PLATE_GAP)))
     cfg["SYRINGE_SEGMENTS"] = max(8, int(cfg.get("SYRINGE_SEGMENTS", SYRINGE_SEGMENTS)))
+    cfg["SYRINGE_OPEN_TIP"] = bool(cfg.get("SYRINGE_OPEN_TIP", SYRINGE_OPEN_TIP))
     # Single supported container mode: flat plate + syringe. Ignore external environment selection.
     cfg["ENVIRONMENT_TYPE"] = "plate"
     # Spawn height is defined relative to syringe top:
@@ -396,20 +332,9 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["PLATE_WALL_HEIGHT"] = float(cfg.get("PLATE_WALL_HEIGHT", PLATE_WALL_HEIGHT))
     cfg["PLATE_SIZE"] = float(cfg.get("PLATE_SIZE", PLATE_SIZE))
     cfg["WALL_THICKNESS"] = float(cfg.get("WALL_THICKNESS", WALL_THICKNESS))
-    cfg["FEM_NEWTON_ITERATIONS"] = int(cfg.get("FEM_NEWTON_ITERATIONS", ThroughputFEMTuning.n_newton_iterations))
-    cfg["FEM_NEWTON_ITERATIONS_PRECISION"] = int(cfg.get("FEM_NEWTON_ITERATIONS_PRECISION", AnalyticalPrecisionTuning.n_newton_iterations))
-    cfg["ANALYTICAL_MODE"] = bool(cfg["ANALYTICAL_MODE"])
-    cfg["ANALYTICAL_FALLING_DT"] = float(cfg.get("ANALYTICAL_FALLING_DT", AnalyticalFallingTuning.dt))
-    cfg["ANALYTICAL_FALLING_SUBSTEPS"] = max(1, int(cfg.get("ANALYTICAL_FALLING_SUBSTEPS", AnalyticalFallingTuning.substeps)))
-    cfg["ANALYTICAL_PRECISION_DT"] = float(cfg.get("ANALYTICAL_PRECISION_DT", AnalyticalPrecisionTuning.dt))
-    cfg["ANALYTICAL_PRECISION_SUBSTEPS"] = max(1, int(cfg.get("ANALYTICAL_PRECISION_SUBSTEPS", AnalyticalPrecisionTuning.substeps)))
-    cfg["ANALYTICAL_VEL_THRESHOLD"] = float(cfg.get("ANALYTICAL_VEL_THRESHOLD", 0.1))
     cfg["DT"] = float(cfg["DT"])
     cfg["SUBSTEPS"] = int(cfg["SUBSTEPS"])
-    # The syringe always has thin curved mesh colliders; always require at least 16 substeps
-    # so the per-substep dt is short enough for the constraint solver to resolve contacts
-    # before penetration accumulates into tunneling through the annulus floor.
-    cfg["SUBSTEPS"] = max(cfg["SUBSTEPS"], 16)
+    cfg["SUBSTEPS"] = max(cfg["SUBSTEPS"], 1)
     cfg["SIM_DURATION"] = float(cfg["SIM_DURATION"])
     cfg["SETTLE_THRESHOLD"] = float(cfg["SETTLE_THRESHOLD"])
     _grav = cfg.get("GRAVITY", GRAVITY)
@@ -417,13 +342,11 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
         cfg["GRAVITY"] = tuple(float(x) for x in _grav)
     else:
         cfg["GRAVITY"] = tuple(float(x) for x in GRAVITY)
-    cfg["CONTACT_EXTRACT_FALLING_EVERY"] = max(1, int(cfg.get("CONTACT_EXTRACT_FALLING_EVERY", CONTACT_EXTRACT_FALLING_EVERY)))
-    cfg["SEQUENTIAL_DROP"] = bool(cfg.get("SEQUENTIAL_DROP", False))
-    _ssd = cfg.get("SEQUENTIAL_STAGE_DURATION", None)
-    cfg["SEQUENTIAL_STAGE_DURATION"] = None if _ssd is None else float(_ssd)
+    _backend = str(cfg.get("BACKEND", "auto")).strip().lower()
+    if _backend not in ("auto", "cpu", "gpu"):
+        _backend = "auto"
+    cfg["BACKEND"] = _backend
     cfg["ENVIRONMENT_TYPE"] = "plate"
-    # Jamming / packed FEM: implicit stepper is required at high E; do not allow config to disable it.
-    cfg["FEM_USE_IMPLICIT"] = True
     return cfg
 
 
@@ -438,50 +361,6 @@ class NormalizedContact:
     depth: float
     force: Optional[float]
     contact_area: Optional[float]
-
-
-@dataclass
-class ContactSampleCache:
-    """Stores the last `extract_contacts` result when throttling `scene.get_contacts()`."""
-
-    contacts: list = field(default_factory=list)
-    primed: bool = False
-
-
-def contact_extract_stride(max_vel: Optional[float], settle_threshold: float, falling_every: int) -> int:
-    fe = max(1, int(falling_every))
-    if max_vel is None:
-        return fe
-    if float(max_vel) >= float(settle_threshold):
-        return fe
-    return 1
-
-
-def extract_contacts_resampled(
-    scene,
-    particle_ids,
-    container_ids,
-    depth_tol: float,
-    *,
-    sim_step: int,
-    max_vel: Optional[float],
-    settle_threshold: float,
-    cache: ContactSampleCache,
-    falling_every: Optional[int] = None,
-    force_skip: bool = False,
-) -> list:
-    """
-    Cheap when particles are still falling: only calls `get_contacts` every `falling_every` steps.
-    After speeds drop below `settle_threshold`, samples every step so jammed contact metrics stay fresh.
-    """
-    if force_skip:
-        return []
-    fe = CONTACT_EXTRACT_FALLING_EVERY if falling_every is None else int(falling_every)
-    stride = contact_extract_stride(max_vel, settle_threshold, fe)
-    if (not cache.primed) or (int(sim_step) % stride == 0):
-        cache.contacts = extract_contacts(scene, particle_ids, container_ids, depth_tol)
-        cache.primed = True
-    return cache.contacts
 
 
 def _entity_id(e) -> int:
@@ -635,6 +514,38 @@ def _entity_pose(e) -> tuple[np.ndarray, tuple[float, float, float, float]]:
     return (np.zeros((3,), dtype=float), (0.0, 0.0, 0.0, 1.0))
 
 
+def _mpm_solver_active(scene) -> bool:
+    sim = getattr(scene, "sim", None)
+    solver = getattr(sim, "mpm_solver", None)
+    return bool(solver is not None and getattr(solver, "is_active", False))
+
+
+def _entity_mpm_state(entity):
+    if not hasattr(entity, "get_state"):
+        return None
+    try:
+        return entity.get_state()
+    except Exception:
+        return None
+
+
+def _estimate_particle_radius_from_state(state) -> Optional[float]:
+    if state is None or not hasattr(state, "pos"):
+        return None
+    pos = _tensor_to_numpy(state.pos)
+    if pos.size == 0:
+        return None
+    pts = np.asarray(pos, dtype=float).reshape(-1, 3)
+    if pts.shape[0] < 2:
+        return None
+    ctr = pts.mean(axis=0)
+    radii = np.linalg.norm(pts - ctr.reshape(1, 3), axis=1)
+    r = float(np.percentile(radii, 75))
+    if not math.isfinite(r) or r <= 0.0:
+        return None
+    return r
+
+
 @contextmanager
 def _suppress_gs_manual_pose_warnings():
     """Avoid flooding logs when correcting FEM positions after `scene.step()`."""
@@ -660,495 +571,6 @@ def _obb_world_corners(pos: np.ndarray, quat_xyzw: tuple[float, float, float, fl
                 local = np.array([sx * half_ext[0], sy * half_ext[1], sz * half_ext[2]], dtype=float)
                 corners.append(pos + r @ local)
     return np.array(corners, dtype=float)
-
-
-def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
-    """
-    Genesis rigid contacts and FEM–rigid coupling are velocity-based and can miss penetration.
-    After each step, project particle geometry back into the analytical container (floor + rim/cylinder).
-    """
-    if not entities or physics_mesh is None:
-        return
-    try:
-        bounds = physics_mesh.bounds[1] - physics_mesh.bounds[0]
-    except Exception:
-        return
-    half_ext = np.asarray(bounds, dtype=float) * 0.5
-    max_h = float(np.max(half_ext))
-    if not math.isfinite(max_h) or max_h <= 0.0:
-        return
-    # eps must be at least 5% of the particle half-extent so it remains meaningful
-    # at any scale (the old 1e-5 m floor was negligible for µm-scale particles where
-    # max_h ≈ 300 µm, giving an eps that is only 3% of the floor value).
-    eps = max(5e-2 * max_h, 1e-9)
-
-    env = str(cfg.get("ENVIRONMENT_TYPE", ENVIRONMENT_TYPE)).strip().lower()
-    t = float(cfg.get("WALL_THICKNESS", WALL_THICKNESS))
-    surface_y = t
-    if env == "plate":
-        rim_h = float(cfg.get("PLATE_WALL_HEIGHT", PLATE_WALL_HEIGHT))
-        top_y = t + rim_h
-        s = float(cfg.get("PLATE_SIZE", PLATE_SIZE))
-        half_s = 0.5 * s
-        # Syringe overlay analytical bounds (always present in plate mode).
-        barrel_r = 0.5 * float(cfg.get("SYRINGE_BARREL_DIAMETER", SYRINGE_BARREL_DIAMETER))
-        needle_r = 0.5 * float(cfg.get("SYRINGE_NEEDLE_DIAMETER", SYRINGE_NEEDLE_DIAMETER))
-        barrel_h = float(cfg.get("SYRINGE_BARREL_LENGTH", SYRINGE_BARREL_LENGTH))
-        needle_h = float(cfg.get("SYRINGE_NEEDLE_LENGTH", SYRINGE_NEEDLE_LENGTH))
-        gap = max(0.0, float(cfg.get("SYRINGE_PLATE_GAP", SYRINGE_PLATE_GAP)))
-        # Matches create_environment() syringe placement in plate mode.
-        junction_world_y = t + gap + needle_h
-        needle_tip_world_y = t + gap
-        barrel_top_world_y = junction_world_y + barrel_h
-        barrel_interior_r = max(barrel_r - eps, eps)
-        needle_interior_r = max(needle_r - eps, eps)
-        # Analytical floor matches the Box top surface: junction_world_y + safe_floor_h/2
-        # safe_floor_h = max(t_bottom, barrel_r * 0.15), mirroring create_environment.
-        t_bottom_cfg = max(1e-6, float(cfg.get("SYRINGE_BOTTOM_THICKNESS", SYRINGE_BOTTOM_THICKNESS)))
-        safe_floor_h = max(t_bottom_cfg, barrel_r * 0.15)
-        barrel_floor_y = junction_world_y + safe_floor_h * 0.5
-
-        def _project_inside_syringe(x: float, y: float, z: float) -> tuple[float, float]:
-            rr = math.hypot(x, z)
-            if y >= junction_world_y - eps and y <= barrel_top_world_y + eps and rr > barrel_interior_r:
-                sxy = barrel_interior_r / max(rr, 1e-12)
-                return x * sxy, z * sxy
-            if y >= needle_tip_world_y - eps and y <= junction_world_y + eps and rr > needle_interior_r:
-                sxy = needle_interior_r / max(rr, 1e-12)
-                return x * sxy, z * sxy
-            return x, z
-
-        for e in entities:
-            name = type(e).__name__
-            if name == "FEMEntity":
-                try:
-                    st = e.get_state()
-                    pos = _tensor_to_numpy(st.pos).astype(float)
-                    if pos.ndim == 3:
-                        pos = pos[0]
-                    if pos.ndim != 2 or pos.shape[-1] != 3:
-                        continue
-                    pos = np.ascontiguousarray(pos)
-                    pos[:, 1] = np.maximum(pos[:, 1], surface_y + eps)
-                    if rim_h > 1e-9:
-                        in_rim = (pos[:, 1] >= surface_y - eps) & (pos[:, 1] <= top_y + eps)
-                        if np.any(in_rim):
-                            pos[in_rim, 0] = np.clip(pos[in_rim, 0], -half_s + eps, half_s - eps)
-                            pos[in_rim, 2] = np.clip(pos[in_rim, 2], -half_s + eps, half_s - eps)
-                    # Barrel-floor clamp: no vertex inside the barrel XZ radius may go below the annulus top.
-                    in_barrel_r = np.hypot(pos[:, 0], pos[:, 2]) <= barrel_interior_r + eps
-                    in_barrel_y = pos[:, 1] < barrel_floor_y
-                    tunnel_mask = in_barrel_r & in_barrel_y
-                    if np.any(tunnel_mask):
-                        pos[tunnel_mask, 1] = barrel_floor_y
-                    in_syringe = (pos[:, 1] >= needle_tip_world_y - eps) & (pos[:, 1] <= barrel_top_world_y + eps)
-                    if np.any(in_syringe):
-                        idx = np.where(in_syringe)[0]
-                        for ii in idx:
-                            px, pz = _project_inside_syringe(float(pos[ii, 0]), float(pos[ii, 1]), float(pos[ii, 2]))
-                            pos[ii, 0] = px
-                            pos[ii, 2] = pz
-                    with _suppress_gs_manual_pose_warnings():
-                        e.set_position(pos)
-                except Exception:
-                    pass
-            elif name == "RigidEntity":
-                try:
-                    p0, quat = _entity_pose(e)
-                    pos = np.asarray(p0, dtype=float).copy()
-                    vel_zeroed = False
-                    for _ in range(8):
-                        corners = _obb_world_corners(pos, quat, half_ext)
-                        min_y = float(np.min(corners[:, 1]))
-                        moved = False
-                        if min_y < surface_y + eps:
-                            pos[1] += (surface_y + eps) - min_y
-                            moved = True
-                            corners = _obb_world_corners(pos, quat, half_ext)
-                        if rim_h > 1e-9:
-                            in_rim = (corners[:, 1] >= surface_y - eps) & (corners[:, 1] <= top_y + eps)
-                            if np.any(in_rim):
-                                cr = corners[in_rim]
-                                dx = 0.0
-                                dz = 0.0
-                                mx = float(np.max(cr[:, 0]))
-                                mn = float(np.min(cr[:, 0]))
-                                mz = float(np.max(cr[:, 2]))
-                                mnz = float(np.min(cr[:, 2]))
-                                if mx > half_s - eps:
-                                    dx = (half_s - eps) - mx
-                                elif mn < -half_s + eps:
-                                    dx = (-half_s + eps) - mn
-                                if mz > half_s - eps:
-                                    dz = (half_s - eps) - mz
-                                elif mnz < -half_s + eps:
-                                    dz = (-half_s + eps) - mnz
-                                if abs(dx) > 1e-12 or abs(dz) > 1e-12:
-                                    pos[0] += dx
-                                    pos[2] += dz
-                                    moved = True
-                        corners = _obb_world_corners(pos, quat, half_ext)
-                        # Barrel-floor clamp: any corner inside barrel radius below the annulus top → push centroid up.
-                        in_barrel_r_c = np.hypot(corners[:, 0], corners[:, 2]) <= barrel_interior_r + eps
-                        in_barrel_y_c = corners[:, 1] < barrel_floor_y
-                        floor_hits = in_barrel_r_c & in_barrel_y_c
-                        if np.any(floor_hits):
-                            worst = float(np.min(corners[floor_hits, 1]))
-                            lift = barrel_floor_y - worst
-                            pos[1] += lift
-                            moved = True
-                            vel_zeroed = True
-                            corners = _obb_world_corners(pos, quat, half_ext)
-                        syringe_sel = (corners[:, 1] >= needle_tip_world_y - eps) & (corners[:, 1] <= barrel_top_world_y + eps)
-                        if np.any(syringe_sel):
-                            cr = corners[syringe_sel]
-                            push_x = 0.0
-                            push_z = 0.0
-                            for c in cr:
-                                cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
-                                rr = math.hypot(cx, cz)
-                                limit = barrel_interior_r if (cy >= junction_world_y - eps) else needle_interior_r
-                                if rr > limit:
-                                    extra = rr - limit
-                                    push_x += -(cx / max(rr, 1e-12)) * extra
-                                    push_z += -(cz / max(rr, 1e-12)) * extra
-                            if abs(push_x) > 1e-12 or abs(push_z) > 1e-12:
-                                denom = max(1, int(cr.shape[0]))
-                                pos[0] += push_x / denom
-                                pos[2] += push_z / denom
-                                moved = True
-                        if not moved:
-                            break
-                    # Kill downward velocity to prevent re-tunneling on the next step.
-                    e.set_pos(pos, zero_velocity=vel_zeroed)
-                except Exception:
-                    pass
-        return
-
-    if env == "cylinder":
-        r_inner = float(cfg.get("CYLINDER_DIAMETER", CYLINDER_DIAMETER)) * 0.5
-        cyl_h = float(cfg.get("CYLINDER_HEIGHT", CYLINDER_HEIGHT))
-        top_y = t + cyl_h
-        for e in entities:
-            name = type(e).__name__
-            if name == "FEMEntity":
-                try:
-                    st = e.get_state()
-                    pos = _tensor_to_numpy(st.pos).astype(float)
-                    if pos.ndim == 3:
-                        pos = pos[0]
-                    if pos.ndim != 2 or pos.shape[-1] != 3:
-                        continue
-                    pos = np.ascontiguousarray(pos)
-                    pos[:, 1] = np.maximum(pos[:, 1], surface_y + eps)
-                    in_rim = (pos[:, 1] >= surface_y - eps) & (pos[:, 1] <= top_y + eps)
-                    if np.any(in_rim):
-                        xz = pos[in_rim, [0, 2]]
-                        r = np.hypot(xz[:, 0], xz[:, 1])
-                        mask = r > r_inner - eps
-                        if np.any(mask):
-                            idx = np.where(in_rim)[0][mask]
-                            for i in idx:
-                                x, z = float(pos[i, 0]), float(pos[i, 2])
-                                rv = math.hypot(x, z)
-                                if rv > 1e-12:
-                                    sc = (r_inner - eps) / rv
-                                    pos[i, 0] *= sc
-                                    pos[i, 2] *= sc
-                    with _suppress_gs_manual_pose_warnings():
-                        e.set_position(pos)
-                except Exception:
-                    pass
-            elif name == "RigidEntity":
-                try:
-                    p0, quat = _entity_pose(e)
-                    pos = np.asarray(p0, dtype=float).copy()
-                    for _ in range(8):
-                        corners = _obb_world_corners(pos, quat, half_ext)
-                        min_y = float(np.min(corners[:, 1]))
-                        moved = False
-                        if min_y < surface_y + eps:
-                            pos[1] += (surface_y + eps) - min_y
-                            moved = True
-                            corners = _obb_world_corners(pos, quat, half_ext)
-                        in_rim = (corners[:, 1] >= surface_y - eps) & (corners[:, 1] <= top_y + eps)
-                        if np.any(in_rim):
-                            cr = corners[in_rim]
-                            xy = cr[:, [0, 2]]
-                            r = np.sqrt(xy[:, 0] ** 2 + xy[:, 1] ** 2)
-                            j = int(np.argmax(r))
-                            rmax = float(r[j])
-                            if rmax > r_inner - eps:
-                                c = cr[j]
-                                xv, zv = float(c[0]), float(c[2])
-                                rv = math.hypot(xv, zv)
-                                if rv > 1e-12:
-                                    dr = rmax - (r_inner - eps)
-                                    pos[0] -= (xv / rv) * dr
-                                    pos[2] -= (zv / rv) * dr
-                                    moved = True
-                        if not moved:
-                            break
-                    e.set_pos(pos, zero_velocity=False)
-                except Exception:
-                    pass
-        return
-
-    if env == "syringe":
-        barrel_r = float(cfg.get("SYRINGE_BARREL_DIAMETER", SYRINGE_BARREL_DIAMETER)) * 0.5
-        barrel_h = float(cfg.get("SYRINGE_BARREL_LENGTH", SYRINGE_BARREL_LENGTH))
-        needle_r = float(cfg.get("SYRINGE_NEEDLE_DIAMETER", SYRINGE_NEEDLE_DIAMETER)) * 0.5
-        needle_h = float(cfg.get("SYRINGE_NEEDLE_LENGTH", SYRINGE_NEEDLE_LENGTH))
-        bottom_t = max(1e-6, float(cfg.get("SYRINGE_BOTTOM_THICKNESS", SYRINGE_BOTTOM_THICKNESS)))
-        junction_y = bottom_t * 0.5
-        barrel_y_min = junction_y
-        barrel_y_max = junction_y + barrel_h
-        needle_y_min = junction_y - needle_h
-        needle_y_max = junction_y
-        # Hard floor at the needle outlet plane. The tip-cap collider sits below this
-        # plane, so any vertex/corner that numerically tunnels through is projected up.
-        cap_floor_y = needle_y_min + eps
-        for e in entities:
-            name = type(e).__name__
-            if name == "FEMEntity":
-                try:
-                    st = e.get_state()
-                    pos = _tensor_to_numpy(st.pos).astype(float)
-                    if pos.ndim == 3:
-                        pos = pos[0]
-                    if pos.ndim != 2 or pos.shape[-1] != 3:
-                        continue
-                    pos = np.ascontiguousarray(pos)
-                    inside_needle_radius = (np.hypot(pos[:, 0], pos[:, 2]) <= (needle_r + eps))
-                    below_cap_floor = pos[:, 1] < cap_floor_y
-                    cap_hits = inside_needle_radius & below_cap_floor
-                    if np.any(cap_hits):
-                        pos[cap_hits, 1] = cap_floor_y
-                    y = pos[:, 1]
-                    in_barrel = (y >= barrel_y_min - eps) & (y <= barrel_y_max + eps)
-                    if np.any(in_barrel):
-                        xz = pos[in_barrel, [0, 2]]
-                        r = np.hypot(xz[:, 0], xz[:, 1])
-                        mask = r > barrel_r - eps
-                        if np.any(mask):
-                            idx = np.where(in_barrel)[0][mask]
-                            for i in idx:
-                                x, z = float(pos[i, 0]), float(pos[i, 2])
-                                rv = math.hypot(x, z)
-                                if rv > 1e-12:
-                                    sc = (barrel_r - eps) / rv
-                                    pos[i, 0] *= sc
-                                    pos[i, 2] *= sc
-                    in_needle = (y >= needle_y_min - eps) & (y <= needle_y_max + eps)
-                    if np.any(in_needle):
-                        xz = pos[in_needle, [0, 2]]
-                        r = np.hypot(xz[:, 0], xz[:, 1])
-                        mask = r > needle_r - eps
-                        if np.any(mask):
-                            idx = np.where(in_needle)[0][mask]
-                            for i in idx:
-                                x, z = float(pos[i, 0]), float(pos[i, 2])
-                                rv = math.hypot(x, z)
-                                if rv > 1e-12:
-                                    sc = (needle_r - eps) / rv
-                                    pos[i, 0] *= sc
-                                    pos[i, 2] *= sc
-                    with _suppress_gs_manual_pose_warnings():
-                        e.set_position(pos)
-                except Exception:
-                    pass
-            elif name == "RigidEntity":
-                try:
-                    p0, quat = _entity_pose(e)
-                    pos = np.asarray(p0, dtype=float).copy()
-                    for _ in range(8):
-                        corners = _obb_world_corners(pos, quat, half_ext)
-                        moved = False
-                        min_y = float(np.min(corners[:, 1]))
-                        if min_y < cap_floor_y:
-                            pos[1] += cap_floor_y - min_y
-                            moved = True
-                            corners = _obb_world_corners(pos, quat, half_ext)
-                        in_barrel = (corners[:, 1] >= barrel_y_min - eps) & (corners[:, 1] <= barrel_y_max + eps)
-                        if np.any(in_barrel):
-                            cr = corners[in_barrel]
-                            xy = cr[:, [0, 2]]
-                            r = np.sqrt(xy[:, 0] ** 2 + xy[:, 1] ** 2)
-                            j = int(np.argmax(r))
-                            rmax = float(r[j])
-                            if rmax > barrel_r - eps:
-                                c = cr[j]
-                                xv, zv = float(c[0]), float(c[2])
-                                rv = math.hypot(xv, zv)
-                                if rv > 1e-12:
-                                    dr = rmax - (barrel_r - eps)
-                                    pos[0] -= (xv / rv) * dr
-                                    pos[2] -= (zv / rv) * dr
-                                    moved = True
-                                    corners = _obb_world_corners(pos, quat, half_ext)
-                        in_needle = (corners[:, 1] >= needle_y_min - eps) & (corners[:, 1] <= needle_y_max + eps)
-                        if np.any(in_needle):
-                            cr = corners[in_needle]
-                            xy = cr[:, [0, 2]]
-                            r = np.sqrt(xy[:, 0] ** 2 + xy[:, 1] ** 2)
-                            j = int(np.argmax(r))
-                            rmax = float(r[j])
-                            if rmax > needle_r - eps:
-                                c = cr[j]
-                                xv, zv = float(c[0]), float(c[2])
-                                rv = math.hypot(xv, zv)
-                                if rv > 1e-12:
-                                    dr = rmax - (needle_r - eps)
-                                    pos[0] -= (xv / rv) * dr
-                                    pos[2] -= (zv / rv) * dr
-                                    moved = True
-                        if not moved:
-                            break
-                    e.set_pos(pos, zero_velocity=False)
-                except Exception:
-                    pass
-
-
-def enforce_particle_separation(
-    entities, physics_mesh, _cfg: dict, *, original_mesh=None
-) -> None:
-    """
-    Post-step centroid-based depenetration sweep.
-
-    Detects particle pairs whose centroids are closer than the computed minimum
-    separation distance and pushes them apart with a Jacobi-style half-correction
-    along the separation axis.
-
-    The threshold is derived from the actual particle geometry (``original_mesh``)
-    when available: the 10th-percentile vertex-to-centroid distance approximates the
-    particle's inner (concave) radius, and ``1.7 ×`` that value is the centroid
-    distance below which two particles MUST be genuinely penetrating.  This is
-    tighter than the old ``char × 0.6`` heuristic which fired falsely for star
-    particles whose concave faces sit naturally close to a neighbour's centroid.
-
-    Only corrects severe overlaps so it does not fight the constraint solver during
-    normal settling contact.  Both RigidEntity and FEMEntity are supported.
-    """
-    if not entities or physics_mesh is None:
-        return
-    try:
-        extents = physics_mesh.bounds[1] - physics_mesh.bounds[0]
-    except Exception:
-        return
-    char = float(max(float(extents[0]), float(extents[1]), float(extents[2]), 1e-9))
-
-    # Compute threshold from the ORIGINAL mesh geometry (the actual star shape)
-    # rather than the bounding-box extent.  For a 6-point star the 10th-percentile
-    # vertex distance from the centroid approximates the inner (concave) radius r_in.
-    # Two centroids closer than 1.7 × r_in are definitively interpenetrating.
-    min_sep = char * 0.4  # fallback if original_mesh is unavailable
-    if original_mesh is not None:
-        try:
-            ov = np.asarray(original_mesh.vertices, dtype=float)
-            if ov.shape[0] > 0:
-                oc = np.asarray(original_mesh.centroid, dtype=float)
-                dists = np.linalg.norm(ov - oc, axis=1)
-                r_in = float(np.percentile(dists, 10))
-                if r_in > 1e-9:
-                    min_sep = r_in * 1.7
-        except Exception:
-            pass
-    min_sep_sq = min_sep * min_sep
-
-    poses: list[tuple[Any, np.ndarray]] = []
-    for e in entities:
-        ename = type(e).__name__
-        if ename not in ("RigidEntity", "FEMEntity"):
-            continue
-        try:
-            p, _ = _entity_pose(e)
-            if np.isfinite(p).all():
-                poses.append((e, np.asarray(p, dtype=float).copy()))
-        except Exception:
-            continue
-
-    if len(poses) < 2:
-        return
-
-    corrections = [np.zeros(3, dtype=float) for _ in poses]
-    made_correction = False
-
-    for i in range(len(poses)):
-        for j in range(i + 1, len(poses)):
-            delta = poses[i][1] - poses[j][1]
-            dist_sq = float(np.dot(delta, delta))
-            if dist_sq >= min_sep_sq or dist_sq < 1e-18:
-                continue
-            dist = math.sqrt(dist_sq)
-            push = (min_sep - dist) * 0.5
-            axis = delta / dist
-            corrections[i] += axis * push
-            corrections[j] -= axis * push
-            made_correction = True
-
-    if not made_correction:
-        return
-
-    for idx, (e, p) in enumerate(poses):
-        corr = corrections[idx]
-        if float(np.linalg.norm(corr)) < 1e-12:
-            continue
-        new_pos = p + corr
-        try:
-            ename = type(e).__name__
-            if ename == "RigidEntity":
-                e.set_pos(new_pos, zero_velocity=False)
-            elif ename == "FEMEntity":
-                st = e.get_state()
-                vpos = _tensor_to_numpy(st.pos).astype(float)
-                if vpos.ndim == 3:
-                    vpos = vpos[0]
-                if vpos.ndim == 2 and vpos.shape[-1] == 3:
-                    vpos = np.ascontiguousarray(vpos + corr.reshape(1, 3))
-                    with _suppress_gs_manual_pose_warnings():
-                        e.set_position(vpos)
-        except Exception:
-            pass
-
-
-def _coacd_proxy_path(filepath: str, scale: float) -> str:
-    """Return a deterministic path for the cached compound OBJ collision proxy.
-
-    Proxies are written to a ``coacd_cache`` subdirectory inside the same
-    folder as the source mesh so they never pollute the Particles folder root.
-    The directory is created on demand.
-    """
-    src_dir = os.path.dirname(os.path.abspath(filepath))
-    cache_dir = os.path.join(src_dir, "coacd_cache")
-    os.makedirs(cache_dir, exist_ok=True)
-    stem = os.path.splitext(os.path.basename(filepath))[0]
-    scale_tag = f"{scale:.6g}".replace(".", "p").replace("-", "n")
-    return os.path.join(cache_dir, f"{stem}_coacd_proxy_s{scale_tag}.obj")
-
-
-def _write_coacd_compound_obj(parts: list, filepath: str) -> None:
-    """Write CoACD convex parts as a multi-object OBJ (one ``o PartN`` per hull).
-
-    Genesis reads each ``o`` sub-mesh as a separate convex hull in a compound
-    collision proxy when ``convexify=False`` — giving a faithful multi-hull shape
-    instead of one bloated global convex hull.
-
-    OBJ face indices are 1-based and global across the whole file, so we track
-    the running vertex offset as we write each part.
-    """
-    lines = ["# Compound collision proxy — CoACD convex decomposition"]
-    vert_offset = 0
-    for idx, part in enumerate(parts):
-        hull = part.convex_hull  # ensure each part is strictly convex
-        lines.append(f"o Part{idx}")
-        for v in hull.vertices:
-            lines.append(f"v {v[0]:.8g} {v[1]:.8g} {v[2]:.8g}")
-        for f in hull.faces:
-            a, b, c = int(f[0]) + 1 + vert_offset, int(f[1]) + 1 + vert_offset, int(f[2]) + 1 + vert_offset
-            lines.append(f"f {a} {b} {c}")
-        vert_offset += len(hull.vertices)
-    with open(filepath, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(lines) + "\n")
 
 
 def _cup_mesh_proxy_path(inner_diameter: float, wall_thickness: float, wall_height: float, segments: int) -> str:
@@ -1376,36 +798,12 @@ def load_particle_mesh(filepath: str, scale: float = 1.0):
             f"{char_after_scale * physics_norm:.4g} m  (×{physics_norm:.4g})"
         )
 
-    parts = []
-    try:
-        parts = coacd.run_coacd(original_mesh, max_convex_hull=32)
-    except Exception:
-        parts = []
-
-    if not parts:
-        parts = [original_mesh.convex_hull]
-
-    physics_mesh = trimesh.util.concatenate(parts)
-
-    # Write (or reuse) the compound OBJ collision proxy.  Each CoACD convex hull
-    # becomes a separate ``o PartN`` sub-object so Genesis can build a faithful
-    # multi-hull collision shape instead of one bloated global convex hull.
-    # The proxy vertices are in physics metres (scale × physics_norm already
-    # applied) so Genesis must load it with scale=1.0.
-    proxy_path = _coacd_proxy_path(filepath, scale * physics_norm)
-    try:
-        _write_coacd_compound_obj(parts, proxy_path)
-        print(f"Wrote CoACD compound proxy ({len(parts)} parts) → {proxy_path}")
-    except Exception as exc:
-        print(f"Warning: could not write CoACD proxy to {proxy_path!r}: {exc}; falling back to convexify=True")
-        proxy_path = None  # caller will fall back to original file + convexify=True
-
-    volume = float(physics_mesh.volume) if physics_mesh.is_watertight else float(physics_mesh.convex_hull.volume)
+    volume = float(original_mesh.volume) if original_mesh.is_watertight else float(original_mesh.convex_hull.volume)
     print(
-        f"{filepath} | verts={len(physics_mesh.vertices)} | faces={len(physics_mesh.faces)} | "
-        f"extents={physics_mesh.extents} | volume={volume:.6g} | parts={len(parts)}"
+        f"{filepath} | verts={len(original_mesh.vertices)} | faces={len(original_mesh.faces)} | "
+        f"extents={original_mesh.extents} | volume={volume:.6g}"
     )
-    return (physics_mesh, original_mesh, proxy_path, physics_norm)
+    return (original_mesh, physics_norm)
 
 
 def _rigid_material(friction: float, restitution: float, rho: Optional[float] = None):
@@ -1442,6 +840,7 @@ def create_environment(
     syringe_bottom_thickness: float = SYRINGE_BOTTOM_THICKNESS,
     syringe_plate_gap: float = SYRINGE_PLATE_GAP,
     syringe_segments: int = SYRINGE_SEGMENTS,
+    syringe_open_tip: bool = SYRINGE_OPEN_TIP,
 ) -> tuple[set, dict]:
     container_ids = set()
     mat = _rigid_material(0.55, float(env_restitution))
@@ -1531,14 +930,15 @@ def create_environment(
             height=needle_h,
             segments=seg,
         )
-        # Seal the needle outlet so particles remain contained in the syringe.
-        _write_annulus_slab_obj(
-            tip_cap_path,
-            inner_radius=0.0,
-            outer_radius=needle_r,
-            thickness=t_bottom,
-            segments=seg,
-        )
+        if not syringe_open_tip:
+            # Optional outlet cap for "contained syringe" mode.
+            _write_annulus_slab_obj(
+                tip_cap_path,
+                inner_radius=0.0,
+                outer_radius=needle_r,
+                thickness=t_bottom,
+                segments=seg,
+            )
         # Lift syringe so needle tip sits at plate_top + gap.
         junction_y_local = t_bottom * 0.5
         needle_tip_local_y = junction_y_local - needle_h
@@ -1558,23 +958,59 @@ def create_environment(
         )
         container_ids.add(barrel)
 
-        # Barrel floor: a solid Box primitive, identical in principle to the plate.
-        # Box SDF contact detection is bulletproof — particles cannot tunnel through it
-        # the way they can through thin OBJ mesh colliders.
-        # Minimum safe thickness: at least 15% of barrel radius so a particle falling
-        # the full barrel height cannot traverse the box in a single substep.
+        # Barrel floor safety collider:
+        # - keep a thick Box-based collider for robust contact/tunneling resistance
+        # - align its top face to the true annulus top (height compensation)
+        # - preserve a center opening so particles can flow into the needle bore
         safe_floor_h = max(t_bottom, barrel_r * 0.15)
-        annulus_box_side = (barrel_r + t_wall) * 2.0
-        annulus_box_center_y = syringe_lift_y + junction_y_local + safe_floor_h * 0.5 - t_bottom * 0.5
-        annulus = scene.add_entity(
-            gs.morphs.Box(
-                size=(annulus_box_side, safe_floor_h, annulus_box_side),
-                pos=(0.0, annulus_box_center_y, 0.0),
-                fixed=True,
-            ),
-            material=mat,
-        )
-        container_ids.add(annulus)
+        outer_half = barrel_r + t_wall
+        inner_half = max(needle_r + 1e-9, 1e-6)
+        annulus_top_y = syringe_lift_y + junction_y_local + t_bottom * 0.5
+        annulus_box_center_y = annulus_top_y - safe_floor_h * 0.5
+        if inner_half < outer_half - 1e-9:
+            slab_x = outer_half - inner_half
+            slab_z = outer_half - inner_half
+            ring_boxes = (
+                # Left / right bands
+                (
+                    (slab_x, safe_floor_h, 2.0 * outer_half),
+                    (-inner_half - 0.5 * slab_x, annulus_box_center_y, 0.0),
+                ),
+                (
+                    (slab_x, safe_floor_h, 2.0 * outer_half),
+                    (inner_half + 0.5 * slab_x, annulus_box_center_y, 0.0),
+                ),
+                # Front / back bands
+                (
+                    (2.0 * inner_half, safe_floor_h, slab_z),
+                    (0.0, annulus_box_center_y, -inner_half - 0.5 * slab_z),
+                ),
+                (
+                    (2.0 * inner_half, safe_floor_h, slab_z),
+                    (0.0, annulus_box_center_y, inner_half + 0.5 * slab_z),
+                ),
+            )
+            for size_xyz, pos_xyz in ring_boxes:
+                annulus = scene.add_entity(
+                    gs.morphs.Box(
+                        size=size_xyz,
+                        pos=pos_xyz,
+                        fixed=True,
+                    ),
+                    material=mat,
+                )
+                container_ids.add(annulus)
+        else:
+            annulus_box_side = 2.0 * outer_half
+            annulus = scene.add_entity(
+                gs.morphs.Box(
+                    size=(annulus_box_side, safe_floor_h, annulus_box_side),
+                    pos=(0.0, annulus_box_center_y, 0.0),
+                    fixed=True,
+                ),
+                material=mat,
+            )
+            container_ids.add(annulus)
 
         needle = scene.add_entity(
             gs.morphs.Mesh(
@@ -1590,19 +1026,20 @@ def create_environment(
         )
         container_ids.add(needle)
 
-        # Needle outlet cap: same safe thickness as barrel floor.
-        safe_cap_h = max(t_bottom, needle_r * 0.5)
-        tip_cap_side = (needle_r + t_wall) * 2.0
-        tip_box_center_y = syringe_lift_y + junction_y_local - needle_h
-        tip_cap = scene.add_entity(
-            gs.morphs.Box(
-                size=(tip_cap_side, safe_cap_h, tip_cap_side),
-                pos=(0.0, tip_box_center_y, 0.0),
-                fixed=True,
-            ),
-            material=mat,
-        )
-        container_ids.add(tip_cap)
+        if not syringe_open_tip:
+            # Needle outlet cap: same safe thickness as barrel floor.
+            safe_cap_h = max(t_bottom, needle_r * 0.5)
+            tip_cap_side = (needle_r + t_wall) * 2.0
+            tip_box_center_y = syringe_lift_y + junction_y_local - needle_h
+            tip_cap = scene.add_entity(
+                gs.morphs.Box(
+                    size=(tip_cap_side, safe_cap_h, tip_cap_side),
+                    pos=(0.0, tip_box_center_y, 0.0),
+                    fixed=True,
+                ),
+                material=mat,
+            )
+            container_ids.add(tip_cap)
 
         syringe_top_y = syringe_lift_y + junction_y_local + barrel_h
         env_info = {
@@ -1757,38 +1194,14 @@ def spawn_particles(
     particle_file=PARTICLE_FILE,
     scale_factor=SCALE_FACTOR,
     particle_restitution: float = PARTICLE_RESTITUTION,
-    e_fem_max: float = FEM_JAMMING_E_MAX,
     prior_fem_snapshots: Optional[list[dict]] = None,
-    coacd_proxy_file: Optional[str] = None,
     physics_norm: float = 1.0,
 ) -> list:
-    E_in = float(E)
-    if E_in > 1e8:
-        print(
-            "Genesis particle solver: Rigid (friction=0.4, restitution=0.0); "
-            f"YOUNGS_MODULUS={E_in:.6g} Pa > 1e8 (FEM/MPM path skipped)"
-        )
-        material = _rigid_material(0.4, 0.0, rho=rho)
-    else:
-        E = E_in
-        if E > float(e_fem_max):
-            E = float(e_fem_max)
-        if E > 1e3:
-            try:
-                material = gs.materials.FEM(E=E, nu=nu, rho=rho, use_implicit_solver=True)
-            except TypeError:
-                try:
-                    material = gs.materials.FEM(E=E, nu=nu, rho=rho)
-                except TypeError:
-                    try:
-                        material = gs.materials.FEM.Elastic(E=E, nu=nu, rho=rho, use_implicit_solver=True)
-                    except TypeError:
-                        material = gs.materials.FEM.Elastic(E=E, nu=nu, rho=rho)
-        else:
-            try:
-                material = gs.materials.MPM(E=E, nu=nu, rho=rho)
-            except TypeError:
-                material = gs.materials.MPM.Elastic(E=E, nu=nu, rho=rho)
+    material = gs.materials.MPM.ElastoPlastic(
+        E=float(E),
+        nu=float(nu),
+        rho=float(rho),
+    )
 
     extents = physics_mesh.bounds[1] - physics_mesh.bounds[0]
     spawn_y0 = float(env_info["top_y"] + drop_height)
@@ -1810,20 +1223,6 @@ def spawn_particles(
         c = arr.mean(axis=0)
         return (float(c[0]), float(c[1]), float(c[2]))
 
-    # Choose the collision file and Genesis scale:
-    #   Proxy path: vertices are already in physics metres (display_scale ×
-    #     physics_norm applied in load_particle_mesh) → Genesis scale = 1.0.
-    #   Fallback path: original OBJ vertices are in source units (e.g. µm) →
-    #     Genesis scale = display_scale × physics_norm to reach physics metres.
-    if coacd_proxy_file is not None:
-        collision_file = coacd_proxy_file
-        use_convexify = False
-        collision_scale = 1.0
-    else:
-        collision_file = particle_file
-        use_convexify = True
-        collision_scale = float(scale_factor) * float(physics_norm)
-
     entities = []
     if spread <= 1e-9:
         # Single column above the plate: stack along +Y so bodies do not share one point (that breaks FEM contact).
@@ -1839,15 +1238,15 @@ def spawn_particles(
                 quat = gs.utils.geom.R_to_quat(R)
             ent = scene.add_entity(
                 gs.morphs.Mesh(
-                    file=collision_file,
-                    scale=collision_scale,
+                    file=particle_file,
+                    scale=float(scale_factor) * float(physics_norm),
                     pos=(x, y, z),
                     quat=quat,
-                    convexify=use_convexify,
                     collision=True,
                     visualization=False,
                 ),
                 material=material,
+                surface=gs.surfaces.Default(vis_mode="visual"),
             )
             entities.append(ent)
         print(
@@ -1894,15 +1293,15 @@ def spawn_particles(
             placed_positions.append((x, y, z))
             ent = scene.add_entity(
                 gs.morphs.Mesh(
-                    file=collision_file,
-                    scale=collision_scale,
+                    file=particle_file,
+                    scale=float(scale_factor) * float(physics_norm),
                     pos=(x, y, z),
                     quat=quat,
-                    convexify=use_convexify,
                     collision=True,
                     visualization=False,
                 ),
                 material=material,
+                surface=gs.surfaces.Default(vis_mode="visual"),
             )
             entities.append(ent)
 
@@ -2082,77 +1481,74 @@ def compute_max_velocity(entities) -> Optional[float]:
     return max(speeds)
 
 
-def compute_fem_vertex_force_stress(
-    scene, entities, *, subsample_frac: float = 0.2
-) -> tuple[dict[int, tuple[np.ndarray, np.ndarray]], float]:
+def compute_mpm_vertex_stress(
+    entities: list,
+    original_mesh,
+    particle_ids: set[int],
+) -> dict[int, np.ndarray]:
     """
-    Per-vertex "stress proxy" from FEM nodal forces: ||F_i|| on a random nodal subsample.
+    Compute per-vertex Von Mises stress from MPM stress tensors.
 
-    Only a fraction of vertices per FEM body are sampled each frame (default 20%) to limit
-    CPU/GPU sync and payload size. Norms are normalized to [0, 1] as ||F_i|| / G_max using
-    G_max = max sampled ||F|| across all FEM bodies (torch, on the force tensor's device).
-
-    Returns (entity_id -> (local_vertex_indices int32, normalized float32 array)), and 1.0
-    for fem_norm_global_max (values are already scaled).
+    Interpolation from material points to mesh vertices uses inverse-distance
+    weighting (distance^(-2)) in world space.
     """
-    fs = getattr(scene.sim, "fem_solver", None)
-    if fs is None or not getattr(fs, "is_active", False):
-        return {}, 1.0
-    node_forces = fs.get_forces()
-    if node_forces is None:
-        return {}, 1.0
-    if hasattr(node_forces, "detach"):
-        F = node_forces.detach()
-    else:
-        F = torch.from_numpy(np.asarray(node_forces, dtype=np.float32))
-    if F.ndim != 3 or int(F.shape[0]) < 1:
-        return {}, 1.0
-    forces_b = F[0]
-    if forces_b.ndim != 2 or int(forces_b.shape[1]) != 3:
-        return {}, 1.0
-    device = forces_b.device
-    dtype = forces_b.dtype
-    sampled_blocks: list[torch.Tensor] = []
-    meta: list[tuple[int, torch.Tensor, torch.Tensor]] = []
-    frac = float(subsample_frac)
-    if not math.isfinite(frac) or frac <= 0.0:
-        frac = 0.2
+    if original_mesh is None or len(original_mesh.vertices) == 0:
+        return {}
+    verts_local = np.asarray(original_mesh.vertices, dtype=np.float64)
+    if verts_local.size == 0:
+        return {}
 
+    out: dict[int, np.ndarray] = {}
     for e in entities:
-        if type(e).__name__ != "FEMEntity":
+        eid = int(_entity_id(e))
+        if eid not in particle_ids:
             continue
-        if not hasattr(e, "v_start") or not hasattr(e, "n_vertices"):
+        st = _entity_mpm_state(e)
+        if st is None or not hasattr(st, "pos") or not hasattr(st, "stress"):
             continue
-        vs = int(e.v_start)
-        nv = int(e.n_vertices)
-        if nv < 1 or vs + nv > int(forces_b.shape[0]):
+        mp_pos = _tensor_to_numpy(st.pos)
+        mp_stress = _tensor_to_numpy(st.stress)
+        if mp_pos.size == 0 or mp_stress.size == 0:
             continue
-        slab = forces_b[vs : vs + nv, :]
-        k = max(1, int(nv * frac))
-        pick = torch.randperm(nv, device=device)[:k]
-        f_k = slab[pick, :]
-        norms_k = torch.linalg.norm(f_k, dim=1)
-        norms_k = torch.nan_to_num(norms_k, nan=0.0, posinf=0.0, neginf=0.0).to(dtype)
-        sampled_blocks.append(norms_k)
-        meta.append((int(_entity_id(e)), pick.to(dtype=torch.int64), norms_k))
 
-    if not sampled_blocks:
-        return {}, 1.0
-    all_norms = torch.cat(sampled_blocks)
-    gmax = torch.max(all_norms)
-    if not torch.isfinite(gmax) or float(gmax.item()) <= 1e-18:
-        gmax_t = torch.tensor(1.0, device=device, dtype=dtype)
-    else:
-        gmax_t = torch.clamp(gmax, min=1e-18)
+        pts = np.asarray(mp_pos, dtype=float).reshape(-1, 3)
+        S = np.asarray(mp_stress, dtype=float).reshape(-1, 3, 3)
+        if pts.shape[0] != S.shape[0]:
+            n = min(pts.shape[0], S.shape[0])
+            if n <= 0:
+                continue
+            pts = pts[:n]
+            S = S[:n]
 
-    per_entity: dict[int, tuple[np.ndarray, np.ndarray]] = {}
-    for eid, pick_i, norms_k in meta:
-        scaled = (norms_k / gmax_t).clamp(0.0, 1.0)
-        per_entity[eid] = (
-            pick_i.cpu().numpy().astype(np.int32, copy=False),
-            scaled.cpu().numpy().astype(np.float32, copy=False),
+        s11 = S[:, 0, 0]
+        s22 = S[:, 1, 1]
+        s33 = S[:, 2, 2]
+        s12 = S[:, 0, 1]
+        s23 = S[:, 1, 2]
+        s31 = S[:, 2, 0]
+        vm = np.sqrt(
+            0.5
+            * (
+                (s11 - s22) ** 2
+                + (s22 - s33) ** 2
+                + (s33 - s11) ** 2
+                + 6.0 * (s12**2 + s23**2 + s31**2)
+            )
         )
-    return per_entity, 1.0
+        vm = np.nan_to_num(vm, nan=0.0, posinf=0.0, neginf=0.0)
+
+        pos, quat_xyzw = _entity_pose(e)
+        qx, qy, qz, qw = quat_xyzw
+        R = Rotation.from_quat(np.array([qx, qy, qz, qw], dtype=np.float64)).as_matrix()
+        verts_world = (R @ verts_local.T).T + np.asarray(pos, dtype=float).reshape(1, 3)
+
+        d = np.linalg.norm(verts_world[:, None, :] - pts[None, :, :], axis=2)
+        weights = 1.0 / np.maximum(d, 1e-6) ** 2
+        denom = np.sum(weights, axis=1)
+        numer = weights @ vm
+        vertex_vm = np.where(denom > 0.0, numer / denom, 0.0)
+        out[eid] = vertex_vm.astype(np.float64, copy=False)
+    return out
 
 
 def compute_particle_stress_map(contacts, particle_ids: set[int]) -> dict[int, float]:
@@ -2292,6 +1688,8 @@ def run_simulation_stream(
 def extract_contacts(scene, particle_ids, container_ids, depth_tol=1e-5) -> list:
     # Genesis API differs by entity regime/backends; in some configurations
     # (e.g., rigid-only) `get_contacts()` may not exist.
+    if _mpm_solver_active(scene):
+        return []
     if not hasattr(scene, "get_contacts"):
         return []
     raw = scene.get_contacts()
@@ -2324,6 +1722,105 @@ def extract_contacts(scene, particle_ids, container_ids, depth_tol=1e-5) -> list
             )
         )
     return out
+
+
+def extract_mpm_contacts(
+    entities: list,
+    particle_ids: set[int],
+    *,
+    characteristic_radius: Optional[float] = None,
+    depth_tol: float = 1e-5,
+) -> list[NormalizedContact]:
+    """
+    Approximate MPM particle contacts from centroid proximity and stress.
+
+    A pair is in contact when centroid distance is below 1.5 times pair radius.
+    Contact force magnitude is estimated as stress Frobenius norm times contact area.
+    """
+    if not entities:
+        return []
+
+    particle_entities = [e for e in entities if int(_entity_id(e)) in particle_ids]
+    if len(particle_entities) < 2:
+        return []
+
+    default_radius = float(characteristic_radius) if characteristic_radius is not None else None
+    if default_radius is not None and (not math.isfinite(default_radius) or default_radius <= 0.0):
+        default_radius = None
+
+    centroid_by_id: dict[int, np.ndarray] = {}
+    radius_by_id: dict[int, float] = {}
+    stress_norm_by_id: dict[int, float] = {}
+
+    for e in particle_entities:
+        eid = int(_entity_id(e))
+        centroid, _ = _entity_pose(e)
+        centroid = np.asarray(centroid, dtype=float).reshape(3)
+        centroid_by_id[eid] = centroid
+
+        st = _entity_mpm_state(e)
+        r = _estimate_particle_radius_from_state(st)
+        if r is None:
+            r = default_radius
+        if r is None:
+            r = 1e-3
+        radius_by_id[eid] = max(float(r), 1e-6)
+
+        stress_mag = 0.0
+        if st is not None and hasattr(st, "stress"):
+            s = _tensor_to_numpy(st.stress)
+            if s.size:
+                s = np.asarray(s, dtype=float).reshape(-1, 3, 3)
+                if hasattr(st, "pos"):
+                    mp = _tensor_to_numpy(st.pos)
+                    if mp.size:
+                        mp = np.asarray(mp, dtype=float).reshape(-1, 3)
+                        if mp.shape[0] == s.shape[0]:
+                            idx = int(np.argmin(np.linalg.norm(mp - centroid.reshape(1, 3), axis=1)))
+                        else:
+                            idx = int(s.shape[0] // 2)
+                    else:
+                        idx = int(s.shape[0] // 2)
+                else:
+                    idx = int(s.shape[0] // 2)
+                stress_mag = float(np.linalg.norm(s[idx], ord="fro"))
+                if not math.isfinite(stress_mag):
+                    stress_mag = 0.0
+        stress_norm_by_id[eid] = max(stress_mag, 0.0)
+
+    contacts: list[NormalizedContact] = []
+    for a, b in itertools.combinations(sorted(centroid_by_id.keys()), 2):
+        pa = centroid_by_id[a]
+        pb = centroid_by_id[b]
+        delta = pb - pa
+        dist = float(np.linalg.norm(delta))
+        if not math.isfinite(dist):
+            continue
+        r_pair = 0.5 * (radius_by_id[a] + radius_by_id[b])
+        threshold = 1.5 * r_pair
+        if dist >= threshold:
+            continue
+        depth = max(0.0, threshold - dist)
+        if depth < float(depth_tol):
+            continue
+        normal = delta / max(dist, 1e-12)
+        area = math.pi * min(radius_by_id[a], radius_by_id[b]) ** 2
+        stress_pair = 0.5 * (stress_norm_by_id[a] + stress_norm_by_id[b])
+        force_mag = float(stress_pair * area)
+        contacts.append(
+            NormalizedContact(
+                entity_a=a,
+                entity_b=b,
+                is_particle_particle=True,
+                is_particle_container=False,
+                position=0.5 * (pa + pb),
+                normal=normal,
+                depth=depth,
+                force=force_mag,
+                contact_area=area,
+            )
+        )
+    return contacts
 
 
 def extract_contacts_geometric(
@@ -2558,88 +2055,17 @@ def compute_vertex_stress(
     sigma: float = 0.30,
     stress_floor: float = 0.05,
 ) -> dict[int, list[float]]:
-    """
-    Per-vertex Hertzian-style stress proxy from contact positions and forces.
-
-    The stress Gaussian is evaluated in each particle's *local* mesh frame using
-    Euclidean distance, so the highlight lands precisely at the contact site regardless
-    of particle rotation.  `sigma` is interpreted as a fraction of the mesh's
-    characteristic radius (half-diagonal of bounding box):
-
-        sigma_local = char_size * max(sigma, 0.20)   [metres]
-
-    Only PP (particle–particle) contacts drive the gradient; PC (particle–container)
-    contacts are excluded so floor/wall touches do not colour particles red.
-    Stress values are globally normalised so only the most-contacted vertices reach 1.0.
-    A hard floor clamps post-normalisation noise to exactly 0 on non-contact regions.
-    """
+    """Per-vertex stress map from MPM stress tensors (Von Mises + IDW interpolation)."""
+    _ = contacts  # kept for backward-compatible signature
+    _ = sigma
     if original_mesh is None or len(original_mesh.vertices) == 0:
         return {}
-
-    verts_local = np.asarray(original_mesh.vertices, dtype=np.float64)
-    n_verts = int(verts_local.shape[0])
-    vn = np.asarray(original_mesh.vertex_normals, dtype=np.float64)
-    if vn.shape != (n_verts, 3):
-        m = original_mesh.copy()
-        vn = np.asarray(m.vertex_normals, dtype=np.float64)
-    if vn.shape != (n_verts, 3):
-        vn = np.zeros((n_verts, 3), dtype=np.float64)
-        vn[:, 1] = 1.0
-
-    # ── Derive sigma_local from mesh bounding box ─────────────────────────────
-    # char_size = half-diagonal of the local bounding box, so sigma_local is a
-    # physically meaningful fraction of the particle size.
-    try:
-        bounds_min = verts_local.min(axis=0)
-        bounds_max = verts_local.max(axis=0)
-        char_size = float(np.linalg.norm(bounds_max - bounds_min)) / 2.0
-    except Exception:
-        char_size = 0.025
-    if char_size < 1e-6:
-        char_size = 0.025
-
-    sig = float(sigma)
-    if not math.isfinite(sig) or sig <= 0.0:
-        sig = 0.30
-    # Clamp to [20 %, 60 %] of char_size so the blob is neither a pinpoint nor a flood.
-    sigma_local = float(np.clip(char_size * sig, char_size * 0.20, char_size * 0.60))
-
-    # Legacy denom kept for fallback path in _accumulate_stress_for_contacts.
-    denom = 2.0 * sig ** 2
-
+    n_verts = int(np.asarray(original_mesh.vertices).shape[0])
     floor = float(stress_floor)
     if not math.isfinite(floor) or floor < 0.0:
         floor = 0.05
 
-    pp_raw: dict[int, np.ndarray] = {}
-
-    for e in entities:
-        eid = _entity_id(e)
-        if eid not in particle_ids:
-            continue
-        pos, quat_xyzw = _entity_pose(e)
-        qx, qy, qz, qw = quat_xyzw
-        R_obj = Rotation.from_quat(np.array([qx, qy, qz, qw], dtype=np.float64))
-        R = R_obj.as_matrix()
-        R_inv = R_obj.inv()
-        pos_world = pos.ravel()[:3]
-        world_verts = (R @ verts_local.T).T + pos_world.reshape(1, 3)
-        n_world = (R @ vn.T).T
-        norms = np.linalg.norm(n_world, axis=1, keepdims=True)
-        n_world = n_world / np.maximum(norms, 1e-12)
-
-        pp_rel = [
-            c for c in contacts
-            if (int(c.entity_a) == eid or int(c.entity_b) == eid)
-            and bool(c.is_particle_particle)
-        ]
-
-        pp_raw[eid] = _accumulate_stress_for_contacts(
-            pp_rel, eid, world_verts, n_world, n_verts, denom,
-            pos_world=pos_world, R_inv=R_inv, verts_local=verts_local, sigma_local=sigma_local,
-        )
-
-    pp_norm = _normalize_stress_map(pp_raw)
+    pp_norm = _normalize_stress_map(compute_mpm_vertex_stress(entities, original_mesh, particle_ids))
 
     out: dict[int, list[float]] = {}
     all_eids = set(pp_norm)
@@ -3000,21 +2426,21 @@ def main():
         gs,
         {"DT": args.dt, "SUBSTEPS": args.substeps, "GRAVITY": GRAVITY},
     )
+    mpm_options = make_mpm_options(gs)
     rigid_options = make_rigid_options(gs)
-    fem_options = make_fem_options(gs, {"FEM_NEWTON_ITERATIONS": int(DEFAULT_CONFIG.get("FEM_NEWTON_ITERATIONS", 4))})
 
     # Avoid building the visualizer unless explicitly requested.
     # This prevents the viewer from throttling the run (e.g., ~0.1 FPS on CPU).
     scene = create_scene_compat(
         gs,
         sim_options=sim_options,
+        mpm_options=mpm_options,
         rigid_options=rigid_options,
-        fem_options=fem_options,
         show_viewer=bool(args.show_viewer),
         n_envs=n_envs,
     )
 
-    physics_mesh, original_mesh, coacd_proxy_file, physics_norm = load_particle_mesh(PARTICLE_FILE, SCALE_FACTOR)
+    original_mesh, physics_norm = load_particle_mesh(PARTICLE_FILE, SCALE_FACTOR)
     container_ids, env_info = create_environment(
         scene,
         ENVIRONMENT_TYPE,
@@ -3038,7 +2464,7 @@ def main():
     derived_drop_height = -0.5 * float(SYRINGE_BARREL_LENGTH)
     entities = spawn_particles(
         scene,
-        physics_mesh,
+        original_mesh,
         args.n,
         env_info,
         derived_drop_height,
@@ -3047,7 +2473,6 @@ def main():
         POISSON_RATIO,
         DENSITY,
         particle_restitution=PARTICLE_RESTITUTION,
-        coacd_proxy_file=coacd_proxy_file,
         physics_norm=physics_norm,
     )
     particle_ids = {_entity_id(e) for e in entities}
@@ -3061,7 +2486,11 @@ def main():
         SETTLE_THRESHOLD,
         update_visualizer=bool(args.show_viewer),
     )
-    contacts = extract_contacts(scene, particle_ids, container_ids, CONTACT_DEPTH_TOL)
+    contacts = extract_mpm_contacts(
+        entities,
+        particle_ids,
+        depth_tol=CONTACT_DEPTH_TOL,
+    )
     metrics = compute_metrics(
         contacts,
         particle_ids,
