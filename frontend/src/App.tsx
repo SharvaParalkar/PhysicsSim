@@ -292,6 +292,27 @@ export default function App() {
     setShowSyringeOverlay(false)
   }, [appendLog, simConfig, syringePresetName])
 
+  const loadSyringeConfiguration = useCallback(async () => {
+    const name = syringePresetName.trim()
+    if (!name) throw new Error('Preset name is required')
+    const r = await fetch(`http://localhost:8000/environment/load?name=${encodeURIComponent(name)}`)
+    if (!r.ok) throw new Error(await r.text())
+    const data = (await r.json()) as { config?: Partial<SimulationConfig>; name?: string }
+    const loaded = data.config ?? {}
+    setSimConfig((p) => ({
+      ...p,
+      SYRINGE_BARREL_DIAMETER: loaded.SYRINGE_BARREL_DIAMETER ?? p.SYRINGE_BARREL_DIAMETER,
+      SYRINGE_BARREL_LENGTH: loaded.SYRINGE_BARREL_LENGTH ?? p.SYRINGE_BARREL_LENGTH,
+      SYRINGE_NEEDLE_DIAMETER: loaded.SYRINGE_NEEDLE_DIAMETER ?? p.SYRINGE_NEEDLE_DIAMETER,
+      SYRINGE_NEEDLE_LENGTH: loaded.SYRINGE_NEEDLE_LENGTH ?? p.SYRINGE_NEEDLE_LENGTH,
+      SYRINGE_WALL_THICKNESS: loaded.SYRINGE_WALL_THICKNESS ?? p.SYRINGE_WALL_THICKNESS,
+      SYRINGE_BOTTOM_THICKNESS: loaded.SYRINGE_BOTTOM_THICKNESS ?? p.SYRINGE_BOTTOM_THICKNESS,
+      SYRINGE_PLATE_GAP: loaded.SYRINGE_PLATE_GAP ?? p.SYRINGE_PLATE_GAP,
+      SYRINGE_SEGMENTS: loaded.SYRINGE_SEGMENTS ?? p.SYRINGE_SEGMENTS,
+    }))
+    appendLog(`[info] Loaded syringe config '${data.name ?? name}'`)
+  }, [appendLog, syringePresetName])
+
   const handleRunComplete = useCallback(async () => {
     const particles = await refreshResults()
     setSettledVertexStress((prev) => {
@@ -1613,6 +1634,15 @@ export default function App() {
                 />
               </label>
               <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    loadSyringeConfiguration().catch((err) => appendLog(`[error] Failed to load syringe config: ${err}`))
+                  }}
+                  style={{ flex: 1, border: '1px solid #a8bfdc', background: '#edf4ff', color: '#1f4f87', borderRadius: 8, padding: '8px', cursor: 'pointer' }}
+                >
+                  Load
+                </button>
                 <button
                   type="button"
                   onClick={() => setShowSyringeOverlay(false)}

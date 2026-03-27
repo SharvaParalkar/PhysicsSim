@@ -98,6 +98,7 @@ SYRINGE_NEEDLE_DIAMETER = 0.04         # m — outlet hole / needle inner diamet
 SYRINGE_NEEDLE_LENGTH = 0.20           # m — small tube inner length below the barrel
 SYRINGE_WALL_THICKNESS = 0.001         # m — syringe tube wall thickness (barrel + needle)
 SYRINGE_BOTTOM_THICKNESS = 0.001       # m — annulus slab thickness at barrel/needle junction
+SYRINGE_PLATE_GAP = 0.01               # m — visual/placement gap between needle tip and plate top
 SYRINGE_SEGMENTS = 32                  # wall facets for barrel/needle/hole rings
 # Rim height for ENVIRONMENT_TYPE="plate" — keeps particles on the plate (0 = flat open plate).
 PLATE_WALL_HEIGHT    = 0.15            # m — vertical walls along the square perimeter
@@ -268,6 +269,7 @@ DEFAULT_CONFIG = {
     "SYRINGE_NEEDLE_LENGTH": SYRINGE_NEEDLE_LENGTH,
     "SYRINGE_WALL_THICKNESS": SYRINGE_WALL_THICKNESS,
     "SYRINGE_BOTTOM_THICKNESS": SYRINGE_BOTTOM_THICKNESS,
+    "SYRINGE_PLATE_GAP": SYRINGE_PLATE_GAP,
     "SYRINGE_SEGMENTS": SYRINGE_SEGMENTS,
     "WALL_THICKNESS": WALL_THICKNESS,
     "PLATE_WALL_HEIGHT": PLATE_WALL_HEIGHT,
@@ -332,6 +334,7 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["SYRINGE_NEEDLE_LENGTH"] = float(cfg.get("SYRINGE_NEEDLE_LENGTH", SYRINGE_NEEDLE_LENGTH))
     cfg["SYRINGE_WALL_THICKNESS"] = max(1e-6, float(cfg.get("SYRINGE_WALL_THICKNESS", SYRINGE_WALL_THICKNESS)))
     cfg["SYRINGE_BOTTOM_THICKNESS"] = max(1e-6, float(cfg.get("SYRINGE_BOTTOM_THICKNESS", SYRINGE_BOTTOM_THICKNESS)))
+    cfg["SYRINGE_PLATE_GAP"] = max(0.0, float(cfg.get("SYRINGE_PLATE_GAP", SYRINGE_PLATE_GAP)))
     cfg["SYRINGE_SEGMENTS"] = max(8, int(cfg.get("SYRINGE_SEGMENTS", SYRINGE_SEGMENTS)))
     cfg["DROP_HEIGHT"] = float(cfg["DROP_HEIGHT"])
     cfg["DROP_SPREAD"] = float(cfg["DROP_SPREAD"])

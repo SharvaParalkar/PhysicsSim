@@ -659,7 +659,37 @@ def save_environment_config(payload: dict[str, Any]):
     if not safe:
         safe = "environment"
 
-    cfg = simulation.build_runtime_config(dict(raw_cfg))
+    unit_map = {
+        "m": 1.0,
+        "meter": 1.0,
+        "meters": 1.0,
+        "mm": 1e-3,
+        "millimeter": 1e-3,
+        "millimeters": 1e-3,
+        "um": 1e-6,
+        "µm": 1e-6,
+        "micron": 1e-6,
+        "microns": 1e-6,
+    }
+    units_obj = payload.get("units", {}) if isinstance(payload, dict) else {}
+    length_unit = str(units_obj.get("length", "m")).strip().lower() if isinstance(units_obj, dict) else "m"
+    length_to_m = float(unit_map.get(length_unit, 1.0))
+    syringe_length_keys = (
+        "SYRINGE_BARREL_DIAMETER",
+        "SYRINGE_BARREL_LENGTH",
+        "SYRINGE_NEEDLE_DIAMETER",
+        "SYRINGE_NEEDLE_LENGTH",
+        "SYRINGE_WALL_THICKNESS",
+        "SYRINGE_BOTTOM_THICKNESS",
+        "SYRINGE_PLATE_GAP",
+    )
+    cfg_raw_m = dict(raw_cfg)
+    if abs(length_to_m - 1.0) > 1e-18:
+        for k in syringe_length_keys:
+            if k in cfg_raw_m:
+                cfg_raw_m[k] = float(cfg_raw_m[k]) * length_to_m
+
+    cfg = simulation.build_runtime_config(cfg_raw_m)
     wanted = {
         "SYRINGE_BARREL_DIAMETER": float(cfg.get("SYRINGE_BARREL_DIAMETER", simulation.SYRINGE_BARREL_DIAMETER)),
         "SYRINGE_BARREL_LENGTH": float(cfg.get("SYRINGE_BARREL_LENGTH", simulation.SYRINGE_BARREL_LENGTH)),
@@ -667,6 +697,7 @@ def save_environment_config(payload: dict[str, Any]):
         "SYRINGE_NEEDLE_LENGTH": float(cfg.get("SYRINGE_NEEDLE_LENGTH", simulation.SYRINGE_NEEDLE_LENGTH)),
         "SYRINGE_WALL_THICKNESS": float(cfg.get("SYRINGE_WALL_THICKNESS", simulation.SYRINGE_WALL_THICKNESS)),
         "SYRINGE_BOTTOM_THICKNESS": float(cfg.get("SYRINGE_BOTTOM_THICKNESS", simulation.SYRINGE_BOTTOM_THICKNESS)),
+        "SYRINGE_PLATE_GAP": float(cfg.get("SYRINGE_PLATE_GAP", 0.0)),
         "SYRINGE_SEGMENTS": int(cfg.get("SYRINGE_SEGMENTS", simulation.SYRINGE_SEGMENTS)),
     }
     if wanted["SYRINGE_NEEDLE_DIAMETER"] >= wanted["SYRINGE_BARREL_DIAMETER"]:
@@ -675,9 +706,85 @@ def save_environment_config(payload: dict[str, Any]):
     ENVIRONMENT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = ENVIRONMENT_DIR / f"{safe}.json"
     with out_path.open("w", encoding="utf-8") as f:
-        json.dump({"name": safe, "type": "syringe", "config": wanted}, f, indent=2)
+        json.dump(
+            {
+                "name": safe,
+                "type": "syringe",
+                "units": {"length": "m"},
+                "config": wanted,
+            },
+            f,
+            indent=2,
+        )
 
     return {"ok": True, "path": str(out_path.relative_to(Path(__file__).resolve().parent))}
+
+
+@app.get("/environment/load")
+def load_environment_config(name: str):
+    """Load a saved syringe/environment preset from ./environment by name."""
+    raw_name = str(name or "").strip()
+    if not raw_name:
+        raise HTTPException(status_code=400, detail="Missing preset name")
+    safe = "".join(ch if (ch.isalnum() or ch in ("-", "_")) else "_" for ch in raw_name).strip("_")
+    if not safe:
+        raise HTTPException(status_code=400, detail="Invalid preset name")
+
+    in_path = ENVIRONMENT_DIR / f"{safe}.json"
+    if not in_path.exists():
+        raise HTTPException(status_code=404, detail=f"Preset '{safe}' not found")
+
+    try:
+        with in_path.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to read preset: {exc}") from exc
+
+    unit_map = {
+        "m": 1.0,
+        "meter": 1.0,
+        "meters": 1.0,
+        "mm": 1e-3,
+        "millimeter": 1e-3,
+        "millimeters": 1e-3,
+        "um": 1e-6,
+        "µm": 1e-6,
+        "micron": 1e-6,
+        "microns": 1e-6,
+    }
+    units_obj = payload.get("units", {}) if isinstance(payload, dict) else {}
+    length_unit = str(units_obj.get("length", "m")).strip().lower() if isinstance(units_obj, dict) else "m"
+    length_to_m = float(unit_map.get(length_unit, 1.0))
+    raw_cfg = payload.get("config", {}) if isinstance(payload, dict) else {}
+    if not isinstance(raw_cfg, dict):
+        raise HTTPException(status_code=400, detail="Preset config is invalid")
+    syringe_length_keys = (
+        "SYRINGE_BARREL_DIAMETER",
+        "SYRINGE_BARREL_LENGTH",
+        "SYRINGE_NEEDLE_DIAMETER",
+        "SYRINGE_NEEDLE_LENGTH",
+        "SYRINGE_WALL_THICKNESS",
+        "SYRINGE_BOTTOM_THICKNESS",
+        "SYRINGE_PLATE_GAP",
+    )
+    cfg_raw_m = dict(raw_cfg)
+    if abs(length_to_m - 1.0) > 1e-18:
+        for k in syringe_length_keys:
+            if k in cfg_raw_m:
+                cfg_raw_m[k] = float(cfg_raw_m[k]) * length_to_m
+
+    cfg = simulation.build_runtime_config(cfg_raw_m)
+    wanted = {
+        "SYRINGE_BARREL_DIAMETER": float(cfg.get("SYRINGE_BARREL_DIAMETER", simulation.SYRINGE_BARREL_DIAMETER)),
+        "SYRINGE_BARREL_LENGTH": float(cfg.get("SYRINGE_BARREL_LENGTH", simulation.SYRINGE_BARREL_LENGTH)),
+        "SYRINGE_NEEDLE_DIAMETER": float(cfg.get("SYRINGE_NEEDLE_DIAMETER", simulation.SYRINGE_NEEDLE_DIAMETER)),
+        "SYRINGE_NEEDLE_LENGTH": float(cfg.get("SYRINGE_NEEDLE_LENGTH", simulation.SYRINGE_NEEDLE_LENGTH)),
+        "SYRINGE_WALL_THICKNESS": float(cfg.get("SYRINGE_WALL_THICKNESS", simulation.SYRINGE_WALL_THICKNESS)),
+        "SYRINGE_BOTTOM_THICKNESS": float(cfg.get("SYRINGE_BOTTOM_THICKNESS", simulation.SYRINGE_BOTTOM_THICKNESS)),
+        "SYRINGE_PLATE_GAP": float(cfg.get("SYRINGE_PLATE_GAP", 0.0)),
+        "SYRINGE_SEGMENTS": int(cfg.get("SYRINGE_SEGMENTS", simulation.SYRINGE_SEGMENTS)),
+    }
+    return {"ok": True, "name": safe, "units": {"length": "m"}, "config": wanted}
 
 
 def _build_export_payload() -> dict[str, Any]:
