@@ -834,8 +834,12 @@ function SyringePreview(props: {
     plateGap = 0.01,
     segments,
   } = props
-  const tWall = Math.max(wallThickness, 1e-6)
-  const tBottom = Math.max(bottomThickness, 1e-6)
+  // Mirror backend scale-aware thickness floors from simulation.build_runtime_config.
+  const syringeScale = Math.max(1e-6, Math.min(barrelDiameter, needleDiameter, barrelLength, needleLength))
+  const minWall = Math.max(5e-5, 0.005 * syringeScale)
+  const minBottom = Math.max(5e-5, 0.005 * syringeScale)
+  const tWall = Math.max(wallThickness, minWall, 1e-6)
+  const tBottom = Math.max(bottomThickness, minBottom, 1e-6)
   const seg = Math.max(8, Math.round(segments))
   const barrelR = Math.max(barrelDiameter * 0.5, 1e-6)
   const needleR = Math.max(needleDiameter * 0.5, 1e-6)
@@ -876,11 +880,17 @@ function SyringePreview(props: {
   )
   const bottomMat = useMemo(
     () =>
-      new THREE.MeshStandardMaterial({
-        color: '#7d99bb',
-        roughness: 0.38,
-        metalness: 0.08,
+      new THREE.MeshPhysicalMaterial({
+        color: '#7f9fc8',
+        roughness: 0.2,
+        metalness: 0.02,
+        transparent: true,
+        opacity: 0.2,
+        depthWrite: false,
         side: THREE.DoubleSide,
+        transmission: 0.72,
+        thickness: 0.05,
+        ior: 1.42,
       }),
     [],
   )
@@ -892,36 +902,40 @@ function SyringePreview(props: {
     }
   }, [barrelMat, needleMat, bottomMat])
   const junctionY = tBottom / 2
-  const plateTopY = Math.max(plateThickness, 1e-6) / 2
+  const plateTopY = Math.max(plateThickness, 1e-6)
   const needleCenterY = junctionY - needleLength / 2
   const needleTipLocalY = needleCenterY - needleLength / 2
   const syringeLiftY = plateTopY + gap - needleTipLocalY
+
+  const annulusCenterY = junctionY
 
   return (
     <group position={[0, syringeLiftY, 0]}>
       <mesh position={[0, junctionY + barrelLength / 2, 0]} receiveShadow material={barrelMat}>
         <cylinderGeometry args={[barrelR + tWall, barrelR + tWall, barrelLength, seg, 1, true]} />
       </mesh>
-      <mesh position={[0, junctionY + barrelLength / 2, 0]} receiveShadow material={barrelMat}>
-        <cylinderGeometry args={[barrelR, barrelR, barrelLength, seg, 1, true]} />
-      </mesh>
       <mesh position={[0, junctionY + barrelLength, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={barrelMat}>
         <ringGeometry args={[barrelR, barrelR + tWall, seg]} />
       </mesh>
 
-      <mesh position={[0, junctionY, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={bottomMat}>
+      {/* Annulus slab at barrel/needle junction (visualized like backend mesh: ring walls + caps). */}
+      <mesh position={[0, annulusCenterY, 0]} receiveShadow material={bottomMat}>
+        <cylinderGeometry args={[barrelR, barrelR, tBottom, seg, 1, true]} />
+      </mesh>
+      <mesh position={[0, annulusCenterY + tBottom / 2, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={bottomMat}>
+        <ringGeometry args={[needleR, barrelR, seg]} />
+      </mesh>
+      <mesh position={[0, annulusCenterY - tBottom / 2, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={bottomMat}>
         <ringGeometry args={[needleR, barrelR, seg]} />
       </mesh>
 
       <mesh position={[0, needleCenterY, 0]} receiveShadow material={needleMat}>
         <cylinderGeometry args={[needleR + tWall, needleR + tWall, needleLength, seg, 1, true]} />
       </mesh>
-      <mesh position={[0, needleCenterY, 0]} receiveShadow material={needleMat}>
-        <cylinderGeometry args={[needleR, needleR, needleLength, seg, 1, true]} />
-      </mesh>
       <mesh position={[0, junctionY, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={needleMat}>
         <ringGeometry args={[needleR, needleR + tWall, seg]} />
       </mesh>
+      {/* Backend has a hidden collision cap at the outlet; skip drawing it to avoid a fake extra needle tip. */}
     </group>
   )
 }

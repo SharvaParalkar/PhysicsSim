@@ -133,9 +133,21 @@ const DEFAULT_SYRINGE_SETTINGS = {
   SYRINGE_BARREL_LENGTH: 0.3,
   SYRINGE_NEEDLE_DIAMETER: 0.04,
   SYRINGE_NEEDLE_LENGTH: 0.2,
-  SYRINGE_WALL_THICKNESS: 0.001,
-  SYRINGE_BOTTOM_THICKNESS: 0.001,
+  SYRINGE_WALL_THICKNESS: 0.003,
+  SYRINGE_BOTTOM_THICKNESS: 0.003,
   SYRINGE_PLATE_GAP: 0.01,
+  SYRINGE_SEGMENTS: 32,
+}
+
+const MICRON_SYRINGE_SETTINGS = {
+  // Sized for the default µm-scale environment (plate ~6 mm).
+  SYRINGE_BARREL_DIAMETER: 0.0022,
+  SYRINGE_BARREL_LENGTH: 0.0035,
+  SYRINGE_NEEDLE_DIAMETER: 0.00028,
+  SYRINGE_NEEDLE_LENGTH: 0.0024,
+  SYRINGE_WALL_THICKNESS: 0.00008,
+  SYRINGE_BOTTOM_THICKNESS: 0.00012,
+  SYRINGE_PLATE_GAP: 0.0002,
   SYRINGE_SEGMENTS: 32,
 }
 
@@ -175,24 +187,24 @@ export default function App() {
   const [settledVertexStress, setSettledVertexStress] = useState<Record<string, number[]> | null>(null)
   const [availableParticles, setAvailableParticles] = useState<string[]>(['particle.obj'])
   const [simConfig, setSimConfig] = useState<SimulationConfig>({
-    PARTICLE_FILE: 'particle.obj',
-    N_PARTICLES: 100,
+    PARTICLE_FILE: 'Star600M.obj',
+    N_PARTICLES: MICRON_SCALE_SETTINGS.N_PARTICLES,
     YOUNGS_MODULUS: 200e6,
     POISSON_RATIO: 0.45,
-    ...STANDARD_PHYSICS_TUNING,
+    ...MICRON_SCALE_SETTINGS,
     SEQUENTIAL_DROP: false,
     SEQUENTIAL_STAGE_DURATION: null,
-    SIM_DURATION: 5.0,
+    SIM_DURATION: MICRON_SCALE_SETTINGS.SIM_DURATION,
     ENVIRONMENT_TYPE: 'plate',
-    CYLINDER_DIAMETER: 0.2,
-    CYLINDER_HEIGHT: 0.3,
-    PLATE_SIZE: 0.6,
-    WALL_THICKNESS: 0.02,
-    PLATE_WALL_HEIGHT: 0.15,
+    CYLINDER_DIAMETER: MICRON_SCALE_SETTINGS.CYLINDER_DIAMETER,
+    CYLINDER_HEIGHT: MICRON_SCALE_SETTINGS.CYLINDER_HEIGHT,
+    PLATE_SIZE: MICRON_SCALE_SETTINGS.PLATE_SIZE,
+    WALL_THICKNESS: MICRON_SCALE_SETTINGS.WALL_THICKNESS,
+    PLATE_WALL_HEIGHT: MICRON_SCALE_SETTINGS.PLATE_WALL_HEIGHT,
     STRESS_SIGMA: 0.4,
-    ...DEFAULT_SYRINGE_SETTINGS,
+    ...MICRON_SYRINGE_SETTINGS,
   })
-  const [lengthUnit, setLengthUnit] = useState<LengthUnit>('cm')
+  const [lengthUnit, setLengthUnit] = useState<LengthUnit>('um')
   const { metersPerUnit, short: lengthUnitLabel } = LENGTH_UNITS[lengthUnit]
   const lengthScale = 1 / metersPerUnit
   const [showResults, setShowResults] = useState(false)
@@ -841,8 +853,10 @@ export default function App() {
                           PARTICLE_FILE: name,
                           // Entering µm scale: apply full micron preset (env + physics).
                           ...(newIsMicron && !prevIsMicron && MICRON_SCALE_SETTINGS),
+                          ...(newIsMicron && !prevIsMicron && MICRON_SYRINGE_SETTINGS),
                           // Leaving µm scale: restore standard environment + physics.
                           ...(!newIsMicron && prevIsMicron && STANDARD_SCALE_SETTINGS),
+                          ...(!newIsMicron && prevIsMicron && DEFAULT_SYRINGE_SETTINGS),
                         }
                       })
                       if (newIsMicron) setLengthUnit('um')
@@ -1473,8 +1487,8 @@ export default function App() {
                 Barrel diameter ({lengthUnitLabel})
                 <input
                   type="number"
-                  min={0.01 / metersPerUnit}
-                  step={0.005 / metersPerUnit}
+                  min={0.0002 / metersPerUnit}
+                  step={0.0001 / metersPerUnit}
                   value={(simConfig.SYRINGE_BARREL_DIAMETER ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_BARREL_DIAMETER) / metersPerUnit}
                   onChange={(e) =>
                     setSimConfig((p) => ({ ...p, SYRINGE_BARREL_DIAMETER: Number(e.target.value) * metersPerUnit }))
@@ -1486,8 +1500,8 @@ export default function App() {
                 Barrel length ({lengthUnitLabel})
                 <input
                   type="number"
-                  min={0.01 / metersPerUnit}
-                  step={0.005 / metersPerUnit}
+                  min={0.0002 / metersPerUnit}
+                  step={0.0001 / metersPerUnit}
                   value={(simConfig.SYRINGE_BARREL_LENGTH ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_BARREL_LENGTH) / metersPerUnit}
                   onChange={(e) =>
                     setSimConfig((p) => ({ ...p, SYRINGE_BARREL_LENGTH: Number(e.target.value) * metersPerUnit }))
@@ -1499,8 +1513,8 @@ export default function App() {
                 Needle diameter ({lengthUnitLabel})
                 <input
                   type="number"
-                  min={0.001 / metersPerUnit}
-                  step={0.002 / metersPerUnit}
+                  min={0.00005 / metersPerUnit}
+                  step={0.00005 / metersPerUnit}
                   value={(simConfig.SYRINGE_NEEDLE_DIAMETER ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_NEEDLE_DIAMETER) / metersPerUnit}
                   onChange={(e) =>
                     setSimConfig((p) => ({ ...p, SYRINGE_NEEDLE_DIAMETER: Number(e.target.value) * metersPerUnit }))
@@ -1512,8 +1526,8 @@ export default function App() {
                 Needle length ({lengthUnitLabel})
                 <input
                   type="number"
-                  min={0.005 / metersPerUnit}
-                  step={0.005 / metersPerUnit}
+                  min={0.0001 / metersPerUnit}
+                  step={0.0001 / metersPerUnit}
                   value={(simConfig.SYRINGE_NEEDLE_LENGTH ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_NEEDLE_LENGTH) / metersPerUnit}
                   onChange={(e) =>
                     setSimConfig((p) => ({ ...p, SYRINGE_NEEDLE_LENGTH: Number(e.target.value) * metersPerUnit }))
@@ -1525,8 +1539,8 @@ export default function App() {
                 Syringe wall thickness ({lengthUnitLabel})
                 <input
                   type="number"
-                  min={0.0001 / metersPerUnit}
-                  step={0.0005 / metersPerUnit}
+                  min={0.00001 / metersPerUnit}
+                  step={0.00001 / metersPerUnit}
                   value={(simConfig.SYRINGE_WALL_THICKNESS ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_WALL_THICKNESS) / metersPerUnit}
                   onChange={(e) =>
                     setSimConfig((p) => ({ ...p, SYRINGE_WALL_THICKNESS: Math.max(1e-6, Number(e.target.value) * metersPerUnit) }))
@@ -1538,8 +1552,8 @@ export default function App() {
                 Syringe bottom thickness ({lengthUnitLabel})
                 <input
                   type="number"
-                  min={0.0001 / metersPerUnit}
-                  step={0.0005 / metersPerUnit}
+                  min={0.00001 / metersPerUnit}
+                  step={0.00001 / metersPerUnit}
                   value={(simConfig.SYRINGE_BOTTOM_THICKNESS ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_BOTTOM_THICKNESS) / metersPerUnit}
                   onChange={(e) =>
                     setSimConfig((p) => ({ ...p, SYRINGE_BOTTOM_THICKNESS: Math.max(1e-6, Number(e.target.value) * metersPerUnit) }))
@@ -1552,7 +1566,7 @@ export default function App() {
                 <input
                   type="number"
                   min={0}
-                  step={0.005 / metersPerUnit}
+                  step={0.00005 / metersPerUnit}
                   value={(simConfig.SYRINGE_PLATE_GAP ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_PLATE_GAP) / metersPerUnit}
                   onChange={(e) =>
                     setSimConfig((p) => ({ ...p, SYRINGE_PLATE_GAP: Math.max(0, Number(e.target.value) * metersPerUnit) }))

@@ -65,13 +65,8 @@ def _sanitize_floats(obj: Any) -> Any:
 
 
 def _use_cpu_backend() -> bool:
-    """Match CLI: GENESIS_USE_CPU=1|0 overrides; else use simulation.BACKEND (e.g. cpu vs auto)."""
-    env = os.environ.get("GENESIS_USE_CPU", "").strip().lower()
-    if env in ("1", "true", "yes"):
-        return True
-    if env in ("0", "false", "no"):
-        return False
-    return getattr(simulation, "BACKEND", "auto").strip().lower() == "cpu"
+    """Force CPU backend for all server-side simulation runs."""
+    return True
 
 
 def _gpu_cpu_fallback_allowed() -> bool:
@@ -114,11 +109,12 @@ def _init_genesis_on_sim_thread() -> None:
     GENESIS_NO_CPU_FALLBACK=1 to surface GPU failures instead of falling back to CPU.
     """
     use_cpu = _use_cpu_backend()
+    n_envs = max(1, int(getattr(simulation, "N_ENVS", 1)))
     if not use_cpu:
         _prepare_cuda_on_worker_thread()
     backend = simulation.gs.cpu if use_cpu else simulation.gs.gpu
     try:
-        simulation.gs.init(backend=backend)
+        simulation.init_genesis_compat(simulation.gs, backend=backend, n_envs=n_envs)
         return
     except Exception as exc:
         if "already initialized" in str(exc).lower():
@@ -132,7 +128,7 @@ def _init_genesis_on_sim_thread() -> None:
             ) from exc
         logger.warning("Genesis GPU init failed (%s: %s); falling back to gs.cpu.", type(exc).__name__, exc)
     try:
-        simulation.gs.init(backend=simulation.gs.cpu)
+        simulation.init_genesis_compat(simulation.gs, backend=simulation.gs.cpu, n_envs=n_envs)
     except Exception as exc2:
         if "already initialized" in str(exc2).lower():
             return
@@ -402,11 +398,13 @@ class SimulationRuntime:
         rigid_options = simulation.make_rigid_options(simulation.gs, cfg)
         # Explicit FEM at E~1e8 Pa is unstable at typical dt; Genesis recommends implicit FEM.
         fem_options = simulation.make_fem_options(simulation.gs, cfg)
-        self.scene = simulation.gs.Scene(
+        self.scene = simulation.create_scene_compat(
+            simulation.gs,
             sim_options=sim_options,
             rigid_options=rigid_options,
             fem_options=fem_options,
             show_viewer=False,
+            n_envs=max(1, int(cfg.get("N_ENVS", getattr(simulation, "N_ENVS", 1)))),
         )
         particle_file = _resolve_particle_file(cfg.get("PARTICLE_FILE"))
         scale_factor = float(cfg.get("SCALE_FACTOR", 1.0))
@@ -1074,6 +1072,14 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
 
         sequential = bool(cfg.get("SEQUENTIAL_DROP"))
         analytical = bool(cfg.get("ANALYTICAL_MODE"))
+        if sequential and (not _use_cpu_backend()):
+            sequential = False
+            sync_q.put(
+                {
+                    "type": "log",
+                    "line": "SEQUENTIAL_DROP disabled on GPU to avoid per-stage kernel rebuild overhead.",
+                }
+            )
         if sequential:
             # Use cfg DT/SUBSTEPS — the old “analytical falling” coarse step caused FEM tunneling through thin plates.
             analytical = False

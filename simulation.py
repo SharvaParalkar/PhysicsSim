@@ -25,8 +25,12 @@ except Exception:
     pass
 
 # Default Genesis backend for `python simulation.py`, `server.py`, and GENESIS_USE_CPU.
-# "auto" → prefer GPU; "cpu" / "gpu" force that backend unless GENESIS_USE_CPU=0|1 overrides.
-BACKEND = "auto"
+# Keep CPU as the project default for stable/reproducible runs.
+BACKEND = "cpu"
+try:
+    N_ENVS = max(1, int(os.environ.get("GENESIS_N_ENVS", "16")))
+except ValueError:
+    N_ENVS = 16
 
 # Optional: hide CUDA before importing Torch when the effective backend is CPU.
 _cli_backend = None
@@ -69,9 +73,38 @@ class _GenesisLazy:
 
 gs = _GenesisLazy()
 
+
+def _kwarg_not_supported(exc: Exception, kw: str) -> bool:
+    msg = str(exc)
+    return ("unexpected keyword argument" in msg) and (kw in msg)
+
+
+def init_genesis_compat(gs_mod, backend, n_envs: Optional[int] = None):
+    """Initialize Genesis, using n_envs only when supported by this version."""
+    if n_envs is None:
+        return gs_mod.init(backend=backend)
+    try:
+        return gs_mod.init(backend=backend, n_envs=int(n_envs))
+    except TypeError as exc:
+        if _kwarg_not_supported(exc, "n_envs"):
+            return gs_mod.init(backend=backend)
+        raise
+
+
+def create_scene_compat(gs_mod, *, n_envs: Optional[int] = None, **scene_kwargs):
+    """Create a Scene, using n_envs only when supported by this version."""
+    if n_envs is None:
+        return gs_mod.Scene(**scene_kwargs)
+    try:
+        return gs_mod.Scene(n_envs=int(n_envs), **scene_kwargs)
+    except TypeError as exc:
+        if _kwarg_not_supported(exc, "n_envs"):
+            return gs_mod.Scene(**scene_kwargs)
+        raise
+
 # ── STEP 2: Parameter block ────────────────────────────────────────────────────  # parameters section
 # ── Input ──────────────────────────────────────────────────────────────────  # input settings
-PARTICLE_FILE        = "particle.obj"   # OBJ or STL path
+PARTICLE_FILE        = "Star600M.obj"   # OBJ or STL path
 N_PARTICLES          = 50               # number of particle copies to drop
 SCALE_FACTOR         = 1.0             # 0.001 converts mm mesh → metres
 # ── Material ───────────────────────────────────────────────────────────────  # material settings
@@ -96,8 +129,8 @@ SYRINGE_BARREL_DIAMETER = 0.20         # m — large tube inner diameter
 SYRINGE_BARREL_LENGTH = 0.30           # m — large tube inner length
 SYRINGE_NEEDLE_DIAMETER = 0.04         # m — outlet hole / needle inner diameter
 SYRINGE_NEEDLE_LENGTH = 0.20           # m — small tube inner length below the barrel
-SYRINGE_WALL_THICKNESS = 0.001         # m — syringe tube wall thickness (barrel + needle)
-SYRINGE_BOTTOM_THICKNESS = 0.001       # m — annulus slab thickness at barrel/needle junction
+SYRINGE_WALL_THICKNESS = 0.003         # m — syringe tube wall thickness (barrel + needle)
+SYRINGE_BOTTOM_THICKNESS = 0.003       # m — annulus slab thickness at barrel/needle junction
 SYRINGE_PLATE_GAP = 0.01               # m — visual/placement gap between needle tip and plate top
 SYRINGE_SEGMENTS = 32                  # wall facets for barrel/needle/hole rings
 # Rim height for ENVIRONMENT_TYPE="plate" — keeps particles on the plate (0 = flat open plate).
@@ -122,7 +155,7 @@ SHOW_VIEWER          = False
 # ── Contact analysis ───────────────────────────────────────────────────────  # contact analysis settings
 CONTACT_SAMPLE_EVERY = 20              # legacy doc alignment: prefer CONTACT_EXTRACT_FALLING_EVERY for live runs
 # During fast motion, skip scene.get_contacts() most steps (see extract_contacts_resampled).
-CONTACT_EXTRACT_FALLING_EVERY = 20
+CONTACT_EXTRACT_FALLING_EVERY = 60
 CONTACT_DEPTH_TOL    = 5e-5            # min penetration depth to count as contact
 STRESS_FLOOR         = 0.05            # normalized intensities below this are clamped to 0 (kills noise on non-touching particles)
 # STRESS_SIGMA: fraction of mesh characteristic radius used as local-space Gaussian width.
@@ -203,7 +236,7 @@ def make_rigid_options(gs_mod, _cfg: Optional[dict] = None):
     Rigid solver options for mesh particles against fixed box/cylinder containers.
 
     `box_box_detection` improves box–box contact; stiffer `constraint_timeconst` reduces penetration.
-    Increased `iterations` (300) reduces residual penetration for dense concave multi-hull packing.
+    Increased `iterations` (80) reduces residual penetration for dense concave multi-hull packing.
     Tighter `constraint_timeconst` (0.001) shrinks per-step penetration residual before it accumulates.
     With compound-hull collision proxies the solver sees accurate geometry, so tighter settings
     converge cleanly without instability.
@@ -212,7 +245,7 @@ def make_rigid_options(gs_mod, _cfg: Optional[dict] = None):
     return g.RigidOptions(
         use_gjk_collision=True,
         box_box_detection=True,
-        iterations=300,
+        iterations=80,
         constraint_timeconst=0.001,
     )
 
@@ -251,6 +284,7 @@ def restore_fem_entities(entities, snapshots: list[dict]) -> None:
 DEFAULT_CONFIG = {
     "PARTICLE_FILE": PARTICLE_FILE,
     "N_PARTICLES": N_PARTICLES,
+    "N_ENVS": N_ENVS,
     "SCALE_FACTOR": SCALE_FACTOR,
     "FEM_JAMMING_E_MAX": FEM_JAMMING_E_MAX,
     "YOUNGS_MODULUS": YOUNGS_MODULUS,
@@ -301,7 +335,7 @@ DEFAULT_CONFIG = {
     "STRESS_FLOOR": 0.05,  # clamp post-normalization noise below this to 0.0 (kills ghost gradients on non-touching particles)
     # When True: rebuild scene repeatedly — simulate k particles, snapshot FEM state, add one more at the drop height.
     # Disables analytical handoff in the server (stages conflict with mid-run scene rebuilds).
-    "SEQUENTIAL_DROP": True,
+    "SEQUENTIAL_DROP": False,
     # Max simulated time per staging step (s). None → max(SIM_DURATION / N_PARTICLES, 0.25).
     "SEQUENTIAL_STAGE_DURATION": None,
 }
@@ -315,6 +349,7 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
             cfg[key] = raw[key]
 
     cfg["N_PARTICLES"] = int(cfg["N_PARTICLES"])
+    cfg["N_ENVS"] = max(1, int(cfg.get("N_ENVS", N_ENVS)))
     cfg["FEM_JAMMING_E_MAX"] = float(cfg["FEM_JAMMING_E_MAX"])
     cfg["YOUNGS_MODULUS"] = float(cfg["YOUNGS_MODULUS"])
     # Clamp to FEM band only when staying in FEM/MPM (E ≤ 1e8). Larger E selects rigid particles in spawn_particles.
@@ -334,10 +369,20 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["SYRINGE_NEEDLE_LENGTH"] = float(cfg.get("SYRINGE_NEEDLE_LENGTH", SYRINGE_NEEDLE_LENGTH))
     raw_wall_t = max(1e-6, float(cfg.get("SYRINGE_WALL_THICKNESS", SYRINGE_WALL_THICKNESS)))
     raw_bottom_t = max(1e-6, float(cfg.get("SYRINGE_BOTTOM_THICKNESS", SYRINGE_BOTTOM_THICKNESS)))
-    # Very thin mesh-collider shells (sub-mm) are prone to tunneling at practical dt/substeps.
-    # Keep a physically stable collision thickness floor for containment.
-    min_wall_t = 1.0e-3
-    min_bottom_t = 1.5e-3
+    # Use a geometry-scaled floor so small syringes are not forced to chunky 3 mm walls.
+    syringe_scale = max(
+        1e-6,
+        min(
+            float(cfg["SYRINGE_BARREL_DIAMETER"]),
+            float(cfg["SYRINGE_NEEDLE_DIAMETER"]),
+            float(cfg["SYRINGE_BARREL_LENGTH"]),
+            float(cfg["SYRINGE_NEEDLE_LENGTH"]),
+        ),
+    )
+    min_wall_t = max(5.0e-5, 0.005 * syringe_scale)
+    # Bottom slab floor is deliberately thicker than the side walls: the floor carries the full
+    # weight of all stacked particles and tunneling through it is the dominant failure mode.
+    min_bottom_t = max(5.0e-5, 0.015 * syringe_scale)
     cfg["SYRINGE_WALL_THICKNESS"] = max(raw_wall_t, min_wall_t)
     cfg["SYRINGE_BOTTOM_THICKNESS"] = max(raw_bottom_t, min_bottom_t)
     cfg["SYRINGE_PLATE_GAP"] = max(0.0, float(cfg.get("SYRINGE_PLATE_GAP", SYRINGE_PLATE_GAP)))
@@ -361,9 +406,10 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["ANALYTICAL_VEL_THRESHOLD"] = float(cfg.get("ANALYTICAL_VEL_THRESHOLD", 0.1))
     cfg["DT"] = float(cfg["DT"])
     cfg["SUBSTEPS"] = int(cfg["SUBSTEPS"])
-    if raw_wall_t < min_wall_t or raw_bottom_t < min_bottom_t:
-        # Extra substeps reduce rigid-body tunneling against thin curved colliders.
-        cfg["SUBSTEPS"] = max(cfg["SUBSTEPS"], 12)
+    # The syringe always has thin curved mesh colliders; always require at least 16 substeps
+    # so the per-substep dt is short enough for the constraint solver to resolve contacts
+    # before penetration accumulates into tunneling through the annulus floor.
+    cfg["SUBSTEPS"] = max(cfg["SUBSTEPS"], 16)
     cfg["SIM_DURATION"] = float(cfg["SIM_DURATION"])
     cfg["SETTLE_THRESHOLD"] = float(cfg["SETTLE_THRESHOLD"])
     _grav = cfg.get("GRAVITY", GRAVITY)
@@ -644,6 +690,31 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
         top_y = t + rim_h
         s = float(cfg.get("PLATE_SIZE", PLATE_SIZE))
         half_s = 0.5 * s
+        # Syringe overlay analytical bounds (always present in plate mode).
+        barrel_r = 0.5 * float(cfg.get("SYRINGE_BARREL_DIAMETER", SYRINGE_BARREL_DIAMETER))
+        needle_r = 0.5 * float(cfg.get("SYRINGE_NEEDLE_DIAMETER", SYRINGE_NEEDLE_DIAMETER))
+        barrel_h = float(cfg.get("SYRINGE_BARREL_LENGTH", SYRINGE_BARREL_LENGTH))
+        needle_h = float(cfg.get("SYRINGE_NEEDLE_LENGTH", SYRINGE_NEEDLE_LENGTH))
+        gap = max(0.0, float(cfg.get("SYRINGE_PLATE_GAP", SYRINGE_PLATE_GAP)))
+        # Matches create_environment() syringe placement in plate mode.
+        junction_world_y = t + gap + needle_h
+        needle_tip_world_y = t + gap
+        barrel_top_world_y = junction_world_y + barrel_h
+        barrel_interior_r = max(barrel_r - eps, eps)
+        needle_interior_r = max(needle_r - eps, eps)
+        # Analytical floor: particles in the barrel cannot descend below the annulus slab top.
+        barrel_floor_y = junction_world_y + eps
+
+        def _project_inside_syringe(x: float, y: float, z: float) -> tuple[float, float]:
+            rr = math.hypot(x, z)
+            if y >= junction_world_y - eps and y <= barrel_top_world_y + eps and rr > barrel_interior_r:
+                sxy = barrel_interior_r / max(rr, 1e-12)
+                return x * sxy, z * sxy
+            if y >= needle_tip_world_y - eps and y <= junction_world_y + eps and rr > needle_interior_r:
+                sxy = needle_interior_r / max(rr, 1e-12)
+                return x * sxy, z * sxy
+            return x, z
+
         for e in entities:
             name = type(e).__name__
             if name == "FEMEntity":
@@ -661,6 +732,19 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
                         if np.any(in_rim):
                             pos[in_rim, 0] = np.clip(pos[in_rim, 0], -half_s + eps, half_s - eps)
                             pos[in_rim, 2] = np.clip(pos[in_rim, 2], -half_s + eps, half_s - eps)
+                    # Barrel-floor clamp: no vertex inside the barrel XZ radius may go below the annulus top.
+                    in_barrel_r = np.hypot(pos[:, 0], pos[:, 2]) <= barrel_interior_r + eps
+                    in_barrel_y = pos[:, 1] < barrel_floor_y
+                    tunnel_mask = in_barrel_r & in_barrel_y
+                    if np.any(tunnel_mask):
+                        pos[tunnel_mask, 1] = barrel_floor_y
+                    in_syringe = (pos[:, 1] >= needle_tip_world_y - eps) & (pos[:, 1] <= barrel_top_world_y + eps)
+                    if np.any(in_syringe):
+                        idx = np.where(in_syringe)[0]
+                        for ii in idx:
+                            px, pz = _project_inside_syringe(float(pos[ii, 0]), float(pos[ii, 1]), float(pos[ii, 2]))
+                            pos[ii, 0] = px
+                            pos[ii, 2] = pz
                     with _suppress_gs_manual_pose_warnings():
                         e.set_position(pos)
                 except Exception:
@@ -669,6 +753,7 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
                 try:
                     p0, quat = _entity_pose(e)
                     pos = np.asarray(p0, dtype=float).copy()
+                    vel_zeroed = False
                     for _ in range(8):
                         corners = _obb_world_corners(pos, quat, half_ext)
                         min_y = float(np.min(corners[:, 1]))
@@ -699,9 +784,40 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
                                     pos[0] += dx
                                     pos[2] += dz
                                     moved = True
+                        corners = _obb_world_corners(pos, quat, half_ext)
+                        # Barrel-floor clamp: any corner inside barrel radius below the annulus top → push centroid up.
+                        in_barrel_r_c = np.hypot(corners[:, 0], corners[:, 2]) <= barrel_interior_r + eps
+                        in_barrel_y_c = corners[:, 1] < barrel_floor_y
+                        floor_hits = in_barrel_r_c & in_barrel_y_c
+                        if np.any(floor_hits):
+                            worst = float(np.min(corners[floor_hits, 1]))
+                            lift = barrel_floor_y - worst
+                            pos[1] += lift
+                            moved = True
+                            vel_zeroed = True
+                            corners = _obb_world_corners(pos, quat, half_ext)
+                        syringe_sel = (corners[:, 1] >= needle_tip_world_y - eps) & (corners[:, 1] <= barrel_top_world_y + eps)
+                        if np.any(syringe_sel):
+                            cr = corners[syringe_sel]
+                            push_x = 0.0
+                            push_z = 0.0
+                            for c in cr:
+                                cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
+                                rr = math.hypot(cx, cz)
+                                limit = barrel_interior_r if (cy >= junction_world_y - eps) else needle_interior_r
+                                if rr > limit:
+                                    extra = rr - limit
+                                    push_x += -(cx / max(rr, 1e-12)) * extra
+                                    push_z += -(cz / max(rr, 1e-12)) * extra
+                            if abs(push_x) > 1e-12 or abs(push_z) > 1e-12:
+                                denom = max(1, int(cr.shape[0]))
+                                pos[0] += push_x / denom
+                                pos[2] += push_z / denom
+                                moved = True
                         if not moved:
                             break
-                    e.set_pos(pos, zero_velocity=False)
+                    # Kill downward velocity to prevent re-tunneling on the next step.
+                    e.set_pos(pos, zero_velocity=vel_zeroed)
                 except Exception:
                     pass
         return
@@ -2861,11 +2977,12 @@ def main():
         backend = gs.gpu
 
     try:
-        gs.init(backend=backend)
+        n_envs = max(1, int(DEFAULT_CONFIG.get("N_ENVS", N_ENVS)))
+        init_genesis_compat(gs, backend=backend, n_envs=n_envs)
     except Exception as e:
         if args.backend in {"auto", "gpu"}:
             print(f"[WARNING] gs.init(GPU) failed, falling back to CPU: {e}")
-            gs.init(backend=gs.cpu)
+            init_genesis_compat(gs, backend=gs.cpu, n_envs=n_envs)
         else:
             raise
 
@@ -2878,11 +2995,13 @@ def main():
 
     # Avoid building the visualizer unless explicitly requested.
     # This prevents the viewer from throttling the run (e.g., ~0.1 FPS on CPU).
-    scene = gs.Scene(
+    scene = create_scene_compat(
+        gs,
         sim_options=sim_options,
         rigid_options=rigid_options,
         fem_options=fem_options,
         show_viewer=bool(args.show_viewer),
+        n_envs=n_envs,
     )
 
     physics_mesh, original_mesh, coacd_proxy_file, physics_norm = load_particle_mesh(PARTICLE_FILE, SCALE_FACTOR)
