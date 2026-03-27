@@ -399,11 +399,20 @@ class SimulationRuntime:
         rigid_options = simulation.make_rigid_options(simulation.gs, cfg)
         # Explicit FEM at E~1e8 Pa is unstable at typical dt; Genesis recommends implicit FEM.
         fem_options = simulation.make_fem_options(simulation.gs, cfg)
+        mpm_options = simulation.make_mpm_options(simulation.gs, cfg)
+        _gopts = getattr(simulation.gs, "options", simulation.gs)
+        _MPMOptions = getattr(_gopts, "MPMOptions", None)
+        if _MPMOptions is not None:
+            mpm_options = _MPMOptions(
+                lower_bound=(-0.5, -0.1, -0.5),
+                upper_bound=(0.5, 2.5, 0.5),
+            )
         self.scene = simulation.create_scene_compat(
             simulation.gs,
             sim_options=sim_options,
             rigid_options=rigid_options,
             fem_options=fem_options,
+            mpm_options=mpm_options,
             show_viewer=False,
             n_envs=max(1, int(cfg.get("N_ENVS", getattr(simulation, "N_ENVS", 1)))),
         )
@@ -1091,6 +1100,7 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
 
         duration = float(cfg["SIM_DURATION"])
         settle_threshold = float(cfg["SETTLE_THRESHOLD"])
+        stop_on_settle = bool(cfg.get("STOP_ON_SETTLE", False))
         depth_tol = float(cfg_run["CONTACT_DEPTH_TOL"])
         vel_threshold = float(cfg.get("ANALYTICAL_VEL_THRESHOLD", 0.1))
         LATEST_Z_HISTORY = []
@@ -1202,19 +1212,24 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
             need_contacts = (frame_step_idx % live_metrics_every == 0) or (
                 frame_step_idx % frame_every == 0
             )
+            contacts_snapshot = []
             if need_contacts:
-                contacts_snapshot = simulation.extract_contacts_resampled(
-                    RUNTIME.scene,
-                    particle_ids,
-                    container_ids,
-                    depth_tol,
-                    sim_step=frame_step_idx,
-                    max_vel=max_vel,
-                    settle_threshold=settle_threshold,
-                    falling_every=falling_contact_stride,
-                    cache=contact_cache,
-                    force_skip=skip,
-                )
+                try:
+                    contacts_snapshot = simulation.extract_contacts_resampled(
+                        RUNTIME.scene,
+                        particle_ids,
+                        container_ids,
+                        depth_tol,
+                        sim_step=frame_step_idx,
+                        max_vel=max_vel,
+                        settle_threshold=settle_threshold,
+                        falling_every=falling_contact_stride,
+                        cache=contact_cache,
+                        force_skip=skip,
+                    )
+                except Exception as e:
+                    logger.warning("Contact extraction skipped for MPM: %s", e)
+                    contacts_snapshot = []
 
             if frame_step_idx % live_metrics_every == 0:
                 lm = simulation.calculate_live_metrics(
@@ -1271,7 +1286,7 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
             if (phase_step % log_every == 0) or (phase_step == phase_len - 1):
                 sync_q.put({"type": "log", "line": f"t={t_now:.2f}s phase_step={phase_step + 1}/{phase_len}"})
 
-            if max_vel is not None and max_vel < settle_threshold:
+            if stop_on_settle and max_vel is not None and max_vel < settle_threshold:
                 sync_q.put({"type": "log", "line": f"Settled at t={t_now:.2f}s"})
                 return True
 

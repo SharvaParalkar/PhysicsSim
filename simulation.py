@@ -1,4 +1,4 @@
-import os, math
+import os, math, inspect
 import argparse
 import logging
 import sys
@@ -92,15 +92,24 @@ def init_genesis_compat(gs_mod, backend, n_envs: Optional[int] = None):
 
 
 def create_scene_compat(gs_mod, *, n_envs: Optional[int] = None, **scene_kwargs):
-    """Create a Scene, using n_envs only when supported by this version."""
-    if n_envs is None:
-        return gs_mod.Scene(**scene_kwargs)
-    try:
-        return gs_mod.Scene(n_envs=int(n_envs), **scene_kwargs)
-    except TypeError as exc:
-        if _kwarg_not_supported(exc, "n_envs"):
-            return gs_mod.Scene(**scene_kwargs)
-        raise
+    """Create a Scene with backward-compatible kwarg fallbacks."""
+    kwargs = dict(scene_kwargs)
+    if n_envs is not None:
+        kwargs["n_envs"] = int(n_envs)
+
+    while True:
+        try:
+            return gs_mod.Scene(**kwargs)
+        except TypeError as exc:
+            removed = False
+            for kw in ("n_envs", "mpm_options"):
+                if kw in kwargs and _kwarg_not_supported(exc, kw):
+                    kwargs.pop(kw, None)
+                    removed = True
+                    break
+            if removed:
+                continue
+            raise
 
 # ── STEP 2: Parameter block ────────────────────────────────────────────────────  # parameters section
 # ── Input ──────────────────────────────────────────────────────────────────  # input settings
@@ -231,6 +240,18 @@ def make_fem_options(gs_mod, cfg: dict):
     )
 
 
+def make_mpm_options(gs_mod, _cfg: Optional[dict] = None):
+    """Build `gs.options.MPMOptions` with defaults when available."""
+    g = getattr(gs_mod, "options", gs_mod)
+    MPMOptions = getattr(g, "MPMOptions", None)
+    if MPMOptions is None:
+        return None
+    try:
+        return MPMOptions()
+    except TypeError:
+        return None
+
+
 def make_rigid_options(gs_mod, _cfg: Optional[dict] = None):
     """
     Rigid solver options for mesh particles against fixed box/cylinder containers.
@@ -326,6 +347,9 @@ DEFAULT_CONFIG = {
     "SUBSTEPS": ThroughputSimTuning.substeps,
     "SIM_DURATION": SIM_DURATION,
     "SETTLE_THRESHOLD": SETTLE_THRESHOLD,
+    # Server/UI default: run full duration; do not stop early when "settled".
+    # (The CLI can still set this True via payload/config if desired.)
+    "STOP_ON_SETTLE": False,
     "CONTACT_EXTRACT_FALLING_EVERY": CONTACT_EXTRACT_FALLING_EVERY,
     "CONTACT_DEPTH_TOL": CONTACT_DEPTH_TOL,
     "OUTPUT_DIR": OUTPUT_DIR,
@@ -412,6 +436,7 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["SUBSTEPS"] = max(cfg["SUBSTEPS"], 16)
     cfg["SIM_DURATION"] = float(cfg["SIM_DURATION"])
     cfg["SETTLE_THRESHOLD"] = float(cfg["SETTLE_THRESHOLD"])
+    cfg["STOP_ON_SETTLE"] = bool(cfg.get("STOP_ON_SETTLE", False))
     _grav = cfg.get("GRAVITY", GRAVITY)
     if isinstance(_grav, (list, tuple)) and len(_grav) == 3:
         cfg["GRAVITY"] = tuple(float(x) for x in _grav)
@@ -702,11 +727,10 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
         barrel_top_world_y = junction_world_y + barrel_h
         barrel_interior_r = max(barrel_r - eps, eps)
         needle_interior_r = max(needle_r - eps, eps)
-        # Analytical floor matches the Box top surface: junction_world_y + safe_floor_h/2
-        # safe_floor_h = max(t_bottom, barrel_r * 0.15), mirroring create_environment.
+        # Analytical floor matches the visual annulus top face: junction_world_y + t_bottom/2.
+        # This aligns with the 4-piece frame layout in create_environment (plate mode).
         t_bottom_cfg = max(1e-6, float(cfg.get("SYRINGE_BOTTOM_THICKNESS", SYRINGE_BOTTOM_THICKNESS)))
-        safe_floor_h = max(t_bottom_cfg, barrel_r * 0.15)
-        barrel_floor_y = junction_world_y + safe_floor_h * 0.5
+        barrel_floor_y = junction_world_y + t_bottom_cfg * 0.5
 
         def _project_inside_syringe(x: float, y: float, z: float) -> tuple[float, float]:
             rr = math.hypot(x, z)
@@ -735,10 +759,14 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
                         if np.any(in_rim):
                             pos[in_rim, 0] = np.clip(pos[in_rim, 0], -half_s + eps, half_s - eps)
                             pos[in_rim, 2] = np.clip(pos[in_rim, 2], -half_s + eps, half_s - eps)
-                    # Barrel-floor clamp: no vertex inside the barrel XZ radius may go below the annulus top.
-                    in_barrel_r = np.hypot(pos[:, 0], pos[:, 2]) <= barrel_interior_r + eps
+                    # Barrel-floor clamp: vertices inside barrel radius but outside the
+                    # needle hole may not go below the annulus top face.
+                    # Vertices within the needle hole radius are allowed through.
+                    xz_r = np.hypot(pos[:, 0], pos[:, 2])
+                    in_barrel_r = xz_r <= barrel_interior_r + eps
+                    in_needle_hole = xz_r <= needle_interior_r
                     in_barrel_y = pos[:, 1] < barrel_floor_y
-                    tunnel_mask = in_barrel_r & in_barrel_y
+                    tunnel_mask = in_barrel_r & ~in_needle_hole & in_barrel_y
                     if np.any(tunnel_mask):
                         pos[tunnel_mask, 1] = barrel_floor_y
                     in_syringe = (pos[:, 1] >= needle_tip_world_y - eps) & (pos[:, 1] <= barrel_top_world_y + eps)
@@ -756,7 +784,6 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
                 try:
                     p0, quat = _entity_pose(e)
                     pos = np.asarray(p0, dtype=float).copy()
-                    vel_zeroed = False
                     for _ in range(8):
                         corners = _obb_world_corners(pos, quat, half_ext)
                         min_y = float(np.min(corners[:, 1]))
@@ -788,16 +815,19 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
                                     pos[2] += dz
                                     moved = True
                         corners = _obb_world_corners(pos, quat, half_ext)
-                        # Barrel-floor clamp: any corner inside barrel radius below the annulus top → push centroid up.
-                        in_barrel_r_c = np.hypot(corners[:, 0], corners[:, 2]) <= barrel_interior_r + eps
+                        # Barrel-floor clamp: corners inside barrel radius but outside the
+                        # needle hole and below the annulus top → push centroid up.
+                        # Corners within the needle hole radius are allowed through.
+                        xz_r_c = np.hypot(corners[:, 0], corners[:, 2])
+                        in_barrel_r_c = xz_r_c <= barrel_interior_r + eps
+                        in_needle_hole_c = xz_r_c <= needle_interior_r
                         in_barrel_y_c = corners[:, 1] < barrel_floor_y
-                        floor_hits = in_barrel_r_c & in_barrel_y_c
+                        floor_hits = in_barrel_r_c & ~in_needle_hole_c & in_barrel_y_c
                         if np.any(floor_hits):
                             worst = float(np.min(corners[floor_hits, 1]))
                             lift = barrel_floor_y - worst
                             pos[1] += lift
                             moved = True
-                            vel_zeroed = True
                             corners = _obb_world_corners(pos, quat, half_ext)
                         syringe_sel = (corners[:, 1] >= needle_tip_world_y - eps) & (corners[:, 1] <= barrel_top_world_y + eps)
                         if np.any(syringe_sel):
@@ -819,8 +849,9 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
                                 moved = True
                         if not moved:
                             break
-                    # Kill downward velocity to prevent re-tunneling on the next step.
-                    e.set_pos(pos, zero_velocity=vel_zeroed)
+                    # Never zero velocity here: doing so makes the barrel floor feel "sticky".
+                    # These are geometric post-step corrections; contact response is handled by the solver.
+                    e.set_pos(pos, zero_velocity=False)
                 except Exception:
                     pass
         return
@@ -1048,7 +1079,10 @@ def enforce_particle_separation(
             if ov.shape[0] > 0:
                 oc = np.asarray(original_mesh.centroid, dtype=float)
                 dists = np.linalg.norm(ov - oc, axis=1)
-                r_in = float(np.percentile(dists, 10))
+                if len(dists) > 10:
+                    r_in = float(np.percentile(dists, 10))
+                else:
+                    r_in = char * 0.4
                 if r_in > 1e-9:
                     min_sep = r_in * 1.7
         except Exception:
@@ -1558,23 +1592,50 @@ def create_environment(
         )
         container_ids.add(barrel)
 
-        # Barrel floor: a solid Box primitive, identical in principle to the plate.
+        # Barrel floor: four Box primitives forming a frame around the needle hole.
+        # Leaving the central needle-radius hole open lets particles small enough to
+        # fit the needle tube flow through, matching the visual annulus geometry.
         # Box SDF contact detection is bulletproof — particles cannot tunnel through it
         # the way they can through thin OBJ mesh colliders.
         # Minimum safe thickness: at least 15% of barrel radius so a particle falling
-        # the full barrel height cannot traverse the box in a single substep.
+        # the full barrel height cannot traverse a box in a single substep.
         safe_floor_h = max(t_bottom, barrel_r * 0.15)
-        annulus_box_side = (barrel_r + t_wall) * 2.0
-        annulus_box_center_y = syringe_lift_y + junction_y_local + safe_floor_h * 0.5 - t_bottom * 0.5
-        annulus = scene.add_entity(
-            gs.morphs.Box(
-                size=(annulus_box_side, safe_floor_h, annulus_box_side),
-                pos=(0.0, annulus_box_center_y, 0.0),
-                fixed=True,
-            ),
-            material=mat,
-        )
-        container_ids.add(annulus)
+        # Box tops are aligned with the visual annulus top face (junction + t_bottom/2)
+        # so particles visually rest at the barrel floor, not above it.
+        floor_top_y = syringe_lift_y + junction_y_local + t_bottom * 0.5
+        annulus_box_center_y = floor_top_y - safe_floor_h * 0.5
+        barrel_r_total = barrel_r + t_wall
+        hole_r = needle_r  # square-hole approximation of circular needle opening
+
+        # Left / Right pieces: flank the needle hole in X.
+        lr_w = barrel_r_total - hole_r
+        lr_d = barrel_r_total * 2.0
+        lr_x = (barrel_r_total + hole_r) * 0.5
+        for sx in (1.0, -1.0):
+            piece = scene.add_entity(
+                gs.morphs.Box(
+                    size=(lr_w, safe_floor_h, lr_d),
+                    pos=(sx * lr_x, annulus_box_center_y, 0.0),
+                    fixed=True,
+                ),
+                material=mat,
+            )
+            container_ids.add(piece)
+
+        # Front / Back pieces: complete the frame in Z (centre strip only).
+        fb_w = hole_r * 2.0
+        fb_d = barrel_r_total - hole_r
+        fb_z = (barrel_r_total + hole_r) * 0.5
+        for sz in (1.0, -1.0):
+            piece = scene.add_entity(
+                gs.morphs.Box(
+                    size=(fb_w, safe_floor_h, fb_d),
+                    pos=(0.0, annulus_box_center_y, sz * fb_z),
+                    fixed=True,
+                ),
+                material=mat,
+            )
+            container_ids.add(piece)
 
         needle = scene.add_entity(
             gs.morphs.Mesh(
@@ -1762,33 +1823,28 @@ def spawn_particles(
     coacd_proxy_file: Optional[str] = None,
     physics_norm: float = 1.0,
 ) -> list:
-    E_in = float(E)
-    if E_in > 1e8:
-        print(
-            "Genesis particle solver: Rigid (friction=0.4, restitution=0.0); "
-            f"YOUNGS_MODULUS={E_in:.6g} Pa > 1e8 (FEM/MPM path skipped)"
+    if float(E) > float(e_fem_max):
+        material = _rigid_material(
+            friction=0.55,
+            restitution=float(particle_restitution),
+            rho=float(rho),
         )
-        material = _rigid_material(0.4, 0.0, rho=rho)
     else:
-        E = E_in
-        if E > float(e_fem_max):
-            E = float(e_fem_max)
-        if E > 1e3:
-            try:
-                material = gs.materials.FEM(E=E, nu=nu, rho=rho, use_implicit_solver=True)
-            except TypeError:
-                try:
-                    material = gs.materials.FEM(E=E, nu=nu, rho=rho)
-                except TypeError:
-                    try:
-                        material = gs.materials.FEM.Elastic(E=E, nu=nu, rho=rho, use_implicit_solver=True)
-                    except TypeError:
-                        material = gs.materials.FEM.Elastic(E=E, nu=nu, rho=rho)
-        else:
-            try:
-                material = gs.materials.MPM(E=E, nu=nu, rho=rho)
-            except TypeError:
-                material = gs.materials.MPM.Elastic(E=E, nu=nu, rho=rho)
+        E_eff = min(float(E), float(e_fem_max))
+        elastoplastic_ctor = getattr(gs.materials.MPM, "Elastoplastic", None)
+        if elastoplastic_ctor is None:
+            elastoplastic_ctor = gs.materials.MPM.ElastoPlastic
+
+        material_kwargs = {
+            "E": E_eff,
+            "nu": float(nu),
+            "rho": float(rho),
+            "friction_angle": 30.0,
+            "cohesion": 100.0,
+        }
+        supported = set(inspect.signature(elastoplastic_ctor.__init__).parameters.keys())
+        material_kwargs = {k: v for k, v in material_kwargs.items() if k in supported}
+        material = elastoplastic_ctor(**material_kwargs)
 
     extents = physics_mesh.bounds[1] - physics_mesh.bounds[0]
     spawn_y0 = float(env_info["top_y"] + drop_height)
@@ -3002,6 +3058,14 @@ def main():
     )
     rigid_options = make_rigid_options(gs)
     fem_options = make_fem_options(gs, {"FEM_NEWTON_ITERATIONS": int(DEFAULT_CONFIG.get("FEM_NEWTON_ITERATIONS", 4))})
+    mpm_options = make_mpm_options(gs)
+    g_opts = getattr(gs, "options", gs)
+    MPMOptions = getattr(g_opts, "MPMOptions", None)
+    if MPMOptions is not None:
+        mpm_options = MPMOptions(
+            lower_bound=(-0.5, -0.1, -0.5),
+            upper_bound=(0.5, 2.5, 0.5),
+        )
 
     # Avoid building the visualizer unless explicitly requested.
     # This prevents the viewer from throttling the run (e.g., ~0.1 FPS on CPU).
@@ -3010,6 +3074,7 @@ def main():
         sim_options=sim_options,
         rigid_options=rigid_options,
         fem_options=fem_options,
+        mpm_options=mpm_options,
         show_viewer=bool(args.show_viewer),
         n_envs=n_envs,
     )
