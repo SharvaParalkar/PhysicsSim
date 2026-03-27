@@ -26,7 +26,7 @@ except Exception:
 
 # Default Genesis backend for `python simulation.py`, `server.py`, and GENESIS_USE_CPU.
 # "auto" → prefer GPU; "cpu" / "gpu" force that backend unless GENESIS_USE_CPU=0|1 overrides.
-BACKEND = "cpu"
+BACKEND = "auto"
 
 # Optional: hide CUDA before importing Torch when the effective backend is CPU.
 _cli_backend = None
@@ -85,7 +85,7 @@ DENSITY              = 1200            # kg/m³
 PARTICLE_RESTITUTION = 0.0             # particle–contact bounciness (was 0.2)
 ENV_RESTITUTION      = 0.0             # floor/walls (was 0.05)
 # ── Environment ────────────────────────────────────────────────────────────  # environment settings
-ENVIRONMENT_TYPE     = "plate"      # "cylinder", "plate", or "syringe"
+ENVIRONMENT_TYPE     = "plate"      # Fixed: always plate + syringe overlay
 PLATE_SIZE           = 0.25            # square plate side length (m)
 CYLINDER_DIAMETER    = 0.20            # inner diameter (m)
 CYLINDER_HEIGHT      = 0.30            # wall height (m)
@@ -103,7 +103,7 @@ SYRINGE_SEGMENTS = 32                  # wall facets for barrel/needle/hole ring
 # Rim height for ENVIRONMENT_TYPE="plate" — keeps particles on the plate (0 = flat open plate).
 PLATE_WALL_HEIGHT    = 0.15            # m — vertical walls along the square perimeter
 # ── Drop ───────────────────────────────────────────────────────────────────  # drop settings
-DROP_HEIGHT          = 0.05            # metres above container top edge (plate / cylinder rim)
+DROP_HEIGHT          = 0.15            # overridden at runtime to 0.5 * SYRINGE_BARREL_LENGTH
 # 0 = stack all particles in a vertical column at (0, ·, 0); >0 = Vogel disk on XZ up to this fraction of spread radius
 DROP_SPREAD          = 0.5
 # ── Gravity ────────────────────────────────────────────────────────────────  # gravity settings
@@ -332,11 +332,21 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["SYRINGE_BARREL_LENGTH"] = float(cfg.get("SYRINGE_BARREL_LENGTH", SYRINGE_BARREL_LENGTH))
     cfg["SYRINGE_NEEDLE_DIAMETER"] = float(cfg.get("SYRINGE_NEEDLE_DIAMETER", SYRINGE_NEEDLE_DIAMETER))
     cfg["SYRINGE_NEEDLE_LENGTH"] = float(cfg.get("SYRINGE_NEEDLE_LENGTH", SYRINGE_NEEDLE_LENGTH))
-    cfg["SYRINGE_WALL_THICKNESS"] = max(1e-6, float(cfg.get("SYRINGE_WALL_THICKNESS", SYRINGE_WALL_THICKNESS)))
-    cfg["SYRINGE_BOTTOM_THICKNESS"] = max(1e-6, float(cfg.get("SYRINGE_BOTTOM_THICKNESS", SYRINGE_BOTTOM_THICKNESS)))
+    raw_wall_t = max(1e-6, float(cfg.get("SYRINGE_WALL_THICKNESS", SYRINGE_WALL_THICKNESS)))
+    raw_bottom_t = max(1e-6, float(cfg.get("SYRINGE_BOTTOM_THICKNESS", SYRINGE_BOTTOM_THICKNESS)))
+    # Very thin mesh-collider shells (sub-mm) are prone to tunneling at practical dt/substeps.
+    # Keep a physically stable collision thickness floor for containment.
+    min_wall_t = 1.0e-3
+    min_bottom_t = 1.5e-3
+    cfg["SYRINGE_WALL_THICKNESS"] = max(raw_wall_t, min_wall_t)
+    cfg["SYRINGE_BOTTOM_THICKNESS"] = max(raw_bottom_t, min_bottom_t)
     cfg["SYRINGE_PLATE_GAP"] = max(0.0, float(cfg.get("SYRINGE_PLATE_GAP", SYRINGE_PLATE_GAP)))
     cfg["SYRINGE_SEGMENTS"] = max(8, int(cfg.get("SYRINGE_SEGMENTS", SYRINGE_SEGMENTS)))
-    cfg["DROP_HEIGHT"] = float(cfg["DROP_HEIGHT"])
+    # Single supported container mode: flat plate + syringe. Ignore external environment selection.
+    cfg["ENVIRONMENT_TYPE"] = "plate"
+    # Spawn height is defined relative to syringe top:
+    # y_spawn = syringe_top_y - 0.5 * syringe_barrel_length (middle of barrel, inside tube)
+    cfg["DROP_HEIGHT"] = -0.5 * float(cfg["SYRINGE_BARREL_LENGTH"])
     cfg["DROP_SPREAD"] = float(cfg["DROP_SPREAD"])
     cfg["PLATE_WALL_HEIGHT"] = float(cfg.get("PLATE_WALL_HEIGHT", PLATE_WALL_HEIGHT))
     cfg["PLATE_SIZE"] = float(cfg.get("PLATE_SIZE", PLATE_SIZE))
@@ -351,6 +361,9 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["ANALYTICAL_VEL_THRESHOLD"] = float(cfg.get("ANALYTICAL_VEL_THRESHOLD", 0.1))
     cfg["DT"] = float(cfg["DT"])
     cfg["SUBSTEPS"] = int(cfg["SUBSTEPS"])
+    if raw_wall_t < min_wall_t or raw_bottom_t < min_bottom_t:
+        # Extra substeps reduce rigid-body tunneling against thin curved colliders.
+        cfg["SUBSTEPS"] = max(cfg["SUBSTEPS"], 12)
     cfg["SIM_DURATION"] = float(cfg["SIM_DURATION"])
     cfg["SETTLE_THRESHOLD"] = float(cfg["SETTLE_THRESHOLD"])
     _grav = cfg.get("GRAVITY", GRAVITY)
@@ -362,7 +375,7 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["SEQUENTIAL_DROP"] = bool(cfg.get("SEQUENTIAL_DROP", False))
     _ssd = cfg.get("SEQUENTIAL_STAGE_DURATION", None)
     cfg["SEQUENTIAL_STAGE_DURATION"] = None if _ssd is None else float(_ssd)
-    cfg["ENVIRONMENT_TYPE"] = str(cfg["ENVIRONMENT_TYPE"]).strip().lower()
+    cfg["ENVIRONMENT_TYPE"] = "plate"
     # Jamming / packed FEM: implicit stepper is required at high E; do not allow config to disable it.
     cfg["FEM_USE_IMPLICIT"] = True
     return cfg
@@ -773,6 +786,9 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
         barrel_y_max = junction_y + barrel_h
         needle_y_min = junction_y - needle_h
         needle_y_max = junction_y
+        # Hard floor at the needle outlet plane. The tip-cap collider sits below this
+        # plane, so any vertex/corner that numerically tunnels through is projected up.
+        cap_floor_y = needle_y_min + eps
         for e in entities:
             name = type(e).__name__
             if name == "FEMEntity":
@@ -784,6 +800,11 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
                     if pos.ndim != 2 or pos.shape[-1] != 3:
                         continue
                     pos = np.ascontiguousarray(pos)
+                    inside_needle_radius = (np.hypot(pos[:, 0], pos[:, 2]) <= (needle_r + eps))
+                    below_cap_floor = pos[:, 1] < cap_floor_y
+                    cap_hits = inside_needle_radius & below_cap_floor
+                    if np.any(cap_hits):
+                        pos[cap_hits, 1] = cap_floor_y
                     y = pos[:, 1]
                     in_barrel = (y >= barrel_y_min - eps) & (y <= barrel_y_max + eps)
                     if np.any(in_barrel):
@@ -824,6 +845,11 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
                     for _ in range(8):
                         corners = _obb_world_corners(pos, quat, half_ext)
                         moved = False
+                        min_y = float(np.min(corners[:, 1]))
+                        if min_y < cap_floor_y:
+                            pos[1] += cap_floor_y - min_y
+                            moved = True
+                            corners = _obb_world_corners(pos, quat, half_ext)
                         in_barrel = (corners[:, 1] >= barrel_y_min - eps) & (corners[:, 1] <= barrel_y_max + eps)
                         if np.any(in_barrel):
                             cr = corners[in_barrel]
@@ -1295,6 +1321,7 @@ def create_environment(
     syringe_needle_length: float = SYRINGE_NEEDLE_LENGTH,
     syringe_wall_thickness: float = SYRINGE_WALL_THICKNESS,
     syringe_bottom_thickness: float = SYRINGE_BOTTOM_THICKNESS,
+    syringe_plate_gap: float = SYRINGE_PLATE_GAP,
     syringe_segments: int = SYRINGE_SEGMENTS,
 ) -> tuple[set, dict]:
     container_ids = set()
@@ -1339,10 +1366,123 @@ def create_environment(
             top_y = t + h_rim
         else:
             top_y = t
+        # Always include syringe geometry above the plate so particles can spawn/load into it.
+        t_wall = max(1e-6, float(syringe_wall_thickness))
+        t_bottom = max(1e-6, float(syringe_bottom_thickness))
+        barrel_d = float(syringe_barrel_diameter)
+        barrel_h = float(syringe_barrel_length)
+        needle_d = float(syringe_needle_diameter)
+        needle_h = float(syringe_needle_length)
+        seg = max(8, int(syringe_segments))
+        gap = max(0.0, float(syringe_plate_gap))
+        if needle_d >= barrel_d:
+            raise ValueError(
+                f"Syringe requires needle diameter < barrel diameter, got {needle_d} >= {barrel_d}"
+            )
+
+        barrel_r = 0.5 * barrel_d
+        needle_r = 0.5 * needle_d
+        key = (
+            f"dB{barrel_d:.9f}_hB{barrel_h:.9f}_dN{needle_d:.9f}_hN{needle_h:.9f}_"
+            f"tw{t_wall:.9f}_tb{t_bottom:.9f}_gap{gap:.9f}_n{seg}"
+        )
+        barrel_path = _container_mesh_proxy_path("syringe_barrel", key)
+        annulus_path = _container_mesh_proxy_path("syringe_annulus", key)
+        needle_path = _container_mesh_proxy_path("syringe_needle", key)
+        tip_cap_path = _container_mesh_proxy_path("syringe_tip_cap", key)
+
+        _write_open_tube_obj(
+            barrel_path,
+            inner_radius=barrel_r,
+            wall_thickness=t_wall,
+            height=barrel_h,
+            segments=seg,
+        )
+        _write_annulus_slab_obj(
+            annulus_path,
+            inner_radius=needle_r,
+            outer_radius=barrel_r,
+            thickness=t_bottom,
+            segments=seg,
+        )
+        _write_open_tube_obj(
+            needle_path,
+            inner_radius=needle_r,
+            wall_thickness=t_wall,
+            height=needle_h,
+            segments=seg,
+        )
+        # Seal the needle outlet so particles remain contained in the syringe.
+        _write_annulus_slab_obj(
+            tip_cap_path,
+            inner_radius=0.0,
+            outer_radius=needle_r,
+            thickness=t_bottom,
+            segments=seg,
+        )
+        # Lift syringe so needle tip sits at plate_top + gap.
+        junction_y_local = t_bottom * 0.5
+        needle_tip_local_y = junction_y_local - needle_h
+        syringe_lift_y = t + gap - needle_tip_local_y
+
+        barrel = scene.add_entity(
+            gs.morphs.Mesh(
+                file=barrel_path,
+                scale=1.0,
+                pos=(0.0, syringe_lift_y + junction_y_local + barrel_h / 2.0, 0.0),
+                fixed=True,
+                convexify=False,
+                collision=True,
+                visualization=False,
+            ),
+            material=mat,
+        )
+        container_ids.add(barrel)
+        annulus = scene.add_entity(
+            gs.morphs.Mesh(
+                file=annulus_path,
+                scale=1.0,
+                pos=(0.0, syringe_lift_y + junction_y_local, 0.0),
+                fixed=True,
+                convexify=False,
+                collision=True,
+                visualization=False,
+            ),
+            material=mat,
+        )
+        container_ids.add(annulus)
+        needle = scene.add_entity(
+            gs.morphs.Mesh(
+                file=needle_path,
+                scale=1.0,
+                pos=(0.0, syringe_lift_y + junction_y_local - needle_h / 2.0, 0.0),
+                fixed=True,
+                convexify=False,
+                collision=True,
+                visualization=False,
+            ),
+            material=mat,
+        )
+        container_ids.add(needle)
+        tip_cap = scene.add_entity(
+            gs.morphs.Mesh(
+                file=tip_cap_path,
+                scale=1.0,
+                pos=(0.0, syringe_lift_y + junction_y_local - needle_h - t_bottom / 2.0, 0.0),
+                fixed=True,
+                convexify=False,
+                collision=True,
+                visualization=False,
+            ),
+            material=mat,
+        )
+        container_ids.add(tip_cap)
+
+        syringe_top_y = syringe_lift_y + junction_y_local + barrel_h
         env_info = {
             "surface_y": t,
-            "top_y": top_y,
-            "spread_radius": s / 2,
+            "top_y": max(top_y, syringe_top_y),
+            "spread_radius": barrel_r,
         }
         return (container_ids, env_info)
 
@@ -2762,15 +2902,17 @@ def main():
         syringe_needle_length=SYRINGE_NEEDLE_LENGTH,
         syringe_wall_thickness=SYRINGE_WALL_THICKNESS,
         syringe_bottom_thickness=SYRINGE_BOTTOM_THICKNESS,
+        syringe_plate_gap=SYRINGE_PLATE_GAP,
         syringe_segments=SYRINGE_SEGMENTS,
     )
     container_ids = {_entity_id(e) for e in container_ids}
+    derived_drop_height = -0.5 * float(SYRINGE_BARREL_LENGTH)
     entities = spawn_particles(
         scene,
         physics_mesh,
         args.n,
         env_info,
-        DROP_HEIGHT,
+        derived_drop_height,
         DROP_SPREAD,
         YOUNGS_MODULUS,
         POISSON_RATIO,

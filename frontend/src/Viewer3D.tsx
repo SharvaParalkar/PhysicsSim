@@ -334,6 +334,79 @@ function CameraAutoFit(props: {
   return null
 }
 
+type OrbitTargetMode = 'scene-center' | 'particles-centroid' | 'particle-id'
+
+function OrbitTargetController(props: {
+  controlsRef: MutableRefObject<unknown>
+  liveFrameRef: MutableRefObject<LivePhysicsFrame>
+  defaultTarget: [number, number, number]
+  mode: OrbitTargetMode
+  particleId: number | null
+  lengthScale: number
+}) {
+  const { controlsRef, liveFrameRef, defaultTarget, mode, particleId, lengthScale } = props
+  const targetVec = useRef(new THREE.Vector3(defaultTarget[0], defaultTarget[1], defaultTarget[2]))
+  const nextTargetVec = useRef(new THREE.Vector3(defaultTarget[0], defaultTarget[1], defaultTarget[2]))
+
+  useFrame(() => {
+    const controls = controlsRef.current as { target: THREE.Vector3; update: () => void } | null
+    if (!controls) return
+    // In manual mode, do not force OrbitControls.target every frame:
+    // this keeps panning (especially vertical pan) free.
+    if (mode === 'scene-center') return
+    const frameParticles = liveFrameRef.current.particles ?? []
+    let nextX = defaultTarget[0]
+    let nextY = defaultTarget[1]
+    let nextZ = defaultTarget[2]
+
+    if (mode === 'particles-centroid' && frameParticles.length > 0) {
+      let sx = 0
+      let sy = 0
+      let sz = 0
+      const n = frameParticles.length
+      for (let i = 0; i < n; i++) {
+        const p = frameParticles[i]!
+        sx += p.x
+        sy += p.y
+        sz += p.z
+      }
+      nextX = (sx / n) * lengthScale
+      nextY = (sy / n) * lengthScale
+      nextZ = (sz / n) * lengthScale
+    } else if (mode === 'particle-id' && particleId !== null && Number.isFinite(particleId)) {
+      const pid = Math.trunc(particleId)
+      const p = frameParticles.find((particle) => particle.id === pid)
+      if (p) {
+        nextX = p.x * lengthScale
+        nextY = p.y * lengthScale
+        nextZ = p.z * lengthScale
+      }
+    }
+
+    nextTargetVec.current.set(nextX, nextY, nextZ)
+    targetVec.current.lerp(nextTargetVec.current, 0.2)
+    controls.target.copy(targetVec.current)
+    controls.update()
+  })
+
+  useEffect(() => {
+    targetVec.current.set(defaultTarget[0], defaultTarget[1], defaultTarget[2])
+    nextTargetVec.current.set(defaultTarget[0], defaultTarget[1], defaultTarget[2])
+  }, [defaultTarget])
+
+  useEffect(() => {
+    const controls = controlsRef.current as { target: THREE.Vector3; update: () => void } | null
+    if (!controls) return
+    if (mode !== 'scene-center') return
+    targetVec.current.set(defaultTarget[0], defaultTarget[1], defaultTarget[2])
+    nextTargetVec.current.set(defaultTarget[0], defaultTarget[1], defaultTarget[2])
+    controls.target.copy(targetVec.current)
+    controls.update()
+  }, [controlsRef, defaultTarget, mode])
+
+  return null
+}
+
 function InstancedFemParticles(props: {
   count: number
   radius: number
@@ -881,6 +954,8 @@ function Scene(props: {
   syringeBottomThickness?: number
   syringePlateGap?: number
   syringeSegments?: number
+  orbitTargetMode: OrbitTargetMode
+  orbitParticleId: number | null
 }) {
   const {
     count,
@@ -908,7 +983,11 @@ function Scene(props: {
     syringeBottomThickness = wallThickness,
     syringePlateGap = 0.01,
     syringeSegments = 32,
+    orbitTargetMode,
+    orbitParticleId,
   } = props
+  const controlsRef = useRef<unknown>(null)
+  const defaultOrbitTarget = useMemo<[number, number, number]>(() => [0, wallThickness * lengthScale * 0.35, 0], [wallThickness, lengthScale])
   const py = wallThickness / 2
   const s = plateSize
   const t = wallThickness
@@ -955,7 +1034,15 @@ function Scene(props: {
   return (
     <>
       <color attach="background" args={['#dfeaf7']} />
-      <OrbitControls makeDefault enableDamping dampingFactor={0.08} />
+      <OrbitControls ref={controlsRef} makeDefault enableDamping dampingFactor={0.08} screenSpacePanning />
+      <OrbitTargetController
+        controlsRef={controlsRef}
+        liveFrameRef={liveFrameRef}
+        defaultTarget={defaultOrbitTarget}
+        mode={orbitTargetMode}
+        particleId={orbitParticleId}
+        lengthScale={lengthScale}
+      />
       <group scale={[lengthScale, lengthScale, lengthScale]}>
         <hemisphereLight args={['#f0f7ff', '#9cb4d1', 0.8]} />
         <ambientLight intensity={0.65} />
@@ -995,13 +1082,25 @@ function Scene(props: {
               />
             ) : null}
           </group>
-        ) : (
+        ) : environmentType === 'cylinder' ? (
           <ShallowBasket
             diameter={cylinderDiameter}
             wallThickness={wallThickness}
             height={cylinderHeight}
             segments={cylinderSegments}
             transparent={transparentContainer}
+          />
+        ) : (
+          <SyringePreview
+            plateThickness={0}
+            wallThickness={syringeWallThickness}
+            bottomThickness={syringeBottomThickness}
+            barrelDiameter={syringeBarrelDiameter}
+            barrelLength={syringeBarrelLength}
+            needleDiameter={syringeNeedleDiameter}
+            needleLength={syringeNeedleLength}
+            plateGap={0}
+            segments={syringeSegments}
           />
         )}
         <InstancedFemParticles
@@ -1080,6 +1179,13 @@ export default function Viewer3D(props: Viewer3DProps) {
   } = props
   const [meshVerts, setMeshVerts] = useState<number | null>(null)
   const [sphereFallbackMesh, setSphereFallbackMesh] = useState(false)
+  const [orbitTargetMode, setOrbitTargetMode] = useState<OrbitTargetMode>('scene-center')
+  const [orbitParticleIdText, setOrbitParticleIdText] = useState('0')
+  const orbitParticleId = useMemo(() => {
+    const n = Number(orbitParticleIdText)
+    if (!Number.isFinite(n)) return null
+    return Math.trunc(n)
+  }, [orbitParticleIdText])
   const envSpanMeters = useMemo(() => {
     if (environmentType === 'cylinder') {
       return Math.max(cylinderDiameter, cylinderHeight + wallThickness)
@@ -1173,6 +1279,48 @@ export default function Viewer3D(props: Viewer3DProps) {
           <div style={{ marginTop: 4, color: '#55779f' }}>blue = no contact · red = max stress</div>
         </div>
       ) : null}
+      <div
+        style={{
+          position: 'absolute',
+          top: 10,
+          left: 10,
+          zIndex: 2,
+          background: 'rgba(255,255,255,0.9)',
+          border: '1px solid #d4dfec',
+          borderRadius: 10,
+          padding: '8px 10px',
+          fontSize: 11,
+          color: '#1d3553',
+          boxShadow: '0 4px 12px rgba(20,40,80,0.1)',
+          pointerEvents: 'auto',
+          display: 'grid',
+          gap: 6,
+          minWidth: 190,
+        }}
+      >
+        <div style={{ fontWeight: 700 }}>Orbit around</div>
+        <select
+          value={orbitTargetMode}
+          onChange={(e) => setOrbitTargetMode(e.target.value as OrbitTargetMode)}
+          style={{ border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px', background: '#fff', color: '#1d3553' }}
+        >
+          <option value="scene-center">Scene center</option>
+          <option value="particles-centroid">Particle group center</option>
+          <option value="particle-id">Specific particle ID</option>
+        </select>
+        {orbitTargetMode === 'particle-id' ? (
+          <label style={{ display: 'grid', gap: 4 }}>
+            <span style={{ color: '#55779f' }}>Particle ID</span>
+            <input
+              type="number"
+              step={1}
+              value={orbitParticleIdText}
+              onChange={(e) => setOrbitParticleIdText(e.target.value)}
+              style={{ border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+            />
+          </label>
+        ) : null}
+      </div>
       {settledVertexStress !== null && (sphereFallbackMesh || (meshVerts !== null && meshVerts <= 25)) ? (
         <div
           style={{
@@ -1231,6 +1379,8 @@ export default function Viewer3D(props: Viewer3DProps) {
           syringeBottomThickness={syringeBottomThickness}
           syringePlateGap={syringePlateGap}
           syringeSegments={syringeSegments}
+          orbitTargetMode={orbitTargetMode}
+          orbitParticleId={orbitParticleId}
         />
       </Canvas>
     </div>

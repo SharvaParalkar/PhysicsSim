@@ -32,7 +32,8 @@ export default function Dashboard(props: {
   metrics: MetricsResponse
 }) {
   const { keSeries, pressureSeries, metrics } = props
-  const [open, setOpen] = useState({ ke: true, pressure: true, chains: false })
+  // Default: keep all collapsible panels closed to maximize 3D viewer space.
+  const [open, setOpen] = useState({ ke: false, pressure: false, chains: false })
   const graphRef = useRef<SVGSVGElement | null>(null)
   const links = useMemo(() => normalizeGraphLinks(metrics), [metrics])
   const forceValues = useMemo(() => links.map(getForce).filter((v) => Number.isFinite(v) && v >= 0), [links])

@@ -471,6 +471,7 @@ class SimulationRuntime:
             syringe_needle_length=float(_phys_cfg.get("SYRINGE_NEEDLE_LENGTH", simulation.SYRINGE_NEEDLE_LENGTH)),
             syringe_wall_thickness=float(_phys_cfg.get("SYRINGE_WALL_THICKNESS", simulation.SYRINGE_WALL_THICKNESS)),
             syringe_bottom_thickness=float(_phys_cfg.get("SYRINGE_BOTTOM_THICKNESS", simulation.SYRINGE_BOTTOM_THICKNESS)),
+            syringe_plate_gap=float(_phys_cfg.get("SYRINGE_PLATE_GAP", simulation.SYRINGE_PLATE_GAP)),
             syringe_segments=int(_phys_cfg.get("SYRINGE_SEGMENTS", simulation.SYRINGE_SEGMENTS)),
         )
         self.active_containers = list(containers)
@@ -1110,20 +1111,30 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                 depth_tol = float(RUNTIME._phys_cfg.get("CONTACT_DEPTH_TOL", depth_tol))
 
         dt = float(cfg_run["DT"])
+        use_cpu_backend = _use_cpu_backend()
+        # CPU-side post-step corrections require host<->device sync for each entity.
+        # On GPU this can dominate runtime, so run expensive overlap separation less often.
+        correction_step_idx = 0
+        bounds_every = 1 if use_cpu_backend else 2
+        separation_every = 1 if use_cpu_backend else 4
 
         # Headless: skip per-step visualizer GPU/raster updates (still built at scene.build()).
         # Otherwise each step pays full visualizer.update() cost even with show_viewer=False.
         def _step() -> None:
+            nonlocal correction_step_idx
             RUNTIME.scene.step(update_visualizer=False)
             if RUNTIME.active_entities and RUNTIME.physics_mesh is not None:
                 # Use physics-scale cfg so bounds/separation thresholds match
                 # the normalised world coordinates (e.g. 225 mm plate, not 6 mm).
                 _pc = RUNTIME._phys_cfg if RUNTIME._phys_cfg else cfg_run
-                simulation.enforce_container_bounds(RUNTIME.active_entities, RUNTIME.physics_mesh, _pc)
-                simulation.enforce_particle_separation(
-                    RUNTIME.active_entities, RUNTIME.physics_mesh, _pc,
-                    original_mesh=RUNTIME._original_mesh,
-                )
+                if correction_step_idx % bounds_every == 0:
+                    simulation.enforce_container_bounds(RUNTIME.active_entities, RUNTIME.physics_mesh, _pc)
+                if correction_step_idx % separation_every == 0:
+                    simulation.enforce_particle_separation(
+                        RUNTIME.active_entities, RUNTIME.physics_mesh, _pc,
+                        original_mesh=RUNTIME._original_mesh,
+                    )
+            correction_step_idx += 1
 
         if not sequential:
             # Show spawn poses immediately so the UI is not blank until the first (slow) CPU step.

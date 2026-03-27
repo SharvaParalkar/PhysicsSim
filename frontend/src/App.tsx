@@ -203,7 +203,6 @@ export default function App() {
   const liveFrameRef = useRef<LivePhysicsFrame>({ step: -99999, t: 0, particles: [], serial: 0 })
   const liveFrameSerialRef = useRef(0)
   const pendingStartRef = useRef<string | null>(null)
-  const [transparentContainer, setTransparentContainer] = useState(false)
   const [wsStatus, setWsStatus] = useState<'connecting' | 'open' | 'closed'>(() => {
     const ws = getSharedSimulationSocket()
     if (ws.readyState === WebSocket.OPEN) return 'open'
@@ -400,6 +399,20 @@ export default function App() {
     setScreenshotDataUrl(null)
     setExportData(null)
   }, [runSignal])
+
+  useEffect(() => {
+    // Single supported environment: flat plate + syringe.
+    // Drop height is derived from syringe barrel length.
+    setSimConfig((p) => {
+      const derivedDropHeight = Math.max(0, (p.SYRINGE_BARREL_LENGTH ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_BARREL_LENGTH) * 0.5)
+      if (p.ENVIRONMENT_TYPE === 'plate' && Math.abs(p.DROP_HEIGHT - derivedDropHeight) < 1e-12) return p
+      return {
+        ...p,
+        ENVIRONMENT_TYPE: 'plate',
+        DROP_HEIGHT: derivedDropHeight,
+      }
+    })
+  }, [simConfig.SYRINGE_BARREL_LENGTH])
 
   useEffect(() => {
     if (mode !== 'settled') return
@@ -1001,96 +1014,49 @@ export default function App() {
               </button>
               {sectionOpen.environment ? (
                 <>
+                  <div style={labelStyle}>Container: Flat plate + syringe</div>
                   <label style={labelStyle}>
-                    Container
-                    <select
-                      value={simConfig.ENVIRONMENT_TYPE}
-                      onChange={(e) => {
-                        const v = e.target.value as SimulationConfig['ENVIRONMENT_TYPE']
-                        setSimConfig((p) => ({ ...p, ENVIRONMENT_TYPE: v }))
-                        if (v === 'plate') setTransparentContainer(false)
-                      }}
+                    Plate size ({lengthUnitLabel})
+                    <input
+                      type="number"
+                      step={0.05 / metersPerUnit}
+                      min={0.1 / metersPerUnit}
+                      value={simConfig.PLATE_SIZE / metersPerUnit}
+                      onChange={(e) =>
+                        setSimConfig((p) => ({ ...p, PLATE_SIZE: Number(e.target.value) * metersPerUnit }))
+                      }
                       style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
-                    >
-                      <option value="plate">Flat plate</option>
-                      <option value="cylinder">Cylinder</option>
-                    </select>
+                    />
                   </label>
-                  {simConfig.ENVIRONMENT_TYPE === 'plate' ? (
-                    <>
-                      <label style={labelStyle}>
-                        Plate size ({lengthUnitLabel})
-                        <input
-                          type="number"
-                          step={0.05 / metersPerUnit}
-                          min={0.1 / metersPerUnit}
-                          value={simConfig.PLATE_SIZE / metersPerUnit}
-                          onChange={(e) =>
-                            setSimConfig((p) => ({ ...p, PLATE_SIZE: Number(e.target.value) * metersPerUnit }))
-                          }
-                          style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
-                        />
-                      </label>
-                      <label style={labelStyle}>
-                        Rim wall height ({lengthUnitLabel})
-                        <input
-                          type="number"
-                          step={0.01 / metersPerUnit}
-                          min={0 / metersPerUnit}
-                          value={simConfig.PLATE_WALL_HEIGHT / metersPerUnit}
-                          onChange={(e) =>
-                            setSimConfig((p) => ({ ...p, PLATE_WALL_HEIGHT: Number(e.target.value) * metersPerUnit }))
-                          }
-                          style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
-                        />
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => setShowSyringeOverlay(true)}
-                        style={{
-                          width: '100%',
-                          border: '1px solid #95b4d9',
-                          background: '#edf4fd',
-                          color: '#1d3553',
-                          borderRadius: 8,
-                          padding: '8px 10px',
-                          fontWeight: 700,
-                          cursor: 'pointer',
-                        }}
-                      >
-                        Configure syringe
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <label style={labelStyle}>
-                        Cylinder diameter ({lengthUnitLabel})
-                        <input
-                          type="number"
-                          step={0.01 / metersPerUnit}
-                          min={0.05 / metersPerUnit}
-                          value={simConfig.CYLINDER_DIAMETER / metersPerUnit}
-                          onChange={(e) =>
-                            setSimConfig((p) => ({ ...p, CYLINDER_DIAMETER: Number(e.target.value) * metersPerUnit }))
-                          }
-                          style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
-                        />
-                      </label>
-                      <label style={labelStyle}>
-                        Cylinder height ({lengthUnitLabel})
-                        <input
-                          type="number"
-                          step={0.01 / metersPerUnit}
-                          min={0.01 / metersPerUnit}
-                          value={simConfig.CYLINDER_HEIGHT / metersPerUnit}
-                          onChange={(e) =>
-                            setSimConfig((p) => ({ ...p, CYLINDER_HEIGHT: Number(e.target.value) * metersPerUnit }))
-                          }
-                          style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
-                        />
-                      </label>
-                    </>
-                  )}
+                  <label style={labelStyle}>
+                    Rim wall height ({lengthUnitLabel})
+                    <input
+                      type="number"
+                      step={0.01 / metersPerUnit}
+                      min={0 / metersPerUnit}
+                      value={simConfig.PLATE_WALL_HEIGHT / metersPerUnit}
+                      onChange={(e) =>
+                        setSimConfig((p) => ({ ...p, PLATE_WALL_HEIGHT: Number(e.target.value) * metersPerUnit }))
+                      }
+                      style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setShowSyringeOverlay(true)}
+                    style={{
+                      width: '100%',
+                      border: '1px solid #95b4d9',
+                      background: '#edf4fd',
+                      color: '#1d3553',
+                      borderRadius: 8,
+                      padding: '8px 10px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Configure syringe
+                  </button>
                   <label style={labelStyle}>
                     Wall thickness ({lengthUnitLabel})
                     <input
@@ -1108,12 +1074,10 @@ export default function App() {
                     Drop height ({lengthUnitLabel})
                     <input
                       type="number"
-                      step={0.01 / metersPerUnit}
-                      min={0.01 / metersPerUnit}
+                      step={0.001 / metersPerUnit}
+                      min={0}
                       value={simConfig.DROP_HEIGHT / metersPerUnit}
-                      onChange={(e) =>
-                        setSimConfig((p) => ({ ...p, DROP_HEIGHT: Number(e.target.value) * metersPerUnit }))
-                      }
+                      readOnly
                       style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
                     />
                   </label>
@@ -1422,32 +1386,6 @@ export default function App() {
                   ) : null}
                 </div>
               </div>
-              {simConfig.ENVIRONMENT_TYPE === 'cylinder' ? (
-                <label
-                  style={{
-                    pointerEvents: 'auto',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    cursor: 'pointer',
-                    background: 'rgba(255,255,255,0.92)',
-                    border: '1px solid #d4dfec',
-                    borderRadius: 10,
-                    padding: '8px 12px',
-                    fontSize: 12,
-                    color: '#1d3553',
-                    boxShadow: '0 4px 12px rgba(20,40,80,0.1)',
-                    userSelect: 'none',
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={transparentContainer}
-                    onChange={(e) => setTransparentContainer(e.target.checked)}
-                  />
-                  Transparent container
-                </label>
-              ) : null}
             </div>
             <div style={{ flex: 1, minHeight: 380, position: 'relative', overflow: 'hidden' }}>
               <Viewer3D
@@ -1456,17 +1394,17 @@ export default function App() {
                 liveFrameRef={liveFrameRef}
                 simRunId={runSignal}
                 settledVertexStress={settledVertexStress}
-                environmentType={simConfig.ENVIRONMENT_TYPE}
+                environmentType="plate"
                 plateSize={simConfig.PLATE_SIZE}
                 wallThickness={simConfig.WALL_THICKNESS}
                 plateWallHeight={simConfig.PLATE_WALL_HEIGHT}
                 cylinderDiameter={simConfig.CYLINDER_DIAMETER}
                 cylinderHeight={simConfig.CYLINDER_HEIGHT}
                 cylinderSegments={32}
-                transparentContainer={transparentContainer}
+                transparentContainer={false}
                 lengthScale={lengthScale}
                 meshScale={meshScale}
-                showSyringeInPlate={simConfig.ENVIRONMENT_TYPE === 'plate'}
+                showSyringeInPlate
                 syringeBarrelDiameter={simConfig.SYRINGE_BARREL_DIAMETER}
                 syringeBarrelLength={simConfig.SYRINGE_BARREL_LENGTH}
                 syringeNeedleDiameter={simConfig.SYRINGE_NEEDLE_DIAMETER}
