@@ -1,6 +1,6 @@
 genesis-world
-coacd
 trimesh
+coacd
 numpy
 scipy
 networkx

@@ -12,7 +12,6 @@ const _qOut = new THREE.Quaternion()
 const _posA = new THREE.Vector3()
 const _posB = new THREE.Vector3()
 const _scale = new THREE.Vector3(1, 1, 1)
-const _stressColor = new THREE.Color()
 
 function withSettledVertexStress(
   p: WsFrameParticle | undefined,
@@ -126,17 +125,11 @@ function fillStressRowLerp(
 function createBootstrapMaterial() {
   return new THREE.MeshStandardMaterial({
     color: '#c8d6e8',
-    vertexColors: true,
     roughness: 0.45,
     metalness: 0.06,
     emissive: new THREE.Color('#15304f'),
     emissiveIntensity: 0.06,
   })
-}
-
-function setStressColor(target: THREE.Color, stress: number) {
-  const t = Math.max(0, Math.min(1, stress))
-  target.setRGB(t, 1.0 - Math.abs(t - 0.5) * 2.0, 1.0 - t)
 }
 
 function glslReadInstanceStress(nMat4: number): string {
@@ -421,35 +414,13 @@ function InstancedFemParticles(props: {
   liveFrameRef: MutableRefObject<LivePhysicsFrame>
   simRunId: number
   settledVertexStress: Record<string, number[]> | null
-  renderMode: 'live' | 'settled'
-  edgeRenderMaxCount?: number
-  liveLodParticleThreshold?: number
   onMeshVertexCount?: (verts: number, sphereFallback?: boolean) => void
   /** Scale applied to OBJ geometry so its units match physics world metres (e.g. 1e-6 for µm OBJ files). */
   meshScale?: number
 }) {
-  const {
-    count,
-    radius,
-    objUrl,
-    liveFrameRef,
-    simRunId,
-    settledVertexStress,
-    renderMode,
-    edgeRenderMaxCount = 150,
-    liveLodParticleThreshold = 400,
-    onMeshVertexCount,
-    meshScale = 1,
-  } = props
+  const { count, radius, objUrl, liveFrameRef, simRunId, settledVertexStress, onMeshVertexCount, meshScale = 1 } = props
   const meshRef = useRef<THREE.InstancedMesh | null>(null)
   const obj = useLoader(OBJLoader, objUrl)
-  const useLiveShading = renderMode === 'live'
-  const useLowDetailLiveGeometry = useLiveShading && count >= liveLodParticleThreshold
-  // Always keep outlines in the final settled frame; during live runs, still cap
-  // edge rendering for performance on large particle counts.
-  const showEdges = renderMode === 'settled'
-    ? !useLowDetailLiveGeometry
-    : count <= edgeRenderMaxCount && !useLowDetailLiveGeometry
 
   const MAX_STRESS_MAT4 = 2
   const FLOATS_PER_INSTANCE_MAT4 = 16
@@ -476,14 +447,12 @@ function InstancedFemParticles(props: {
         const mesh = child as THREE.Mesh
         if (mesh?.isMesh && mesh.geometry) g = mesh.geometry
       })
-      if (!g || useLowDetailLiveGeometry) {
+      if (!g) {
         sphereFallback = true
-        if (!useLowDetailLiveGeometry) {
-          console.warn(
-            '[Viewer3D] particle.obj not found in /public — falling back to sphere. Vertex stress colors will not align correctly.',
-          )
-        }
-        g = new THREE.SphereGeometry(radius, useLowDetailLiveGeometry ? 4 : 5, useLowDetailLiveGeometry ? 3 : 4)
+        console.warn(
+          '[Viewer3D] particle.obj not found in /public — falling back to sphere. Vertex stress colors will not align correctly.',
+        )
+        g = new THREE.SphereGeometry(radius, 5, 4)
       }
       return g.clone()
     })()
@@ -558,17 +527,17 @@ function InstancedFemParticles(props: {
       edgePositions,
       edgeVertCount,
     }
-  }, [obj, radius, count, meshScale, useLowDetailLiveGeometry])
+  }, [obj, radius, count, meshScale])
 
   /** Dynamic BufferGeometry holding all instances' transformed edge vertices. */
   const edgesBufGeo = useMemo(() => {
-    if (!showEdges || edgeVertCount === 0) return null
+    if (edgeVertCount === 0) return null
     const geo = new THREE.BufferGeometry()
     const posAttr = new THREE.BufferAttribute(new Float32Array(count * edgeVertCount * 3), 3)
     posAttr.setUsage(THREE.DynamicDrawUsage)
     geo.setAttribute('position', posAttr)
     return geo
-  }, [count, edgeVertCount, showEdges])
+  }, [count, edgeVertCount])
 
   const edgesMat = useMemo(() => new THREE.LineBasicMaterial({ color: '#ffffff' }), [])
 
@@ -590,16 +559,12 @@ function InstancedFemParticles(props: {
   const [useShader, setUseShader] = useState(false)
   useEffect(() => {
     setUseShader(false)
-  }, [geometry, simRunId, useLiveShading])
+  }, [geometry, simRunId])
 
   useEffect(() => {
-    if (useLiveShading) {
-      setUseShader(false)
-      return
-    }
     const t = window.setTimeout(() => setUseShader(true), 0)
     return () => window.clearTimeout(t)
-  }, [geometry, simRunId, useLiveShading])
+  }, [geometry, simRunId])
 
   const snapA = useRef<Snapshot | null>(null)
   const snapB = useRef<Snapshot | null>(null)
@@ -696,42 +661,33 @@ function InstancedFemParticles(props: {
       )
       mesh.setMatrixAt(i, _m)
 
-      if (useLiveShading) {
-        setStressColor(_stressColor, tgt.stress_intensity ?? 0)
-        mesh.setColorAt(i, _stressColor)
+      const row = stressScratchRow
+      if (pa && pb && alpha < 1) {
+        fillStressRowLerp(
+          row,
+          verts,
+          withSettledVertexStress(pa, settledVertexStress),
+          withSettledVertexStress(pb, settledVertexStress),
+          alpha,
+        )
       } else {
-        const row = stressScratchRow
-        if (pa && pb && alpha < 1) {
-          fillStressRowLerp(
-            row,
-            verts,
-            withSettledVertexStress(pa, settledVertexStress),
-            withSettledVertexStress(pb, settledVertexStress),
-            alpha,
-          )
-        } else {
-          const fb = Math.max(0, Math.min(1, tgt.stress_intensity ?? 0))
-          fillStressRow(row, verts, withSettledVertexStress(pb, settledVertexStress), fb)
-        }
+        const fb = Math.max(0, Math.min(1, tgt.stress_intensity ?? 0))
+        fillStressRow(row, verts, withSettledVertexStress(pb, settledVertexStress), fb)
+      }
 
-        if (stressPath === 'buffer' && stressInterleaved && stressNMat4 > 0) {
-          packStressRowToMat4s(row, verts, stressInterleaved.array as Float32Array, i, stressNMat4)
-        } else if (stressData) {
-          const rowOffset = i * stressTexW
-          stressData.set(row.subarray(0, stressTexW), rowOffset)
-        }
+      if (stressPath === 'buffer' && stressInterleaved && stressNMat4 > 0) {
+        packStressRowToMat4s(row, verts, stressInterleaved.array as Float32Array, i, stressNMat4)
+      } else if (stressData) {
+        const rowOffset = i * stressTexW
+        stressData.set(row.subarray(0, stressTexW), rowOffset)
       }
     }
 
     mesh.instanceMatrix.needsUpdate = true
-    if (useLiveShading) {
-      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+    if (stressPath === 'buffer' && stressInterleaved) {
+      stressInterleaved.needsUpdate = true
     } else {
-      if (stressPath === 'buffer' && stressInterleaved) {
-        stressInterleaved.needsUpdate = true
-      } else {
-        stressTexture.needsUpdate = true
-      }
+      stressTexture.needsUpdate = true
     }
 
     // Transform edge vertices by each instance's matrix for white edge rendering
@@ -778,7 +734,7 @@ function InstancedFemParticles(props: {
         args={[geometry, useShader ? shaderMat : bootstrapMat, count]}
         frustumCulled={false}
       />
-      {showEdges && edgesBufGeo && (
+      {edgesBufGeo && (
         <lineSegments frustumCulled={false}>
           <primitive object={edgesBufGeo} attach="geometry" />
           <primitive object={edgesMat} attach="material" />
@@ -946,16 +902,12 @@ function SyringePreview(props: {
     }
   }, [barrelMat, needleMat, bottomMat])
   const junctionY = tBottom / 2
-  // Frontend-only visual compensation:
-  // keep the annulus top aligned to the physical junction, but render a slightly thicker
-  // annulus body so the barrel floor reads as "full depth" in transparent views.
-  const visualBottomThickness = Math.max(tBottom, 1.25 * tBottom)
-  const annulusTopY = junctionY + tBottom / 2
-  const annulusCenterY = annulusTopY - visualBottomThickness / 2
   const plateTopY = Math.max(plateThickness, 1e-6)
   const needleCenterY = junctionY - needleLength / 2
   const needleTipLocalY = needleCenterY - needleLength / 2
   const syringeLiftY = plateTopY + gap - needleTipLocalY
+
+  const annulusCenterY = junctionY
 
   return (
     <group position={[0, syringeLiftY, 0]}>
@@ -968,22 +920,12 @@ function SyringePreview(props: {
 
       {/* Annulus slab at barrel/needle junction (visualized like backend mesh: ring walls + caps). */}
       <mesh position={[0, annulusCenterY, 0]} receiveShadow material={bottomMat}>
-        <cylinderGeometry args={[barrelR, barrelR, visualBottomThickness, seg, 1, true]} />
+        <cylinderGeometry args={[barrelR, barrelR, tBottom, seg, 1, true]} />
       </mesh>
-      <mesh
-        position={[0, annulusCenterY + visualBottomThickness / 2, 0]}
-        rotation={[-Math.PI / 2, 0, 0]}
-        receiveShadow
-        material={bottomMat}
-      >
+      <mesh position={[0, annulusCenterY + tBottom / 2, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={bottomMat}>
         <ringGeometry args={[needleR, barrelR, seg]} />
       </mesh>
-      <mesh
-        position={[0, annulusCenterY - visualBottomThickness / 2, 0]}
-        rotation={[-Math.PI / 2, 0, 0]}
-        receiveShadow
-        material={bottomMat}
-      >
+      <mesh position={[0, annulusCenterY - tBottom / 2, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={bottomMat}>
         <ringGeometry args={[needleR, barrelR, seg]} />
       </mesh>
 
@@ -1028,7 +970,6 @@ function Scene(props: {
   syringeSegments?: number
   orbitTargetMode: OrbitTargetMode
   orbitParticleId: number | null
-  renderMode: 'live' | 'settled'
 }) {
   const {
     count,
@@ -1058,7 +999,6 @@ function Scene(props: {
     syringeSegments = 32,
     orbitTargetMode,
     orbitParticleId,
-    renderMode,
   } = props
   const controlsRef = useRef<unknown>(null)
   const defaultOrbitTarget = useMemo<[number, number, number]>(() => [0, wallThickness * lengthScale * 0.35, 0], [wallThickness, lengthScale])
@@ -1184,7 +1124,6 @@ function Scene(props: {
           liveFrameRef={liveFrameRef}
           simRunId={simRunId}
           settledVertexStress={settledVertexStress}
-          renderMode={renderMode}
           onMeshVertexCount={onMeshVertexCount}
           meshScale={meshScale}
         />
@@ -1221,7 +1160,6 @@ type Viewer3DProps = {
   syringeBottomThickness?: number
   syringePlateGap?: number
   syringeSegments?: number
-  renderMode?: 'live' | 'settled'
 }
 
 /** 3D view only — WebSocket lives in App (shared socket survives React Strict Mode). */
@@ -1252,7 +1190,6 @@ export default function Viewer3D(props: Viewer3DProps) {
     syringeBottomThickness,
     syringePlateGap,
     syringeSegments,
-    renderMode = 'settled',
   } = props
   const [meshVerts, setMeshVerts] = useState<number | null>(null)
   const [sphereFallbackMesh, setSphereFallbackMesh] = useState(false)
@@ -1456,7 +1393,6 @@ export default function Viewer3D(props: Viewer3DProps) {
           syringeBottomThickness={syringeBottomThickness}
           syringePlateGap={syringePlateGap}
           syringeSegments={syringeSegments}
-          renderMode={renderMode}
           orbitTargetMode={orbitTargetMode}
           orbitParticleId={orbitParticleId}
         />

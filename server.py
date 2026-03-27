@@ -4,7 +4,6 @@ import logging
 import math
 import os
 import sys
-import traceback
 import zipfile
 
 import asyncio
@@ -24,7 +23,6 @@ from fastapi.responses import Response, StreamingResponse
 import simulation
 
 logger = logging.getLogger(__name__)
-RUNTIME_BACKEND: str = "cpu"
 
 
 def _patch_uvicorn_h11_graceful_400() -> None:
@@ -66,37 +64,9 @@ def _sanitize_floats(obj: Any) -> Any:
     return obj
 
 
-def _use_cpu_backend(preferred_backend: str = "auto") -> bool:
-    """
-    Resolve backend preference.
-
-    Priority:
-      1) Explicit preferred_backend argument (`cpu` | `gpu` | `auto`)
-      2) GENESIS_USE_CPU (legacy bool override)
-      3) GENESIS_BACKEND (`cpu` | `gpu` | `auto`)
-      4) Auto-detect: use GPU when torch reports CUDA available
-    """
-    pb = str(preferred_backend or "auto").strip().lower()
-    if pb == "cpu":
-        return True
-    if pb == "gpu":
-        return False
-    gc = os.environ.get("GENESIS_USE_CPU", "").strip().lower()
-    if gc in ("1", "true", "yes"):
-        return True
-    if gc in ("0", "false", "no"):
-        return False
-    env_backend = os.environ.get("GENESIS_BACKEND", "").strip().lower()
-    if env_backend == "cpu":
-        return True
-    if env_backend == "gpu":
-        return False
-    try:
-        import torch
-
-        return not bool(torch.cuda.is_available())
-    except Exception:
-        return True
+def _use_cpu_backend() -> bool:
+    """Force CPU backend for all server-side simulation runs."""
+    return True
 
 
 def _gpu_cpu_fallback_allowed() -> bool:
@@ -127,7 +97,7 @@ def _prepare_cuda_on_worker_thread() -> None:
         pass
 
 
-def _init_genesis_on_sim_thread(preferred_backend: str = "auto") -> None:
+def _init_genesis_on_sim_thread() -> None:
     """
     Initialize Genesis on the dedicated simulation thread only.
 
@@ -138,15 +108,13 @@ def _init_genesis_on_sim_thread(preferred_backend: str = "auto") -> None:
     torch/CUDA bind to this thread. Set GENESIS_USE_CPU=1 to force CPU. Set
     GENESIS_NO_CPU_FALLBACK=1 to surface GPU failures instead of falling back to CPU.
     """
-    global RUNTIME_BACKEND
-    use_cpu = _use_cpu_backend(preferred_backend)
+    use_cpu = _use_cpu_backend()
     n_envs = max(1, int(getattr(simulation, "N_ENVS", 1)))
     if not use_cpu:
         _prepare_cuda_on_worker_thread()
     backend = simulation.gs.cpu if use_cpu else simulation.gs.gpu
     try:
         simulation.init_genesis_compat(simulation.gs, backend=backend, n_envs=n_envs)
-        RUNTIME_BACKEND = "cpu" if use_cpu else "gpu"
         return
     except Exception as exc:
         if "already initialized" in str(exc).lower():
@@ -161,7 +129,6 @@ def _init_genesis_on_sim_thread(preferred_backend: str = "auto") -> None:
         logger.warning("Genesis GPU init failed (%s: %s); falling back to gs.cpu.", type(exc).__name__, exc)
     try:
         simulation.init_genesis_compat(simulation.gs, backend=simulation.gs.cpu, n_envs=n_envs)
-        RUNTIME_BACKEND = "cpu"
     except Exception as exc2:
         if "already initialized" in str(exc2).lower():
             return
@@ -238,6 +205,25 @@ def _infer_scale_factor_for_particle_file(particle_file: str) -> float:
     if "600m" in name:
         return 1e-6
     return 1.0
+
+
+def _infer_contact_depth_tol(scale_factor: float) -> float:
+    """
+    Return a contact-depth tolerance proportional to the mesh scale.
+
+    The default 5e-5 m (50 µm) is well-suited for cm-scale particles but is
+    nearly 10% of a 600 µm particle's diameter, causing almost every contact
+    to be filtered out.  Scale the tolerance so it stays at ~1% of typical
+    particle diameter across all supported scales:
+
+        scale 1.0  (mm→cm mesh units) → 5e-5 m (50 µm, original default)
+        scale 1e-6 (µm-authored mesh) → 5e-11 m → clamped to 5e-9 m (5 nm)
+
+    The lower bound prevents rounding-noise contacts from being accepted when
+    the tolerance becomes numerically negligible relative to float precision.
+    """
+    tol = 5e-5 * float(scale_factor)
+    return max(tol, 5e-9)
 
 
 def _particle_mass_kg_from_runtime(runtime: "SimulationRuntime", rho: float) -> float:
@@ -335,13 +321,12 @@ class SimulationRuntime:
         self.active_containers: list[Any] = []
         self.physics_mesh = None
         self._original_mesh = None
+        self._coacd_proxy_file: Optional[str] = None
         self._physics_norm: float = 1.0
         self._phys_cfg: dict = {}
         self.default_particle_file = _resolve_particle_file(DEFAULT_PARTICLE_NAME)
         self._busy = asyncio.Lock()
         self.cancel_requested = False
-        self.preferred_backend = "auto"
-        self._gs_initialized = False
         # Single worker: all gs.* calls run on this thread (matches LLVM "main" thread).
         self._job_queue: queue.Queue[Any] = queue.Queue()
         self._worker = threading.Thread(target=self._genesis_worker_loop, name="genesis-worker", daemon=True)
@@ -349,20 +334,11 @@ class SimulationRuntime:
 
     def _genesis_worker_loop(self) -> None:
         """Owns gs.init and every Scene build/step for the process lifetime."""
+        _init_genesis_on_sim_thread()
         while True:
             job = self._job_queue.get()
             if job is None:
                 break
-            if isinstance(job, tuple) and len(job) == 3 and job[0] == "preflight":
-                _, result_q, preferred_backend = job
-                try:
-                    if not self._gs_initialized:
-                        _init_genesis_on_sim_thread(str(preferred_backend or "auto"))
-                        self._gs_initialized = True
-                    result_q.put((True, f"Genesis preflight OK (backend={RUNTIME_BACKEND})"))
-                except Exception as exc:
-                    result_q.put((False, f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"))
-                continue
             if isinstance(job, tuple) and len(job) == 2 and job[0] == "clear":
                 _, done = job
                 try:
@@ -384,23 +360,7 @@ class SimulationRuntime:
                     done.set()
                 continue
             sync_q, cfg, payload = job
-            if not self._gs_initialized:
-                _init_genesis_on_sim_thread(self.preferred_backend)
-                self._gs_initialized = True
             _simulation_thread_main(sync_q, cfg, payload)
-
-    def preflight_runtime(self, preferred_backend: str = "auto", timeout_s: float = 30.0) -> tuple[bool, str]:
-        """
-        Initialize Genesis on the worker thread before the API starts accepting requests.
-        Returns (ok, message) with traceback details on failure.
-        """
-        result_q: queue.Queue[tuple[bool, str]] = queue.Queue(maxsize=1)
-        self._job_queue.put(("preflight", result_q, preferred_backend))
-        try:
-            ok, msg = result_q.get(timeout=max(1.0, float(timeout_s)))
-            return bool(ok), str(msg)
-        except Exception as exc:
-            return False, f"Timeout/error waiting for preflight: {type(exc).__name__}: {exc}"
 
     def destroy_scene(self) -> None:
         """Tear down the current scene (safe to call multiple times)."""
@@ -421,6 +381,8 @@ class SimulationRuntime:
         self,
         cfg: dict,
         on_progress: Optional[Callable[[str, float, str], None]] = None,
+        *,
+        prior_fem_snapshots: Optional[list[dict]] = None,
     ) -> tuple[set[int], set[int], list[Any]]:
         def _p(phase: str, pct: float, detail: str = "") -> None:
             if on_progress:
@@ -431,6 +393,20 @@ class SimulationRuntime:
         if self.cancel_requested:
             raise SimulationAborted()
         _p("init", 0.0, "Creating scene…")
+        sim_options = simulation.make_sim_options(simulation.gs, cfg)
+        # Rigid container geometry uses the rigid solver; small dt/substeps => tiny
+        # _substep_dt and a warning unless GJK is enabled (see rigid_solver.py).
+        rigid_options = simulation.make_rigid_options(simulation.gs, cfg)
+        # Explicit FEM at E~1e8 Pa is unstable at typical dt; Genesis recommends implicit FEM.
+        fem_options = simulation.make_fem_options(simulation.gs, cfg)
+        self.scene = simulation.create_scene_compat(
+            simulation.gs,
+            sim_options=sim_options,
+            rigid_options=rigid_options,
+            fem_options=fem_options,
+            show_viewer=False,
+            n_envs=max(1, int(cfg.get("N_ENVS", getattr(simulation, "N_ENVS", 1)))),
+        )
         particle_file = _resolve_particle_file(cfg.get("PARTICLE_FILE"))
         scale_factor = float(cfg.get("SCALE_FACTOR", 1.0))
         if abs(scale_factor - 1.0) < 1e-15:
@@ -442,120 +418,90 @@ class SimulationRuntime:
                     Path(particle_file).name,
                     scale_factor,
                 )
+        # If CONTACT_DEPTH_TOL was not explicitly overridden by the UI (i.e. it still
+        # matches the module-level default), replace it with a scale-appropriate value
+        # so µm-scale contacts are not spuriously filtered out.
+        default_tol = float(simulation.CONTACT_DEPTH_TOL)
+        current_tol = float(cfg.get("CONTACT_DEPTH_TOL", default_tol))
+        if abs(current_tol - default_tol) < 1e-15 and abs(scale_factor - 1.0) > 1e-10:
+            cfg = dict(cfg)
+            cfg["CONTACT_DEPTH_TOL"] = _infer_contact_depth_tol(scale_factor)
+            logger.info(
+                "Auto CONTACT_DEPTH_TOL=%g for SCALE_FACTOR=%g.",
+                cfg["CONTACT_DEPTH_TOL"],
+                scale_factor,
+            )
         _p("mesh", 0.12, "Loading particle mesh…")
-        self.physics_mesh, physics_norm = \
+        self.physics_mesh, self._original_mesh, self._coacd_proxy_file, physics_norm = \
             simulation.load_particle_mesh(particle_file, scale_factor)
-        self._original_mesh = self.physics_mesh
         self._physics_norm = physics_norm
 
         # Build physics-scale config: scale all length dimensions up by physics_norm
         # so Genesis sees a numerically stable world (e.g. particle.obj scale).
         # The original cfg is kept at display scale for the viewer / metrics.
         _phys_cfg = _scale_cfg_lengths(dict(cfg), physics_norm)
-        base_grid_density = int(_phys_cfg.get("MPM_GRID_DENSITY", cfg.get("MPM_GRID_DENSITY", 64)))
-        build_grid_candidates = [max(32, base_grid_density), 96, 128, 160]
-        seen_gd: set[int] = set()
-        build_grid_candidates = [gd for gd in build_grid_candidates if not (gd in seen_gd or seen_gd.add(gd))]
-        last_exc: Optional[Exception] = None
-        entities: list[Any] = []
-        for attempt_i, gd in enumerate(build_grid_candidates):
-            _phys_cfg["MPM_GRID_DENSITY"] = int(gd)
-            # If we retry with a denser MPM grid, also retune DT/SUBSTEPS so substep_dt
-            # stays below Genesis' suggested_dt for this grid_density; otherwise the solver
-            # can generate NaNs and particles appear to "disappear" in the viewer.
-            _phys_cfg = simulation.tune_mpm_timestep(_phys_cfg)
-            self._phys_cfg = dict(_phys_cfg)
-            # Use the physics-scale tuned dt/substeps. We retune DT/SUBSTEPS alongside
-            # MPM grid_density retries; building SimOptions from the untuned display cfg
-            # can reintroduce the Genesis substep_dt > suggested_dt instability warning.
-            sim_options = simulation.make_sim_options(simulation.gs, self._phys_cfg)
-            mpm_options = simulation.make_mpm_options(simulation.gs, self._phys_cfg)
-            # Rigid container geometry uses the rigid solver; small dt/substeps => tiny
-            # _substep_dt and a warning unless GJK is enabled (see rigid_solver.py).
-            rigid_options = simulation.make_rigid_options(simulation.gs, cfg)
-            # Explicit FEM at E~1e8 Pa is unstable at typical dt; Genesis recommends implicit FEM.
-            fem_options = simulation.make_fem_options(simulation.gs, cfg)
-            self.scene = simulation.create_scene_compat(
-                simulation.gs,
-                sim_options=sim_options,
-                mpm_options=mpm_options,
-                rigid_options=rigid_options,
-                fem_options=fem_options,
-                show_viewer=False,
-                n_envs=max(1, int(cfg.get("N_ENVS", getattr(simulation, "N_ENVS", 1)))),
+        if physics_norm != 1.0:
+            # Override depth tolerance: physics runs at reference scale, so the
+            # µm-adjusted 5 nm value is too small; revert to the 50 µm default.
+            _phys_cfg["CONTACT_DEPTH_TOL"] = float(simulation.CONTACT_DEPTH_TOL)
+            logger.info(
+                "Physics normalisation ×%.4g applied to %s; "
+                "CONTACT_DEPTH_TOL reset to %.4g m.",
+                physics_norm,
+                Path(particle_file).name,
+                simulation.CONTACT_DEPTH_TOL,
             )
+        self._phys_cfg = _phys_cfg
 
-            _p("environment", 0.35, f"Building container geometry (grid_density={gd})…")
-            containers, env_info = simulation.create_environment(
-                self.scene,
-                self._phys_cfg["ENVIRONMENT_TYPE"],
-                self._phys_cfg["PLATE_SIZE"],
-                self._phys_cfg["CYLINDER_DIAMETER"],
-                self._phys_cfg["CYLINDER_HEIGHT"],
-                self._phys_cfg["CYLINDER_SEGMENTS"],
-                self._phys_cfg["WALL_THICKNESS"],
-                float(self._phys_cfg.get("PLATE_WALL_HEIGHT", simulation.PLATE_WALL_HEIGHT)),
-                env_restitution=float(self._phys_cfg.get("ENV_RESTITUTION", 0.0)),
-                syringe_barrel_diameter=float(self._phys_cfg.get("SYRINGE_BARREL_DIAMETER", simulation.SYRINGE_BARREL_DIAMETER)),
-                syringe_barrel_length=float(self._phys_cfg.get("SYRINGE_BARREL_LENGTH", simulation.SYRINGE_BARREL_LENGTH)),
-                syringe_needle_diameter=float(self._phys_cfg.get("SYRINGE_NEEDLE_DIAMETER", simulation.SYRINGE_NEEDLE_DIAMETER)),
-                syringe_needle_length=float(self._phys_cfg.get("SYRINGE_NEEDLE_LENGTH", simulation.SYRINGE_NEEDLE_LENGTH)),
-                syringe_wall_thickness=float(self._phys_cfg.get("SYRINGE_WALL_THICKNESS", simulation.SYRINGE_WALL_THICKNESS)),
-                syringe_bottom_thickness=float(self._phys_cfg.get("SYRINGE_BOTTOM_THICKNESS", simulation.SYRINGE_BOTTOM_THICKNESS)),
-                syringe_plate_gap=float(self._phys_cfg.get("SYRINGE_PLATE_GAP", simulation.SYRINGE_PLATE_GAP)),
-                syringe_segments=int(self._phys_cfg.get("SYRINGE_SEGMENTS", simulation.SYRINGE_SEGMENTS)),
-                syringe_open_tip=bool(self._phys_cfg.get("SYRINGE_OPEN_TIP", simulation.SYRINGE_OPEN_TIP)),
-            )
-            self.active_containers = list(containers)
-            _p("spawn", 0.55, f"Spawning {int(self._phys_cfg['N_PARTICLES'])} particles…")
-            # Pass the configured domain ceiling so spawn can clamp inside the effective boundary.
-            mpm_upper_y = None
-            try:
-                ub = getattr(mpm_options, "upper_bound", None)
-                if ub is not None and len(ub) >= 2:
-                    mpm_upper_y = float(ub[1])
-            except Exception:
-                mpm_upper_y = None
-
-            entities = simulation.spawn_particles(
-                self.scene,
-                self.physics_mesh,
-                self._phys_cfg["N_PARTICLES"],
-                env_info,
-                self._phys_cfg["DROP_HEIGHT"],
-                self._phys_cfg["DROP_SPREAD"],
-                self._phys_cfg["YOUNGS_MODULUS"],
-                self._phys_cfg["POISSON_RATIO"],
-                self._phys_cfg["DENSITY"],
-                particle_file=particle_file,
-                scale_factor=scale_factor,
-                particle_restitution=float(self._phys_cfg.get("PARTICLE_RESTITUTION", 0.0)),
-                physics_norm=physics_norm,
-                mpm_upper_y=mpm_upper_y,
-            )
-            self.active_entities = list(entities)
-            if not _use_cpu_backend(str(cfg.get("BACKEND", "auto"))):
-                _prepare_cuda_on_worker_thread()
-            _p("build", 0.72, f"Compiling scene (Genesis / Taichi, grid_density={gd})…")
-            if self.cancel_requested:
-                raise SimulationAborted()
-            try:
-                self.scene.build()
-                break
-            except Exception as exc:
-                last_exc = exc
-                msg = f"{type(exc).__name__}: {exc}"
-                is_kth_oob = ("kth(" in msg.lower()) and ("out of bounds" in msg.lower())
-                if is_kth_oob and attempt_i < len(build_grid_candidates) - 1:
-                    logger.warning(
-                        "Scene build failed with low-sample neighbor error at grid_density=%d; retrying with denser MPM grid.",
-                        gd,
-                    )
-                    self.destroy_scene()
-                    continue
-                raise
-        if last_exc is not None and self.scene is None:
-            raise last_exc
+        _p("environment", 0.35, "Building container geometry…")
+        containers, env_info = simulation.create_environment(
+            self.scene,
+            _phys_cfg["ENVIRONMENT_TYPE"],
+            _phys_cfg["PLATE_SIZE"],
+            _phys_cfg["CYLINDER_DIAMETER"],
+            _phys_cfg["CYLINDER_HEIGHT"],
+            _phys_cfg["CYLINDER_SEGMENTS"],
+            _phys_cfg["WALL_THICKNESS"],
+            float(_phys_cfg.get("PLATE_WALL_HEIGHT", simulation.PLATE_WALL_HEIGHT)),
+            env_restitution=float(_phys_cfg.get("ENV_RESTITUTION", 0.0)),
+            syringe_barrel_diameter=float(_phys_cfg.get("SYRINGE_BARREL_DIAMETER", simulation.SYRINGE_BARREL_DIAMETER)),
+            syringe_barrel_length=float(_phys_cfg.get("SYRINGE_BARREL_LENGTH", simulation.SYRINGE_BARREL_LENGTH)),
+            syringe_needle_diameter=float(_phys_cfg.get("SYRINGE_NEEDLE_DIAMETER", simulation.SYRINGE_NEEDLE_DIAMETER)),
+            syringe_needle_length=float(_phys_cfg.get("SYRINGE_NEEDLE_LENGTH", simulation.SYRINGE_NEEDLE_LENGTH)),
+            syringe_wall_thickness=float(_phys_cfg.get("SYRINGE_WALL_THICKNESS", simulation.SYRINGE_WALL_THICKNESS)),
+            syringe_bottom_thickness=float(_phys_cfg.get("SYRINGE_BOTTOM_THICKNESS", simulation.SYRINGE_BOTTOM_THICKNESS)),
+            syringe_plate_gap=float(_phys_cfg.get("SYRINGE_PLATE_GAP", simulation.SYRINGE_PLATE_GAP)),
+            syringe_segments=int(_phys_cfg.get("SYRINGE_SEGMENTS", simulation.SYRINGE_SEGMENTS)),
+        )
+        self.active_containers = list(containers)
+        _p("spawn", 0.55, f"Spawning {int(_phys_cfg['N_PARTICLES'])} particles…")
+        entities = simulation.spawn_particles(
+            self.scene,
+            self.physics_mesh,
+            _phys_cfg["N_PARTICLES"],
+            env_info,
+            _phys_cfg["DROP_HEIGHT"],
+            _phys_cfg["DROP_SPREAD"],
+            _phys_cfg["YOUNGS_MODULUS"],
+            _phys_cfg["POISSON_RATIO"],
+            _phys_cfg["DENSITY"],
+            particle_file=particle_file,
+            scale_factor=scale_factor,
+            particle_restitution=float(_phys_cfg.get("PARTICLE_RESTITUTION", 0.0)),
+            e_fem_max=float(_phys_cfg["FEM_JAMMING_E_MAX"]),
+            prior_fem_snapshots=prior_fem_snapshots,
+            coacd_proxy_file=self._coacd_proxy_file,
+            physics_norm=physics_norm,
+        )
+        self.active_entities = list(entities)
+        if not _use_cpu_backend():
+            _prepare_cuda_on_worker_thread()
+        _p("build", 0.72, "Compiling scene (Genesis / Taichi)…")
+        if self.cancel_requested:
+            raise SimulationAborted()
+        self.scene.build()
+        if prior_fem_snapshots:
+            simulation.restore_fem_entities(self.active_entities, prior_fem_snapshots)
         _p("ready", 1.0, "Scene ready")
         container_ids = {_entity_id(e) for e in self.active_containers}
         particle_ids = {_entity_id(e) for e in self.active_entities}
@@ -567,12 +513,6 @@ RUNTIME = SimulationRuntime()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Fail fast: surface Genesis/runtime init errors before Uvicorn reports startup complete.
-    ok, msg = await asyncio.to_thread(RUNTIME.preflight_runtime, os.environ.get("GENESIS_BACKEND", "auto"), 45.0)
-    if not ok:
-        logger.error("Startup preflight failed:\n%s", msg)
-        raise RuntimeError(f"Server preflight failed:\n{msg}")
-    logger.info("%s", msg)
     yield
     # Tear down Genesis on the same thread as gs.init() so OpenGL / Taichi contexts match.
     RUNTIME.cancel_requested = True
@@ -1131,9 +1071,28 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
         # double-scaling (e.g. 6mm → 6nm), making the container impossibly tiny and particles
         # invisible. Environment scaling is now handled entirely by the frontend.
 
+        sequential = bool(cfg.get("SEQUENTIAL_DROP"))
+        analytical = bool(cfg.get("ANALYTICAL_MODE"))
+        if sequential and (not _use_cpu_backend()):
+            sequential = False
+            sync_q.put(
+                {
+                    "type": "log",
+                    "line": "SEQUENTIAL_DROP disabled on GPU to avoid per-stage kernel rebuild overhead.",
+                }
+            )
+        if sequential:
+            # Use cfg DT/SUBSTEPS — the old “analytical falling” coarse step caused FEM tunneling through thin plates.
+            analytical = False
+        elif analytical:
+            cfg_run["DT"] = float(cfg["ANALYTICAL_FALLING_DT"])
+            cfg_run["SUBSTEPS"] = int(cfg["ANALYTICAL_FALLING_SUBSTEPS"])
+            cfg_run["FEM_NEWTON_ITERATIONS"] = int(cfg.get("FEM_NEWTON_ITERATIONS", 4))
+
         duration = float(cfg["SIM_DURATION"])
         settle_threshold = float(cfg["SETTLE_THRESHOLD"])
         depth_tol = float(cfg_run["CONTACT_DEPTH_TOL"])
+        vel_threshold = float(cfg.get("ANALYTICAL_VEL_THRESHOLD", 0.1))
         LATEST_Z_HISTORY = []
         LATEST_MAX_VEL_HISTORY = []
         LATEST_RATTLERS_HISTORY = []
@@ -1142,50 +1101,80 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
         LATEST_CONTACT_GRAPH_DICT = {}
         LATEST_CONTACT_GRAPH_LINKS = []
         surface_area_m2 = float(simulation.container_surface_area_m2(str(cfg.get("ENVIRONMENT_TYPE", "plate")), cfg))
+        falling_contact_stride = int(cfg.get("CONTACT_EXTRACT_FALLING_EVERY", simulation.CONTACT_EXTRACT_FALLING_EVERY))
         rho = float(cfg["DENSITY"])
 
         container_ids: set[int] = set()
         particle_ids: set[int] = set()
         entities: list[Any] = []
+        contact_cache = simulation.ContactSampleCache()
         particle_mass_kg = 0.0
 
-        container_ids, particle_ids, entities = RUNTIME.build_scene(cfg_run, on_progress=_on_build_progress)
-        particle_mass_kg = _particle_mass_kg_from_runtime(RUNTIME, rho)
-        # If physics normalisation was applied, override depth_tol to physics scale
-        if RUNTIME._phys_cfg:
-            depth_tol = float(RUNTIME._phys_cfg.get("CONTACT_DEPTH_TOL", depth_tol))
+        if not sequential:
+            container_ids, particle_ids, entities = RUNTIME.build_scene(cfg_run, on_progress=_on_build_progress)
+            particle_mass_kg = _particle_mass_kg_from_runtime(RUNTIME, rho)
+            # If physics normalisation was applied, override depth_tol to physics scale
+            if RUNTIME._phys_cfg:
+                depth_tol = float(RUNTIME._phys_cfg.get("CONTACT_DEPTH_TOL", depth_tol))
 
         dt = float(cfg_run["DT"])
+        use_cpu_backend = _use_cpu_backend()
+        # CPU-side post-step corrections require host<->device sync for each entity.
+        # On GPU this can dominate runtime, so run expensive overlap separation less often.
+        correction_step_idx = 0
+        bounds_every = 1 if use_cpu_backend else 2
+        separation_every = 1 if use_cpu_backend else 4
+
         # Headless: skip per-step visualizer GPU/raster updates (still built at scene.build()).
         # Otherwise each step pays full visualizer.update() cost even with show_viewer=False.
         def _step() -> None:
+            nonlocal correction_step_idx
             RUNTIME.scene.step(update_visualizer=False)
+            if RUNTIME.active_entities and RUNTIME.physics_mesh is not None:
+                # Use physics-scale cfg so bounds/separation thresholds match
+                # the normalised world coordinates (e.g. 225 mm plate, not 6 mm).
+                _pc = RUNTIME._phys_cfg if RUNTIME._phys_cfg else cfg_run
+                if correction_step_idx % bounds_every == 0:
+                    simulation.enforce_container_bounds(RUNTIME.active_entities, RUNTIME.physics_mesh, _pc)
+                if correction_step_idx % separation_every == 0:
+                    simulation.enforce_particle_separation(
+                        RUNTIME.active_entities, RUNTIME.physics_mesh, _pc,
+                        original_mesh=RUNTIME._original_mesh,
+                    )
+            correction_step_idx += 1
 
-        # Show spawn poses immediately so the UI is not blank until the first (slow) CPU step.
-        sync_q.put(
-            {
-                "type": "frame",
-                "step": -1,
-                "t": 0.0,
-                "max_vel": 0.0,
-                "Z": 0.0,
-                "particles": _rescale_positions(
-                    simulation._collect_particle_transforms(entities),
-                    RUNTIME._physics_norm,
-                ),
-            }
-        )
+        if not sequential:
+            # Show spawn poses immediately so the UI is not blank until the first (slow) CPU step.
+            sync_q.put(
+                {
+                    "type": "frame",
+                    "step": -1,
+                    "t": 0.0,
+                    "max_vel": 0.0,
+                    "Z": 0.0,
+                    "particles": _rescale_positions(
+                        simulation._collect_particle_transforms(entities),
+                        RUNTIME._physics_norm,
+                    ),
+                }
+            )
 
+        precision_phase = not analytical
         t_elapsed = 0.0
         last_ws_pct = -1.0
         last_live_Z = 0.0
 
+        def _force_skip_contacts(max_vel: Optional[float]) -> bool:
+            if not analytical or precision_phase:
+                return False
+            return max_vel is None or float(max_vel) >= vel_threshold
+
         def _run_step_block(frame_step_idx: int, t_now: float, phase_step: int, phase_len: int) -> bool:
             """
-            After a physics substep: metrics, frames, and settle checks.
-            Returns True to stop the outer simulation (cancel or settled).
+            After a physics substep: metrics, frames, settle / analytical handoff.
+            Returns True to stop the outer simulation (cancel, settle, or completed precision phase).
             """
-            nonlocal entities, particle_ids, container_ids, dt, t_elapsed, last_ws_pct, particle_mass_kg, last_live_Z
+            nonlocal entities, particle_ids, container_ids, contact_cache, dt, precision_phase, t_elapsed, last_ws_pct, particle_mass_kg, last_live_Z
             if RUNTIME.cancel_requested:
                 sync_q.put({"type": "log", "line": "Simulation cancelled by user"})
                 sync_q.put({"type": "cancelled"})
@@ -1193,6 +1182,7 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                 return True
 
             max_vel = simulation.compute_max_velocity(entities)
+            skip = _force_skip_contacts(max_vel)
 
             if duration > 0:
                 sp = t_now / duration
@@ -1213,10 +1203,17 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                 frame_step_idx % frame_every == 0
             )
             if need_contacts:
-                contacts_snapshot = simulation.extract_mpm_contacts(
-                    entities,
+                contacts_snapshot = simulation.extract_contacts_resampled(
+                    RUNTIME.scene,
                     particle_ids,
-                    depth_tol=depth_tol,
+                    container_ids,
+                    depth_tol,
+                    sim_step=frame_step_idx,
+                    max_vel=max_vel,
+                    settle_threshold=settle_threshold,
+                    falling_every=falling_contact_stride,
+                    cache=contact_cache,
+                    force_skip=skip,
                 )
 
             if frame_step_idx % live_metrics_every == 0:
@@ -1277,51 +1274,208 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
             if max_vel is not None and max_vel < settle_threshold:
                 sync_q.put({"type": "log", "line": f"Settled at t={t_now:.2f}s"})
                 return True
+
+            if (
+                analytical
+                and (not precision_phase)
+                and max_vel is not None
+                and float(max_vel) < vel_threshold
+            ):
+                snaps = simulation.snapshot_fem_entities(entities)
+                remaining = duration - t_elapsed
+                if snaps and remaining > 1e-9:
+                    sync_q.put(
+                        {
+                            "type": "log",
+                            "line": "Analytical mode: max_vel < {:.2g} m/s — rebuilding at 500 Hz / 16 substeps…".format(
+                                vel_threshold
+                            ),
+                        }
+                    )
+                    cfg2 = dict(cfg)
+                    cfg2["DT"] = float(cfg["ANALYTICAL_PRECISION_DT"])
+                    cfg2["SUBSTEPS"] = int(cfg["ANALYTICAL_PRECISION_SUBSTEPS"])
+                    cfg2["FEM_NEWTON_ITERATIONS"] = int(cfg.get("FEM_NEWTON_ITERATIONS_PRECISION", 8))
+                    container_ids, particle_ids, entities = RUNTIME.build_scene(cfg2, on_progress=_on_build_progress)
+                    particle_mass_kg = _particle_mass_kg_from_runtime(RUNTIME, rho)
+                    try:
+                        simulation.restore_fem_entities(entities, snaps)
+                        # Centroid restoration is approximate; run a one-time separation pass to
+                        # correct any small overlaps introduced at the phase-transition handoff
+                        # before the new scene begins stepping.
+                        if RUNTIME.physics_mesh is not None:
+                            simulation.enforce_particle_separation(
+                                RUNTIME.active_entities, RUNTIME.physics_mesh, cfg2,
+                                original_mesh=RUNTIME._original_mesh,
+                            )
+                    except Exception as exc:
+                        sync_q.put({"type": "log", "line": f"[warn] FEM state restore failed ({exc}); continuing from spawn."})
+                    contact_cache = simulation.ContactSampleCache()
+                    dt = float(cfg2["DT"])
+                    precision_phase = True
+                    phase2_steps = max(0, int(remaining / dt))
+                    phase2_frame0 = frame_step_idx + 1
+                    phase2_pbar = tqdm(
+                        range(phase2_steps),
+                        desc="Simulation (precision)",
+                        unit="step",
+                        dynamic_ncols=True,
+                        mininterval=0.25,
+                        file=sys.stderr,
+                        disable=not sys.stderr.isatty(),
+                    )
+                    try:
+                        for step2 in phase2_pbar:
+                            _step()
+                            t_elapsed += dt
+                            t_now = t_elapsed
+                            if _run_step_block(phase2_frame0 + step2, t_now, step2, phase2_steps):
+                                return True
+                    finally:
+                        phase2_pbar.close()
+                    return True
+                if not snaps:
+                    sync_q.put(
+                        {
+                            "type": "log",
+                            "line": "[warn] Analytical precision handoff skipped (no FEMEntity snapshots; e.g. MPM mode).",
+                        }
+                    )
             return False
 
-        # Avoid tqdm's terminal control sequences when stderr is not a TTY (e.g. some IDE
-        # captures) — they can garble logs and occasionally upset Windows consoles.
-        total_steps = int(duration / dt) if dt > 0 else 0
-        sim_pbar = tqdm(
-            range(total_steps),
-            desc="Simulation",
-            unit="step",
-            dynamic_ncols=True,
-            mininterval=0.25,
-            file=sys.stderr,
-            disable=not sys.stderr.isatty(),
-        )
-        try:
-            for step in sim_pbar:
+        if sequential:
+            n_total = max(1, int(cfg["N_PARTICLES"]))
+            _ssd = cfg.get("SEQUENTIAL_STAGE_DURATION")
+            stage_cap_default = float(_ssd) if _ssd is not None else max(duration / max(n_total, 1), 0.25)
+            total_budget = duration
+            accrued: list[dict] = []
+            global_frame_idx = 0
+            sync_q.put(
+                {
+                    "type": "log",
+                    "line": "SEQUENTIAL_DROP: rebuild scene per particle; prior bodies restored from FEM snapshot.",
+                }
+            )
+            for k in range(1, n_total + 1):
                 if RUNTIME.cancel_requested:
                     sync_q.put({"type": "log", "line": "Simulation cancelled by user"})
                     sync_q.put({"type": "cancelled"})
                     sync_q.put({"type": "idle", "message": "Ready for next run"})
                     return
-                if step == 0:
+                if total_budget <= 0.0:
+                    break
+                cfg_k = dict(cfg_run)
+                cfg_k["N_PARTICLES"] = k
+                sync_q.put({"type": "log", "line": f"Sequential stage {k}/{n_total}: building with {k} particle(s)…"})
+                prior = accrued if accrued else None
+                container_ids, particle_ids, entities = RUNTIME.build_scene(
+                    cfg_k,
+                    on_progress=_on_build_progress,
+                    prior_fem_snapshots=prior,
+                )
+                if particle_mass_kg <= 0.0:
+                    particle_mass_kg = _particle_mass_kg_from_runtime(RUNTIME, rho)
+                contact_cache = simulation.ContactSampleCache()
+                dt = float(cfg_k["DT"])
+                sync_q.put(
+                    {
+                        "type": "frame",
+                        "step": -1,
+                        "t": float(t_elapsed),
+                        "max_vel": 0.0,
+                        "Z": 0.0,
+                        "particles": _rescale_positions(
+                            simulation._collect_particle_transforms(entities),
+                            RUNTIME._physics_norm,
+                        ),
+                    }
+                )
+                stage_budget = min(stage_cap_default, total_budget)
+                steps_stage = int(stage_budget / dt) if dt > 0 else 0
+                last_ws_pct = -1.0
+                sim_pbar = tqdm(
+                    range(steps_stage),
+                    desc=f"Simulation stage {k}/{n_total}",
+                    unit="step",
+                    dynamic_ncols=True,
+                    mininterval=0.25,
+                    file=sys.stderr,
+                    disable=not sys.stderr.isatty(),
+                )
+                stage_time_used = 0.0
+                try:
+                    for step in sim_pbar:
+                        if RUNTIME.cancel_requested:
+                            sync_q.put({"type": "log", "line": "Simulation cancelled by user"})
+                            sync_q.put({"type": "cancelled"})
+                            sync_q.put({"type": "idle", "message": "Ready for next run"})
+                            return
+                        if k == 1 and step == 0:
+                            sync_q.put(
+                                {
+                                    "type": "log",
+                                    "line": "First physics step after build: Taichi/JIT + implicit FEM can take minutes on CPU; tqdm may sit at 0% until it completes.",
+                                }
+                            )
+                        _step()
+                        t_elapsed += dt
+                        t_now = t_elapsed
+                        stage_time_used += dt
+                        if _run_step_block(global_frame_idx, t_now, step, steps_stage):
+                            break
+                        global_frame_idx += 1
+                finally:
+                    sim_pbar.close()
+                total_budget -= stage_time_used
+                accrued = simulation.snapshot_fem_entities(entities)
+                if k < n_total and len(accrued) != k:
                     sync_q.put(
                         {
                             "type": "log",
-                            "line": "First physics step after build: Taichi/JIT + implicit FEM can take minutes on CPU; tqdm may sit at 0% until it completes.",
+                            "line": "[warn] SEQUENTIAL_DROP requires FEM particles (snapshot count != k). Stopping staged drops.",
                         }
                     )
-                _step()
-                t_elapsed += dt
-                t_now = t_elapsed
-                if _run_step_block(step, t_now, step, total_steps):
                     break
-        finally:
-            sim_pbar.close()
+        else:
+            # Avoid tqdm's terminal control sequences when stderr is not a TTY (e.g. some IDE
+            # captures) — they can garble logs and occasionally upset Windows consoles.
+            total_steps = int(duration / dt) if dt > 0 else 0
+            sim_pbar = tqdm(
+                range(total_steps),
+                desc="Simulation",
+                unit="step",
+                dynamic_ncols=True,
+                mininterval=0.25,
+                file=sys.stderr,
+                disable=not sys.stderr.isatty(),
+            )
+            try:
+                for step in sim_pbar:
+                    if RUNTIME.cancel_requested:
+                        sync_q.put({"type": "log", "line": "Simulation cancelled by user"})
+                        sync_q.put({"type": "cancelled"})
+                        sync_q.put({"type": "idle", "message": "Ready for next run"})
+                        return
+                    if step == 0:
+                        sync_q.put(
+                            {
+                                "type": "log",
+                                "line": "First physics step after build: Taichi/JIT + implicit FEM can take minutes on CPU; tqdm may sit at 0% until it completes.",
+                            }
+                        )
+                    _step()
+                    t_elapsed += dt
+                    t_now = t_elapsed
+                    if _run_step_block(step, t_now, step, total_steps):
+                        break
+            finally:
+                sim_pbar.close()
 
         if RUNTIME.cancel_requested:
             return
 
         sync_q.put({"type": "progress", "phase": "simulate", "pct": 1.0, "detail": "Finishing…"})
-        contacts = simulation.extract_mpm_contacts(
-            entities,
-            particle_ids,
-            depth_tol=depth_tol,
-        )
+        contacts = simulation.extract_contacts(RUNTIME.scene, particle_ids, container_ids, depth_tol)
         if len(contacts) == 0:
             print("[INFO] falling back to geometric contact detection", flush=True)
             contacts = simulation.extract_contacts_geometric(
@@ -1397,9 +1551,7 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
         sync_q.put({"type": "cancelled"})
         sync_q.put({"type": "idle", "message": "Ready for next run"})
     except Exception as exc:
-        tb = traceback.format_exc()
-        logger.error("Simulation worker failed: %s: %s\n%s", type(exc).__name__, exc, tb)
-        sync_q.put({"type": "error", "message": f"{type(exc).__name__}: {exc}", "traceback": tb})
+        sync_q.put({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
         sync_q.put({"type": "idle", "message": "Ready after error"})
     finally:
         sync_q.put(None)
@@ -1407,22 +1559,9 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
 
 async def _run_simulation(ws: WebSocket, payload: dict[str, Any]) -> None:
     cfg = simulation.build_runtime_config(payload.get("config") if isinstance(payload, dict) else {})
-    requested_backend = str(cfg.get("BACKEND", "auto")).strip().lower()
     sync_q: queue.Queue[Any | None] = queue.Queue()
     try:
         async with RUNTIME._busy:
-            if not RUNTIME._gs_initialized:
-                RUNTIME.preferred_backend = requested_backend
-            elif requested_backend in ("cpu", "gpu") and requested_backend != RUNTIME_BACKEND:
-                await ws.send_json(
-                    {
-                        "type": "log",
-                        "line": (
-                            f"Backend already initialized as {RUNTIME_BACKEND}; "
-                            f"ignoring requested BACKEND={requested_backend} for this process."
-                        ),
-                    }
-                )
             RUNTIME._job_queue.put((sync_q, cfg, payload))
             while True:
                 item = await asyncio.to_thread(sync_q.get)
@@ -1504,11 +1643,5 @@ if __name__ == "__main__":
 
     # Pass `app` directly. Using "server:app" makes uvicorn import `server` again while
     # this file already ran as __main__, duplicating RUNTIME / genesis-worker / gs.init.
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8000,
-        reload=False,
-        log_level=str(os.environ.get("UVICORN_LOG_LEVEL", "info")).lower(),
-    )
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)
 
