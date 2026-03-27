@@ -371,6 +371,11 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     for key in cfg.keys():
         if key in raw:
             cfg[key] = raw[key]
+    # MPM-optimized runtime defaults: larger dt with fewer substeps improves throughput.
+    if "DT" not in raw:
+        cfg["DT"] = 4e-3
+    if "SUBSTEPS" not in raw:
+        cfg["SUBSTEPS"] = 10
 
     cfg["N_PARTICLES"] = int(cfg["N_PARTICLES"])
     cfg["N_ENVS"] = max(1, int(cfg.get("N_ENVS", N_ENVS)))
@@ -430,10 +435,10 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["ANALYTICAL_VEL_THRESHOLD"] = float(cfg.get("ANALYTICAL_VEL_THRESHOLD", 0.1))
     cfg["DT"] = float(cfg["DT"])
     cfg["SUBSTEPS"] = int(cfg["SUBSTEPS"])
-    # The syringe always has thin curved mesh colliders; always require at least 16 substeps
+    # The syringe always has thin curved mesh colliders; keep a minimum substep budget
     # so the per-substep dt is short enough for the constraint solver to resolve contacts
     # before penetration accumulates into tunneling through the annulus floor.
-    cfg["SUBSTEPS"] = max(cfg["SUBSTEPS"], 16)
+    cfg["SUBSTEPS"] = max(cfg["SUBSTEPS"], 10)
     cfg["SIM_DURATION"] = float(cfg["SIM_DURATION"])
     cfg["SETTLE_THRESHOLD"] = float(cfg["SETTLE_THRESHOLD"])
     cfg["STOP_ON_SETTLE"] = bool(cfg.get("STOP_ON_SETTLE", False))
@@ -727,10 +732,10 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
         barrel_top_world_y = junction_world_y + barrel_h
         barrel_interior_r = max(barrel_r - eps, eps)
         needle_interior_r = max(needle_r - eps, eps)
-        # Analytical floor matches the visual annulus top face: junction_world_y + t_bottom/2.
-        # This aligns with the 4-piece frame layout in create_environment (plate mode).
+        # Hard floor matches the visual annulus top face: junction_world_y + t_bottom/2.
+        # Outside the needle hole, this behaves as an infinitely thick floor.
         t_bottom_cfg = max(1e-6, float(cfg.get("SYRINGE_BOTTOM_THICKNESS", SYRINGE_BOTTOM_THICKNESS)))
-        barrel_floor_y = junction_world_y + t_bottom_cfg * 0.5
+        floor_y = junction_world_y + t_bottom_cfg * 0.5
 
         def _project_inside_syringe(x: float, y: float, z: float) -> tuple[float, float]:
             rr = math.hypot(x, z)
@@ -759,16 +764,11 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
                         if np.any(in_rim):
                             pos[in_rim, 0] = np.clip(pos[in_rim, 0], -half_s + eps, half_s - eps)
                             pos[in_rim, 2] = np.clip(pos[in_rim, 2], -half_s + eps, half_s - eps)
-                    # Barrel-floor clamp: vertices inside barrel radius but outside the
-                    # needle hole may not go below the annulus top face.
-                    # Vertices within the needle hole radius are allowed through.
+                    # Funnel-aware floor: only the needle hole is permeable.
                     xz_r = np.hypot(pos[:, 0], pos[:, 2])
-                    in_barrel_r = xz_r <= barrel_interior_r + eps
-                    in_needle_hole = xz_r <= needle_interior_r
-                    in_barrel_y = pos[:, 1] < barrel_floor_y
-                    tunnel_mask = in_barrel_r & ~in_needle_hole & in_barrel_y
+                    tunnel_mask = (xz_r > needle_r) & (pos[:, 1] < floor_y)
                     if np.any(tunnel_mask):
-                        pos[tunnel_mask, 1] = barrel_floor_y
+                        pos[tunnel_mask, 1] = floor_y + eps
                     in_syringe = (pos[:, 1] >= needle_tip_world_y - eps) & (pos[:, 1] <= barrel_top_world_y + eps)
                     if np.any(in_syringe):
                         idx = np.where(in_syringe)[0]
@@ -815,17 +815,12 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
                                     pos[2] += dz
                                     moved = True
                         corners = _obb_world_corners(pos, quat, half_ext)
-                        # Barrel-floor clamp: corners inside barrel radius but outside the
-                        # needle hole and below the annulus top → push centroid up.
-                        # Corners within the needle hole radius are allowed through.
+                        # Funnel-aware floor: corners outside the needle hole may not go below floor.
                         xz_r_c = np.hypot(corners[:, 0], corners[:, 2])
-                        in_barrel_r_c = xz_r_c <= barrel_interior_r + eps
-                        in_needle_hole_c = xz_r_c <= needle_interior_r
-                        in_barrel_y_c = corners[:, 1] < barrel_floor_y
-                        floor_hits = in_barrel_r_c & ~in_needle_hole_c & in_barrel_y_c
+                        floor_hits = (xz_r_c > needle_r) & (corners[:, 1] < floor_y)
                         if np.any(floor_hits):
                             worst = float(np.min(corners[floor_hits, 1]))
-                            lift = barrel_floor_y - worst
+                            lift = (floor_y + eps) - worst
                             pos[1] += lift
                             moved = True
                             corners = _obb_world_corners(pos, quat, half_ext)
@@ -1904,6 +1899,7 @@ def spawn_particles(
                     visualization=False,
                 ),
                 material=material,
+                surface=gs.surfaces.Default(vis_mode="visual"),
             )
             entities.append(ent)
         print(
@@ -1959,6 +1955,7 @@ def spawn_particles(
                     visualization=False,
                 ),
                 material=material,
+                surface=gs.surfaces.Default(vis_mode="visual"),
             )
             entities.append(ent)
 
