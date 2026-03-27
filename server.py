@@ -268,6 +268,8 @@ _PHYS_LENGTH_KEYS: tuple[str, ...] = (
     "SYRINGE_BARREL_LENGTH",
     "SYRINGE_NEEDLE_DIAMETER",
     "SYRINGE_NEEDLE_LENGTH",
+    "SYRINGE_WALL_THICKNESS",
+    "SYRINGE_BOTTOM_THICKNESS",
 )
 
 
@@ -467,6 +469,8 @@ class SimulationRuntime:
             syringe_barrel_length=float(_phys_cfg.get("SYRINGE_BARREL_LENGTH", simulation.SYRINGE_BARREL_LENGTH)),
             syringe_needle_diameter=float(_phys_cfg.get("SYRINGE_NEEDLE_DIAMETER", simulation.SYRINGE_NEEDLE_DIAMETER)),
             syringe_needle_length=float(_phys_cfg.get("SYRINGE_NEEDLE_LENGTH", simulation.SYRINGE_NEEDLE_LENGTH)),
+            syringe_wall_thickness=float(_phys_cfg.get("SYRINGE_WALL_THICKNESS", simulation.SYRINGE_WALL_THICKNESS)),
+            syringe_bottom_thickness=float(_phys_cfg.get("SYRINGE_BOTTOM_THICKNESS", simulation.SYRINGE_BOTTOM_THICKNESS)),
             syringe_segments=int(_phys_cfg.get("SYRINGE_SEGMENTS", simulation.SYRINGE_SEGMENTS)),
         )
         self.active_containers = list(containers)
@@ -661,6 +665,8 @@ def save_environment_config(payload: dict[str, Any]):
         "SYRINGE_BARREL_LENGTH": float(cfg.get("SYRINGE_BARREL_LENGTH", simulation.SYRINGE_BARREL_LENGTH)),
         "SYRINGE_NEEDLE_DIAMETER": float(cfg.get("SYRINGE_NEEDLE_DIAMETER", simulation.SYRINGE_NEEDLE_DIAMETER)),
         "SYRINGE_NEEDLE_LENGTH": float(cfg.get("SYRINGE_NEEDLE_LENGTH", simulation.SYRINGE_NEEDLE_LENGTH)),
+        "SYRINGE_WALL_THICKNESS": float(cfg.get("SYRINGE_WALL_THICKNESS", simulation.SYRINGE_WALL_THICKNESS)),
+        "SYRINGE_BOTTOM_THICKNESS": float(cfg.get("SYRINGE_BOTTOM_THICKNESS", simulation.SYRINGE_BOTTOM_THICKNESS)),
         "SYRINGE_SEGMENTS": int(cfg.get("SYRINGE_SEGMENTS", simulation.SYRINGE_SEGMENTS)),
     }
     if wanted["SYRINGE_NEEDLE_DIAMETER"] >= wanted["SYRINGE_BARREL_DIAMETER"]:

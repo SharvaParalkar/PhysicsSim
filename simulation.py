@@ -96,6 +96,8 @@ SYRINGE_BARREL_DIAMETER = 0.20         # m — large tube inner diameter
 SYRINGE_BARREL_LENGTH = 0.30           # m — large tube inner length
 SYRINGE_NEEDLE_DIAMETER = 0.04         # m — outlet hole / needle inner diameter
 SYRINGE_NEEDLE_LENGTH = 0.20           # m — small tube inner length below the barrel
+SYRINGE_WALL_THICKNESS = 0.001         # m — syringe tube wall thickness (barrel + needle)
+SYRINGE_BOTTOM_THICKNESS = 0.001       # m — annulus slab thickness at barrel/needle junction
 SYRINGE_SEGMENTS = 32                  # wall facets for barrel/needle/hole rings
 # Rim height for ENVIRONMENT_TYPE="plate" — keeps particles on the plate (0 = flat open plate).
 PLATE_WALL_HEIGHT    = 0.15            # m — vertical walls along the square perimeter
@@ -264,6 +266,8 @@ DEFAULT_CONFIG = {
     "SYRINGE_BARREL_LENGTH": SYRINGE_BARREL_LENGTH,
     "SYRINGE_NEEDLE_DIAMETER": SYRINGE_NEEDLE_DIAMETER,
     "SYRINGE_NEEDLE_LENGTH": SYRINGE_NEEDLE_LENGTH,
+    "SYRINGE_WALL_THICKNESS": SYRINGE_WALL_THICKNESS,
+    "SYRINGE_BOTTOM_THICKNESS": SYRINGE_BOTTOM_THICKNESS,
     "SYRINGE_SEGMENTS": SYRINGE_SEGMENTS,
     "WALL_THICKNESS": WALL_THICKNESS,
     "PLATE_WALL_HEIGHT": PLATE_WALL_HEIGHT,
@@ -321,11 +325,13 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["ENV_RESTITUTION"] = float(cfg["ENV_RESTITUTION"])
     cfg["CYLINDER_DIAMETER"] = float(cfg["CYLINDER_DIAMETER"])
     cfg["CYLINDER_HEIGHT"] = float(cfg.get("CYLINDER_HEIGHT", CYLINDER_HEIGHT))
-    cfg["CYLINDER_SEGMENTS"] = max(8, int(cfg.get("CYLINDER_SEGMENTS", CYLINDER_SEGMENTS)))
+    cfg["CYLINDER_SEGMENTS"] = max(16, int(cfg.get("CYLINDER_SEGMENTS", CYLINDER_SEGMENTS)))
     cfg["SYRINGE_BARREL_DIAMETER"] = float(cfg.get("SYRINGE_BARREL_DIAMETER", SYRINGE_BARREL_DIAMETER))
     cfg["SYRINGE_BARREL_LENGTH"] = float(cfg.get("SYRINGE_BARREL_LENGTH", SYRINGE_BARREL_LENGTH))
     cfg["SYRINGE_NEEDLE_DIAMETER"] = float(cfg.get("SYRINGE_NEEDLE_DIAMETER", SYRINGE_NEEDLE_DIAMETER))
     cfg["SYRINGE_NEEDLE_LENGTH"] = float(cfg.get("SYRINGE_NEEDLE_LENGTH", SYRINGE_NEEDLE_LENGTH))
+    cfg["SYRINGE_WALL_THICKNESS"] = max(1e-6, float(cfg.get("SYRINGE_WALL_THICKNESS", SYRINGE_WALL_THICKNESS)))
+    cfg["SYRINGE_BOTTOM_THICKNESS"] = max(1e-6, float(cfg.get("SYRINGE_BOTTOM_THICKNESS", SYRINGE_BOTTOM_THICKNESS)))
     cfg["SYRINGE_SEGMENTS"] = max(8, int(cfg.get("SYRINGE_SEGMENTS", SYRINGE_SEGMENTS)))
     cfg["DROP_HEIGHT"] = float(cfg["DROP_HEIGHT"])
     cfg["DROP_SPREAD"] = float(cfg["DROP_SPREAD"])
@@ -758,10 +764,12 @@ def enforce_container_bounds(entities, physics_mesh, cfg: dict) -> None:
         barrel_h = float(cfg.get("SYRINGE_BARREL_LENGTH", SYRINGE_BARREL_LENGTH))
         needle_r = float(cfg.get("SYRINGE_NEEDLE_DIAMETER", SYRINGE_NEEDLE_DIAMETER)) * 0.5
         needle_h = float(cfg.get("SYRINGE_NEEDLE_LENGTH", SYRINGE_NEEDLE_LENGTH))
-        barrel_y_min = t
-        barrel_y_max = t + barrel_h
-        needle_y_min = -needle_h
-        needle_y_max = t
+        bottom_t = max(1e-6, float(cfg.get("SYRINGE_BOTTOM_THICKNESS", SYRINGE_BOTTOM_THICKNESS)))
+        junction_y = bottom_t * 0.5
+        barrel_y_min = junction_y
+        barrel_y_max = junction_y + barrel_h
+        needle_y_min = junction_y - needle_h
+        needle_y_max = junction_y
         for e in entities:
             name = type(e).__name__
             if name == "FEMEntity":
@@ -1282,6 +1290,8 @@ def create_environment(
     syringe_barrel_length: float = SYRINGE_BARREL_LENGTH,
     syringe_needle_diameter: float = SYRINGE_NEEDLE_DIAMETER,
     syringe_needle_length: float = SYRINGE_NEEDLE_LENGTH,
+    syringe_wall_thickness: float = SYRINGE_WALL_THICKNESS,
+    syringe_bottom_thickness: float = SYRINGE_BOTTOM_THICKNESS,
     syringe_segments: int = SYRINGE_SEGMENTS,
 ) -> tuple[set, dict]:
     container_ids = set()
@@ -1366,7 +1376,8 @@ def create_environment(
         return (container_ids, env_info)
 
     if kind == "syringe":
-        t = float(wall_thickness)
+        t_wall = max(1e-6, float(syringe_wall_thickness))
+        t_bottom = max(1e-6, float(syringe_bottom_thickness))
         barrel_d = float(syringe_barrel_diameter)
         barrel_h = float(syringe_barrel_length)
         needle_d = float(syringe_needle_diameter)
@@ -1381,7 +1392,7 @@ def create_environment(
         needle_r = 0.5 * needle_d
         key = (
             f"dB{barrel_d:.9f}_hB{barrel_h:.9f}_dN{needle_d:.9f}_hN{needle_h:.9f}_"
-            f"t{t:.9f}_n{seg}"
+            f"tw{t_wall:.9f}_tb{t_bottom:.9f}_n{seg}"
         )
 
         barrel_path = _container_mesh_proxy_path("syringe_barrel", key)
@@ -1391,7 +1402,7 @@ def create_environment(
         _write_open_tube_obj(
             barrel_path,
             inner_radius=barrel_r,
-            wall_thickness=t,
+            wall_thickness=t_wall,
             height=barrel_h,
             segments=seg,
         )
@@ -1399,17 +1410,17 @@ def create_environment(
             annulus_path,
             inner_radius=needle_r,
             outer_radius=barrel_r,
-            thickness=t,
+            thickness=t_bottom,
             segments=seg,
         )
         _write_open_tube_obj(
             needle_path,
             inner_radius=needle_r,
-            wall_thickness=t,
+            wall_thickness=t_wall,
             height=needle_h,
             segments=seg,
         )
-        junction_y = t * 0.5
+        junction_y = t_bottom * 0.5
 
         barrel = scene.add_entity(
             gs.morphs.Mesh(
@@ -1452,7 +1463,7 @@ def create_environment(
         container_ids.add(needle)
 
         env_info = {
-            "surface_y": t,
+            "surface_y": t_bottom,
             "top_y": junction_y + barrel_h,
             "inner_radius": barrel_r,
             "spread_radius": barrel_r,
@@ -2746,6 +2757,8 @@ def main():
         syringe_barrel_length=SYRINGE_BARREL_LENGTH,
         syringe_needle_diameter=SYRINGE_NEEDLE_DIAMETER,
         syringe_needle_length=SYRINGE_NEEDLE_LENGTH,
+        syringe_wall_thickness=SYRINGE_WALL_THICKNESS,
+        syringe_bottom_thickness=SYRINGE_BOTTOM_THICKNESS,
         syringe_segments=SYRINGE_SEGMENTS,
     )
     container_ids = {_entity_id(e) for e in container_ids}

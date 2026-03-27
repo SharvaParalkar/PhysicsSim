@@ -133,6 +133,8 @@ const DEFAULT_SYRINGE_SETTINGS = {
   SYRINGE_BARREL_LENGTH: 0.3,
   SYRINGE_NEEDLE_DIAMETER: 0.04,
   SYRINGE_NEEDLE_LENGTH: 0.2,
+  SYRINGE_WALL_THICKNESS: 0.001,
+  SYRINGE_BOTTOM_THICKNESS: 0.001,
   SYRINGE_PLATE_GAP: 0.01,
   SYRINGE_SEGMENTS: 32,
 }
@@ -273,6 +275,8 @@ export default function App() {
         SYRINGE_BARREL_LENGTH: simConfig.SYRINGE_BARREL_LENGTH ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_BARREL_LENGTH,
         SYRINGE_NEEDLE_DIAMETER: simConfig.SYRINGE_NEEDLE_DIAMETER ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_NEEDLE_DIAMETER,
         SYRINGE_NEEDLE_LENGTH: simConfig.SYRINGE_NEEDLE_LENGTH ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_NEEDLE_LENGTH,
+        SYRINGE_WALL_THICKNESS: simConfig.SYRINGE_WALL_THICKNESS ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_WALL_THICKNESS,
+        SYRINGE_BOTTOM_THICKNESS: simConfig.SYRINGE_BOTTOM_THICKNESS ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_BOTTOM_THICKNESS,
         SYRINGE_PLATE_GAP: simConfig.SYRINGE_PLATE_GAP ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_PLATE_GAP,
         SYRINGE_SEGMENTS: simConfig.SYRINGE_SEGMENTS ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_SEGMENTS,
       },
@@ -1446,6 +1450,8 @@ export default function App() {
                 syringeBarrelLength={simConfig.SYRINGE_BARREL_LENGTH}
                 syringeNeedleDiameter={simConfig.SYRINGE_NEEDLE_DIAMETER}
                 syringeNeedleLength={simConfig.SYRINGE_NEEDLE_LENGTH}
+                syringeWallThickness={simConfig.SYRINGE_WALL_THICKNESS}
+                syringeBottomThickness={simConfig.SYRINGE_BOTTOM_THICKNESS}
                 syringePlateGap={simConfig.SYRINGE_PLATE_GAP}
                 syringeSegments={simConfig.SYRINGE_SEGMENTS}
               />
@@ -1557,6 +1563,32 @@ export default function App() {
                 />
               </label>
               <label style={labelStyle}>
+                Syringe wall thickness ({lengthUnitLabel})
+                <input
+                  type="number"
+                  min={0.0001 / metersPerUnit}
+                  step={0.0005 / metersPerUnit}
+                  value={(simConfig.SYRINGE_WALL_THICKNESS ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_WALL_THICKNESS) / metersPerUnit}
+                  onChange={(e) =>
+                    setSimConfig((p) => ({ ...p, SYRINGE_WALL_THICKNESS: Math.max(1e-6, Number(e.target.value) * metersPerUnit) }))
+                  }
+                  style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                />
+              </label>
+              <label style={labelStyle}>
+                Syringe bottom thickness ({lengthUnitLabel})
+                <input
+                  type="number"
+                  min={0.0001 / metersPerUnit}
+                  step={0.0005 / metersPerUnit}
+                  value={(simConfig.SYRINGE_BOTTOM_THICKNESS ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_BOTTOM_THICKNESS) / metersPerUnit}
+                  onChange={(e) =>
+                    setSimConfig((p) => ({ ...p, SYRINGE_BOTTOM_THICKNESS: Math.max(1e-6, Number(e.target.value) * metersPerUnit) }))
+                  }
+                  style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                />
+              </label>
+              <label style={labelStyle}>
                 Gap above plate ({lengthUnitLabel})
                 <input
                   type="number"
@@ -1621,6 +1653,8 @@ export default function App() {
                 syringeBarrelLength={simConfig.SYRINGE_BARREL_LENGTH}
                 syringeNeedleDiameter={simConfig.SYRINGE_NEEDLE_DIAMETER}
                 syringeNeedleLength={simConfig.SYRINGE_NEEDLE_LENGTH}
+                syringeWallThickness={simConfig.SYRINGE_WALL_THICKNESS}
+                syringeBottomThickness={simConfig.SYRINGE_BOTTOM_THICKNESS}
                 syringePlateGap={simConfig.SYRINGE_PLATE_GAP}
                 syringeSegments={simConfig.SYRINGE_SEGMENTS}
               />

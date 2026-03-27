@@ -740,7 +740,9 @@ function ShallowBasket(props: {
 }
 
 function SyringePreview(props: {
+  plateThickness: number
   wallThickness: number
+  bottomThickness: number
   barrelDiameter: number
   barrelLength: number
   needleDiameter: number
@@ -748,8 +750,19 @@ function SyringePreview(props: {
   plateGap?: number
   segments: number
 }) {
-  const { wallThickness, barrelDiameter, barrelLength, needleDiameter, needleLength, plateGap = 0.01, segments } = props
-  const t = Math.max(wallThickness, 1e-6)
+  const {
+    plateThickness,
+    wallThickness,
+    bottomThickness,
+    barrelDiameter,
+    barrelLength,
+    needleDiameter,
+    needleLength,
+    plateGap = 0.01,
+    segments,
+  } = props
+  const tWall = Math.max(wallThickness, 1e-6)
+  const tBottom = Math.max(bottomThickness, 1e-6)
   const seg = Math.max(8, Math.round(segments))
   const barrelR = Math.max(barrelDiameter * 0.5, 1e-6)
   const needleR = Math.max(needleDiameter * 0.5, 1e-6)
@@ -805,35 +818,36 @@ function SyringePreview(props: {
       bottomMat.dispose()
     }
   }, [barrelMat, needleMat, bottomMat])
-  const plateTopY = t / 2
-  const needleCenterY = t / 2 - needleLength / 2
+  const junctionY = tBottom / 2
+  const plateTopY = Math.max(plateThickness, 1e-6) / 2
+  const needleCenterY = junctionY - needleLength / 2
   const needleTipLocalY = needleCenterY - needleLength / 2
   const syringeLiftY = plateTopY + gap - needleTipLocalY
 
   return (
     <group position={[0, syringeLiftY, 0]}>
-      <mesh position={[0, t / 2 + barrelLength / 2, 0]} receiveShadow material={barrelMat}>
-        <cylinderGeometry args={[barrelR + t, barrelR + t, barrelLength, seg, 1, true]} />
+      <mesh position={[0, junctionY + barrelLength / 2, 0]} receiveShadow material={barrelMat}>
+        <cylinderGeometry args={[barrelR + tWall, barrelR + tWall, barrelLength, seg, 1, true]} />
       </mesh>
-      <mesh position={[0, t / 2 + barrelLength / 2, 0]} receiveShadow material={barrelMat}>
+      <mesh position={[0, junctionY + barrelLength / 2, 0]} receiveShadow material={barrelMat}>
         <cylinderGeometry args={[barrelR, barrelR, barrelLength, seg, 1, true]} />
       </mesh>
-      <mesh position={[0, t / 2 + barrelLength, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={barrelMat}>
-        <ringGeometry args={[barrelR, barrelR + t, seg]} />
+      <mesh position={[0, junctionY + barrelLength, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={barrelMat}>
+        <ringGeometry args={[barrelR, barrelR + tWall, seg]} />
       </mesh>
 
-      <mesh position={[0, t / 2, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={bottomMat}>
+      <mesh position={[0, junctionY, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={bottomMat}>
         <ringGeometry args={[needleR, barrelR, seg]} />
       </mesh>
 
       <mesh position={[0, needleCenterY, 0]} receiveShadow material={needleMat}>
-        <cylinderGeometry args={[needleR + t, needleR + t, needleLength, seg, 1, true]} />
+        <cylinderGeometry args={[needleR + tWall, needleR + tWall, needleLength, seg, 1, true]} />
       </mesh>
       <mesh position={[0, needleCenterY, 0]} receiveShadow material={needleMat}>
         <cylinderGeometry args={[needleR, needleR, needleLength, seg, 1, true]} />
       </mesh>
-      <mesh position={[0, t / 2, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={needleMat}>
-        <ringGeometry args={[needleR, needleR + t, seg]} />
+      <mesh position={[0, junctionY, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={needleMat}>
+        <ringGeometry args={[needleR, needleR + tWall, seg]} />
       </mesh>
     </group>
   )
@@ -863,6 +877,8 @@ function Scene(props: {
   syringeBarrelLength?: number
   syringeNeedleDiameter?: number
   syringeNeedleLength?: number
+  syringeWallThickness?: number
+  syringeBottomThickness?: number
   syringePlateGap?: number
   syringeSegments?: number
 }) {
@@ -888,6 +904,8 @@ function Scene(props: {
     syringeBarrelLength = 0.3,
     syringeNeedleDiameter = 0.04,
     syringeNeedleLength = 0.2,
+    syringeWallThickness = wallThickness,
+    syringeBottomThickness = wallThickness,
     syringePlateGap = 0.01,
     syringeSegments = 32,
   } = props
@@ -965,7 +983,9 @@ function Scene(props: {
             ) : null}
             {showSyringeInPlate ? (
               <SyringePreview
-                wallThickness={wallThickness}
+                plateThickness={wallThickness}
+                wallThickness={syringeWallThickness}
+                bottomThickness={syringeBottomThickness}
                 barrelDiameter={syringeBarrelDiameter}
                 barrelLength={syringeBarrelLength}
                 needleDiameter={syringeNeedleDiameter}
@@ -1023,6 +1043,8 @@ type Viewer3DProps = {
   syringeBarrelLength?: number
   syringeNeedleDiameter?: number
   syringeNeedleLength?: number
+  syringeWallThickness?: number
+  syringeBottomThickness?: number
   syringePlateGap?: number
   syringeSegments?: number
 }
@@ -1051,6 +1073,8 @@ export default function Viewer3D(props: Viewer3DProps) {
     syringeBarrelLength,
     syringeNeedleDiameter,
     syringeNeedleLength,
+    syringeWallThickness,
+    syringeBottomThickness,
     syringePlateGap,
     syringeSegments,
   } = props
@@ -1203,6 +1227,8 @@ export default function Viewer3D(props: Viewer3DProps) {
           syringeBarrelLength={syringeBarrelLength}
           syringeNeedleDiameter={syringeNeedleDiameter}
           syringeNeedleLength={syringeNeedleLength}
+          syringeWallThickness={syringeWallThickness}
+          syringeBottomThickness={syringeBottomThickness}
           syringePlateGap={syringePlateGap}
           syringeSegments={syringeSegments}
         />

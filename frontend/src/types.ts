@@ -126,6 +126,10 @@ export interface SimulationConfig {
   SYRINGE_NEEDLE_DIAMETER?: number
   /** Syringe needle inner length (m). */
   SYRINGE_NEEDLE_LENGTH?: number
+  /** Syringe tube wall thickness (m) for barrel + needle side walls. */
+  SYRINGE_WALL_THICKNESS?: number
+  /** Syringe annulus slab thickness (m) at the barrel-to-needle junction. */
+  SYRINGE_BOTTOM_THICKNESS?: number
   /** Vertical gap from syringe needle tip to plate top (m) in plate preview mode. */
   SYRINGE_PLATE_GAP?: number
   /** Facet count for syringe wall approximation. */
