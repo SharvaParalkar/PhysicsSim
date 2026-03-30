@@ -138,6 +138,20 @@ export interface SimulationConfig {
   SYRINGE_SEGMENTS?: number
   /** Syringe piston descent speed (m/s) per outer timestep; 0 keeps the piston fixed. */
   PISTON_SPEED?: number
+  /** When false, the piston is not created in the solver. */
+  PISTON_ENABLED?: boolean
+  /** Toggle syringe geometry in plate mode. */
+  ENABLE_SYRINGE?: boolean
+  /** Fill a container mesh volume instead of drop spawning. */
+  FILL_CONTAINER_MESH?: boolean
+  /** Filename of mesh container from backend `/container-meshes`. */
+  CONTAINER_MESH_FILE?: string
+  /** Uniform scale applied to the container mesh (meters). */
+  CONTAINER_MESH_SCALE?: number
+  /** Auto-compute max particle count based on container and particle volume. */
+  AUTO_MAX_PARTICLES?: boolean
+  /** Minimum center spacing multiplier for mesh fill packing. */
+  FILL_SPACING_FACTOR?: number
 }
 
 export type WsLog = { type: 'log'; line: string }

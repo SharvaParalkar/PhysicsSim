@@ -33,7 +33,7 @@ export default function Dashboard(props: {
 }) {
   const { keSeries, pressureSeries, metrics } = props
   // Default: keep all collapsible panels closed to maximize 3D viewer space.
-  const [open, setOpen] = useState({ ke: false, pressure: false, chains: false })
+  const [open, setOpen] = useState({ z: false, ke: false, pressure: false, chains: false })
   const graphRef = useRef<SVGSVGElement | null>(null)
   const links = useMemo(() => normalizeGraphLinks(metrics), [metrics])
   const forceValues = useMemo(() => links.map(getForce).filter((v) => Number.isFinite(v) && v >= 0), [links])
@@ -110,6 +110,27 @@ export default function Dashboard(props: {
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 10 }}>
+      <div style={cardStyle}>
+        {panelHeader('Mean contacts per particle Z (plateau)', 'z')}
+        {open.z ? (
+          <div style={{ width: '100%', height: 108 }}>
+            {(metrics.z_history?.length ?? 0) === 0 ? (
+              <div style={{ height: '100%', display: 'grid', placeItems: 'center', color: '#5b7598', fontSize: 12, textAlign: 'center', padding: '0 8px' }}>
+                No Z-series yet — run a simulation to populate the chart.
+              </div>
+            ) : (
+              <ResponsiveContainer>
+                <LineChart data={metrics.z_history}>
+                  <XAxis dataKey="t" tick={{ fill: '#4f6f93', fontSize: 11 }} />
+                  <YAxis tick={{ fill: '#4f6f93', fontSize: 11 }} />
+                  <Tooltip formatter={(v) => (typeof v === 'number' ? v.toFixed(4) : String(v))} />
+                  <Line type="monotone" dataKey="Z" stroke="#3a86ff" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        ) : null}
+      </div>
       <div style={cardStyle}>
         {panelHeader('Total kinetic energy (J)', 'ke')}
         {open.ke ? (

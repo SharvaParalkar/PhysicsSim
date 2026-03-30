@@ -1,4 +1,5 @@
 import io
+import csv
 import json
 import logging
 import math
@@ -17,7 +18,7 @@ from typing import Any, Callable, Optional
 import h5py
 import pandas as pd
 from tqdm import tqdm
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 
@@ -176,6 +177,7 @@ except Exception:
 OUTPUT_DIR = getattr(simulation, "OUTPUT_DIR", "./results")
 PARTICLES_DIR = Path(__file__).resolve().parent / "Particles"
 ENVIRONMENT_DIR = Path(__file__).resolve().parent / "environment"
+CONTAINER_MESH_DIR = Path(__file__).resolve().parent / "ContainerMeshes"
 DEFAULT_PARTICLE_NAME = "particle.obj"
 LATEST_Z_HISTORY: list[dict[str, float]] = []
 LATEST_MAX_VEL_HISTORY: list[dict[str, float]] = []
@@ -220,6 +222,35 @@ def _resolve_particle_file(particle_value: Any) -> str:
         raise ValueError(f"Particle file not found: {name}")
     if candidate.suffix.lower() != ".obj":
         raise ValueError(f"Unsupported particle file extension: {candidate.suffix}")
+    return str(candidate)
+
+
+def _list_container_mesh_names() -> list[str]:
+    CONTAINER_MESH_DIR.mkdir(parents=True, exist_ok=True)
+    if not CONTAINER_MESH_DIR.exists() or not CONTAINER_MESH_DIR.is_dir():
+        return []
+    return sorted(
+        p.name
+        for p in CONTAINER_MESH_DIR.iterdir()
+        if p.is_file() and p.suffix.lower() in {".obj", ".stl"}
+    )
+
+
+def _resolve_container_mesh_file(mesh_value: Any) -> str:
+    CONTAINER_MESH_DIR.mkdir(parents=True, exist_ok=True)
+    name = str(mesh_value or "").strip()
+    if not name:
+        raise ValueError("Container mesh file is required.")
+    name = Path(name).name
+    candidate = (CONTAINER_MESH_DIR / name).resolve()
+    try:
+        candidate.relative_to(CONTAINER_MESH_DIR.resolve())
+    except ValueError as exc:
+        raise ValueError(f"Invalid container mesh file: {name}") from exc
+    if not candidate.exists() or not candidate.is_file():
+        raise ValueError(f"Container mesh file not found: {name}")
+    if candidate.suffix.lower() not in {".obj", ".stl"}:
+        raise ValueError(f"Unsupported container mesh extension: {candidate.suffix}")
     return str(candidate)
 
 
@@ -296,6 +327,7 @@ _PHYS_LENGTH_KEYS: tuple[str, ...] = (
     "SYRINGE_WALL_THICKNESS",
     "SYRINGE_BOTTOM_THICKNESS",
     "SYRINGE_PLATE_GAP",
+    "CONTAINER_MESH_SCALE",
 )
 
 
@@ -522,6 +554,9 @@ class SimulationRuntime:
         self._phys_cfg = _phys_cfg
 
         _p("environment", 0.35, "Building container geometry…")
+        container_mesh_file: Optional[str] = None
+        if bool(_phys_cfg.get("FILL_CONTAINER_MESH", False)):
+            container_mesh_file = _resolve_container_mesh_file(_phys_cfg.get("CONTAINER_MESH_FILE"))
         containers, env_info = simulation.create_environment(
             self.scene,
             _phys_cfg["ENVIRONMENT_TYPE"],
@@ -540,6 +575,11 @@ class SimulationRuntime:
             syringe_bottom_thickness=float(_phys_cfg.get("SYRINGE_BOTTOM_THICKNESS", simulation.SYRINGE_BOTTOM_THICKNESS)),
             syringe_plate_gap=float(_phys_cfg.get("SYRINGE_PLATE_GAP", simulation.SYRINGE_PLATE_GAP)),
             syringe_segments=int(_phys_cfg.get("SYRINGE_SEGMENTS", simulation.SYRINGE_SEGMENTS)),
+            syringe_allow_needle_flow=bool(_phys_cfg.get("SYRINGE_ALLOW_NEEDLE_FLOW", simulation.SYRINGE_ALLOW_NEEDLE_FLOW)),
+            piston_enabled=bool(_phys_cfg.get("PISTON_ENABLED", False)),
+            enable_syringe=bool(_phys_cfg.get("ENABLE_SYRINGE", True)),
+            container_mesh_file=container_mesh_file,
+            container_mesh_scale=float(_phys_cfg.get("CONTAINER_MESH_SCALE", 1.0)),
         )
         self.active_containers = list(containers)
         self.piston = env_info.get("piston")
@@ -563,6 +603,8 @@ class SimulationRuntime:
             prior_fem_snapshots=prior_fem_snapshots,
             coacd_proxy_file=self._coacd_proxy_file,
             physics_norm=physics_norm,
+            auto_max_particles=bool(_phys_cfg.get("AUTO_MAX_PARTICLES", True)),
+            fill_spacing_factor=float(_phys_cfg.get("FILL_SPACING_FACTOR", 1.1)),
         )
         self.active_entities = list(entities)
         if not _use_cpu_backend():
@@ -623,6 +665,49 @@ def get_particles():
         "particles": particles,
         "default": default_particle,
     }
+
+
+@app.get("/container-meshes")
+def get_container_meshes():
+    meshes = _list_container_mesh_names()
+    default_mesh = meshes[0] if meshes else ""
+    return {
+        "meshes": meshes,
+        "default": default_mesh,
+    }
+
+
+@app.post("/container-meshes/upload")
+async def upload_container_mesh(file: UploadFile = File(...)):
+    CONTAINER_MESH_DIR.mkdir(parents=True, exist_ok=True)
+    raw_name = Path(str(file.filename or "mesh.obj")).name
+    ext = Path(raw_name).suffix.lower()
+    if ext not in {".obj", ".stl"}:
+        raise HTTPException(status_code=400, detail="Only .obj and .stl container meshes are supported.")
+    safe_stem = "".join(ch for ch in Path(raw_name).stem if ch.isalnum() or ch in ("-", "_")).strip() or "mesh"
+    out_name = f"{safe_stem}{ext}"
+    out_path = (CONTAINER_MESH_DIR / out_name).resolve()
+    i = 1
+    while out_path.exists():
+        out_name = f"{safe_stem}_{i}{ext}"
+        out_path = (CONTAINER_MESH_DIR / out_name).resolve()
+        i += 1
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    out_path.write_bytes(data)
+    return {"ok": True, "name": out_name}
+
+
+@app.get("/container-meshes/{mesh_name}")
+def get_container_mesh(mesh_name: str):
+    try:
+        resolved = Path(_resolve_container_mesh_file(mesh_name))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    ext = resolved.suffix.lower()
+    media = "model/stl" if ext == ".stl" else "text/plain; charset=utf-8"
+    return Response(content=resolved.read_bytes(), media_type=media)
 
 
 @app.get("/particles/{particle_name}")
@@ -941,11 +1026,43 @@ def _build_export_payload() -> dict[str, Any]:
 
     summary["timestamp"] = LATEST_SIM_TIMESTAMP or ""
 
+    cfg_phys = dict(getattr(RUNTIME, "_phys_cfg", {}) or {})
+    pn = float(getattr(RUNTIME, "_physics_norm", 1.0))
+    if pn > 1e-18 and abs(pn - 1.0) > 1e-12:
+        cfg_display = dict(cfg_phys)
+        for k in _PHYS_LENGTH_KEYS:
+            if k in cfg_display:
+                cfg_display[k] = float(cfg_display[k]) / pn
+    else:
+        cfg_display = cfg_phys
+    if "PISTON_ENABLED" not in cfg_display:
+        cfg_display["PISTON_ENABLED"] = False
+
     return _sanitize_floats({
         "summary": summary,
         "particles": particles,
         "contacts": contacts,
+        "environment": cfg_display,
     })
+
+
+def _particle_plateau_csv_bytes() -> bytes:
+    """
+    Build CSV bytes for the mean particle-particle contact history (coordination Z).
+
+    File label requested by UI/export: particle-particle-plateau.csv
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["t_s", "mean_contacts_per_particle_Z"])
+    for row in LATEST_Z_HISTORY:
+        try:
+            t = float(row.get("t", 0.0))
+            z = float(row.get("Z", 0.0))
+        except Exception:
+            continue
+        writer.writerow([f"{t:.9g}", f"{z:.9g}"])
+    return buf.getvalue().encode("utf-8")
 
 
 @app.get("/export")
@@ -997,6 +1114,16 @@ def download_summary_json():
                     headers={"Content-Disposition": "attachment; filename=summary.json"})
 
 
+@app.get("/download/particle-particle-plateau-csv")
+def download_particle_particle_plateau_csv():
+    content = _particle_plateau_csv_bytes()
+    return Response(
+        content=content,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=particle-particle-plateau.csv"},
+    )
+
+
 @app.get("/download/results-zip")
 def download_results_zip():
     """Package all CSV and JSON results files into a single ZIP for Analysis.html import."""
@@ -1022,6 +1149,14 @@ def download_results_zip():
         except Exception as exc:
             logger.warning("Could not build export JSON for ZIP: %s", exc)
 
+        # Add Z(t) curve CSV: mean contacts per particle plateau trace
+        try:
+            plateau_name = "particle-particle-plateau.csv"
+            zf.writestr(plateau_name, _particle_plateau_csv_bytes())
+            files_added.append(plateau_name)
+        except Exception as exc:
+            logger.warning("Could not build %s for ZIP: %s", "particle-particle-plateau.csv", exc)
+
         # Embed a manifest so Analysis.html knows what's inside
         manifest = {
             "exported_at": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -1046,7 +1181,7 @@ def download_results_zip():
 
 @app.get("/download/obj")
 def download_obj():
-    """Return a ZIP containing settled_particles.obj, contact_network.obj, README.txt."""
+    """Return a ZIP containing settled particles + environment + contact network OBJ files."""
     entities = list(RUNTIME.active_entities)
     original_mesh = RUNTIME._original_mesh
 
@@ -1069,6 +1204,24 @@ def download_obj():
         logger.error("export_contact_network_obj failed: %s", exc)
         network_obj = "# Contact network export failed\n"
 
+    try:
+        cfg_phys = dict(getattr(RUNTIME, "_phys_cfg", {}) or {})
+        pn = float(getattr(RUNTIME, "_physics_norm", 1.0))
+        if pn > 1e-18 and abs(pn - 1.0) > 1e-12:
+            cfg_display = dict(cfg_phys)
+            for k in _PHYS_LENGTH_KEYS:
+                if k in cfg_display:
+                    cfg_display[k] = float(cfg_display[k]) / pn
+        else:
+            cfg_display = cfg_phys
+        if "PISTON_ENABLED" not in cfg_display:
+            cfg_display["PISTON_ENABLED"] = False
+        piston_y = simulation.piston_center_y_display(RUNTIME.piston, RUNTIME._physics_norm)
+        env_obj = simulation.export_environment_obj(cfg_display, piston_center_y=piston_y)
+    except Exception as exc:
+        logger.error("export_environment_obj failed: %s", exc)
+        env_obj = "# Environment export failed\n"
+
     n = len(entities)
     readme = (
         "GRANULAR JAMMING SIMULATION — SETTLED GEOMETRY\n"
@@ -1080,6 +1233,8 @@ def download_obj():
         "settled_particles.obj\n"
         f"  {n} named mesh groups (o particle_0 … o particle_{n - 1}).\n"
         "  Each group is one particle in world-space coordinates.\n\n"
+        "environment.obj\n"
+        "  Plate/rim/syringe geometry (and piston when enabled) in world-space coordinates.\n\n"
         "contact_network.obj\n"
         "  Line segments (l commands) connecting the centres of contacting\n"
         "  particle pairs.  Import as a separate layer.\n\n"
@@ -1087,7 +1242,9 @@ def download_obj():
         "------------------------\n"
         "  1. File > Import > settled_particles.obj\n"
         "     Each particle arrives as a separate mesh object.\n"
-        "  2. File > Import > contact_network.obj\n"
+        "  2. File > Import > environment.obj\n"
+        "     Container + syringe geometry on separate object groups.\n"
+        "  3. File > Import > contact_network.obj\n"
         "     Lines land on a new layer; use as a reference network.\n\n"
         "Units: metres.  Scale by 1000 to convert to millimetres.\n"
     )
@@ -1095,6 +1252,7 @@ def download_obj():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("settled_particles.obj", particles_obj)
+        zf.writestr("environment.obj", env_obj)
         zf.writestr("contact_network.obj", network_obj)
         zf.writestr("README.txt", readme)
     buf.seek(0)
@@ -1180,7 +1338,18 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
         LATEST_PRESSURE_HISTORY = []
         LATEST_CONTACT_GRAPH_DICT = {}
         LATEST_CONTACT_GRAPH_LINKS = []
-        surface_area_m2 = float(simulation.container_surface_area_m2(str(cfg.get("ENVIRONMENT_TYPE", "plate")), cfg))
+        cfg_area = dict(cfg)
+        if bool(cfg_area.get("FILL_CONTAINER_MESH", False)) and cfg_area.get("CONTAINER_MESH_FILE"):
+            try:
+                cfg_area["CONTAINER_MESH_FILE"] = _resolve_container_mesh_file(cfg_area.get("CONTAINER_MESH_FILE"))
+            except ValueError:
+                pass
+        surface_area_m2 = float(
+            simulation.container_surface_area_m2(
+                str(cfg_area.get("ENVIRONMENT_TYPE", "plate")),
+                cfg_area,
+            )
+        )
         falling_contact_stride = int(cfg.get("CONTACT_EXTRACT_FALLING_EVERY", simulation.CONTACT_EXTRACT_FALLING_EVERY))
         rho = float(cfg["DENSITY"])
 
@@ -1757,6 +1926,19 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
             )
         print(f"[DEBUG] final contact count={len(contacts)}", flush=True)
         metrics = simulation.compute_metrics(contacts, particle_ids, container_surface_area_m2=surface_area_m2, depth_tol=depth_tol)
+        # Ensure exported plateau CSV always includes the final settled coordination number.
+        # Live Z sampling may be sparse/skipped in some runtime modes, which can otherwise
+        # leave only an initial zero in `LATEST_Z_HISTORY`.
+        final_z = float(metrics.get("Z", 0.0))
+        final_t = float(t_elapsed)
+        if not LATEST_Z_HISTORY:
+            LATEST_Z_HISTORY.append({"t": final_t, "Z": final_z})
+        else:
+            last = LATEST_Z_HISTORY[-1]
+            last_t = float(last.get("t", -1.0))
+            last_z = float(last.get("Z", 0.0))
+            if abs(last_t - final_t) > 1e-9 or abs(last_z - final_z) > 1e-9:
+                LATEST_Z_HISTORY.append({"t": final_t, "Z": final_z})
         vertex_stress: dict[int, list[float]] = {}
         if RUNTIME._original_mesh is not None:
             vertex_stress = simulation.compute_vertex_stress(

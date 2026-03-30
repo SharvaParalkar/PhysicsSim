@@ -3,6 +3,7 @@ import { Edges, OrbitControls } from '@react-three/drei'
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import * as THREE from 'three'
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
+import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import type { LivePhysicsFrame, WsFrameParticle } from './types'
 
 const _m = new THREE.Matrix4()
@@ -486,8 +487,9 @@ function CameraAutoFit(props: {
   far: number
   fov: number
   target: [number, number, number]
+  resetToken?: number
 }) {
-  const { position, near, far, fov, target } = props
+  const { position, near, far, fov, target, resetToken = 0 } = props
   const { camera } = useThree()
 
   useEffect(() => {
@@ -500,12 +502,13 @@ function CameraAutoFit(props: {
       perspective.updateProjectionMatrix()
     }
     camera.lookAt(target[0], target[1], target[2])
-  }, [camera, position, near, far, fov, target])
+  }, [camera, position, near, far, fov, target, resetToken])
 
   return null
 }
 
 type OrbitTargetMode = 'scene-center' | 'particles-centroid' | 'particle-id'
+type ViewPreset = 'front' | 'right' | 'left' | 'top' | 'isometric'
 
 function OrbitTargetController(props: {
   controlsRef: MutableRefObject<unknown>
@@ -1010,6 +1013,76 @@ function PistonHead({
   )
 }
 
+function MeshContainerPreview(props: { objUrl: string; meshScale: number }) {
+  const { objUrl, meshScale } = props
+  const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const isStl = /\.stl(?:\?|$)/i.test(objUrl)
+        const resp = await fetch(objUrl)
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+        let base: THREE.BufferGeometry | null = null
+        if (isStl) {
+          const ab = await resp.arrayBuffer()
+          base = new STLLoader().parse(ab)
+        } else {
+          const txt = await resp.text()
+          const parsed = new OBJLoader().parse(txt)
+          let g: THREE.BufferGeometry | undefined
+          parsed.traverse((child) => {
+            if (g) return
+            const mesh = child as THREE.Mesh
+            if (mesh?.isMesh && mesh.geometry) g = mesh.geometry
+          })
+          base = g ? g.clone() : null
+        }
+        if (!base) throw new Error('No mesh geometry in container file')
+        if (meshScale !== 1 && Number.isFinite(meshScale) && meshScale > 0) {
+          base.applyMatrix4(new THREE.Matrix4().makeScale(meshScale, meshScale, meshScale))
+        }
+        // Keep authored origin so preview matches solver placement exactly.
+        base.computeVertexNormals()
+        if (!cancelled) {
+          setGeometry((prev) => {
+            prev?.dispose()
+            return base
+          })
+        } else {
+          base.dispose()
+        }
+      } catch (e) {
+        if (!cancelled) {
+          console.warn('[Viewer3D] container mesh preview load failed:', objUrl, e)
+          setGeometry((prev) => {
+            prev?.dispose()
+            return null
+          })
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [objUrl, meshScale])
+
+  useEffect(() => {
+    return () => {
+      geometry?.dispose()
+    }
+  }, [geometry])
+
+  if (!geometry) return null
+  return (
+    <mesh geometry={geometry} receiveShadow>
+      <meshStandardMaterial color="#9eb6d4" roughness={1} metalness={0} transparent opacity={0.2} depthWrite={false} side={THREE.DoubleSide} />
+      <Edges color="#000000" threshold={15} />
+    </mesh>
+  )
+}
+
 /** Streamed piston centre Y from the solver; cylinder visual matches the Box collider extent. */
 function LiveSyringePiston(props: {
   liveFrameRef: MutableRefObject<LivePhysicsFrame>
@@ -1195,7 +1268,7 @@ function Scene(props: {
   lengthScale: number
   /** Scale OBJ geometry vertices to physics world metres (e.g. 1e-6 for µm-authored meshes). */
   meshScale?: number
-  environmentType: 'plate' | 'cylinder' | 'syringe'
+  environmentType: 'plate' | 'cylinder' | 'syringe' | 'mesh'
   plateSize: number
   wallThickness: number
   plateWallHeight: number
@@ -1212,6 +1285,9 @@ function Scene(props: {
   syringeBottomThickness?: number
   syringePlateGap?: number
   syringeSegments?: number
+  showLivePiston?: boolean
+  containerMeshUrl?: string | null
+  containerMeshScale?: number
   orbitTargetMode: OrbitTargetMode
   orbitParticleId: number | null
 }) {
@@ -1241,6 +1317,9 @@ function Scene(props: {
     syringeBottomThickness = wallThickness,
     syringePlateGap = 0.01,
     syringeSegments = 32,
+    showLivePiston = true,
+    containerMeshUrl = null,
+    containerMeshScale = 0.001,
     orbitTargetMode,
     orbitParticleId,
   } = props
@@ -1346,7 +1425,7 @@ function Scene(props: {
             segments={cylinderSegments}
             transparent={transparentContainer}
           />
-        ) : (
+        ) : environmentType === 'syringe' ? (
           <SyringePreview
             plateThickness={0}
             wallThickness={syringeWallThickness}
@@ -1358,7 +1437,9 @@ function Scene(props: {
             plateGap={0}
             segments={syringeSegments}
           />
-        )}
+        ) : environmentType === 'mesh' && containerMeshUrl ? (
+          <MeshContainerPreview objUrl={containerMeshUrl} meshScale={containerMeshScale} />
+        ) : null}
         <InstancedFemParticles
           count={count}
           radius={0.02}
@@ -1375,7 +1456,7 @@ function Scene(props: {
             barrelDiameter={syringeBarrelDiameter}
             wallThickness={syringeWallThickness}
             bottomThickness={syringeBottomThickness}
-            enabled
+            enabled={showLivePiston}
           />
         ) : null}
       </group>
@@ -1394,7 +1475,7 @@ type Viewer3DProps = {
   lengthScale?: number
   /** Scale OBJ geometry vertices to physics world metres (e.g. 1e-6 for µm-authored meshes). */
   meshScale?: number
-  environmentType: 'plate' | 'cylinder' | 'syringe'
+  environmentType: 'plate' | 'cylinder' | 'syringe' | 'mesh'
   plateSize: number
   wallThickness: number
   plateWallHeight: number
@@ -1411,6 +1492,11 @@ type Viewer3DProps = {
   syringeBottomThickness?: number
   syringePlateGap?: number
   syringeSegments?: number
+  showLivePiston?: boolean
+  containerMeshUrl?: string | null
+  containerMeshScale?: number
+  syringeEnabled?: boolean
+  onToggleSyringe?: () => void
 }
 
 /** 3D view only — WebSocket lives in App (shared socket survives React Strict Mode). */
@@ -1441,10 +1527,17 @@ export default function Viewer3D(props: Viewer3DProps) {
     syringeBottomThickness,
     syringePlateGap,
     syringeSegments,
+    showLivePiston = true,
+    containerMeshUrl = null,
+    containerMeshScale = 0.001,
+    syringeEnabled = true,
+    onToggleSyringe,
   } = props
   const [meshVerts, setMeshVerts] = useState<number | null>(null)
   const [sphereFallbackMesh, setSphereFallbackMesh] = useState(false)
   const [orbitTargetMode, setOrbitTargetMode] = useState<OrbitTargetMode>('scene-center')
+  const [viewPreset, setViewPreset] = useState<ViewPreset>('isometric')
+  const [fitToken, setFitToken] = useState(0)
   const [orbitParticleIdText, setOrbitParticleIdText] = useState('0')
   const orbitParticleId = useMemo(() => {
     const n = Number(orbitParticleIdText)
@@ -1452,6 +1545,9 @@ export default function Viewer3D(props: Viewer3DProps) {
     return Math.trunc(n)
   }, [orbitParticleIdText])
   const envSpanMeters = useMemo(() => {
+    if (environmentType === 'mesh') {
+      return Math.max(plateSize, wallThickness)
+    }
     if (environmentType === 'cylinder') {
       return Math.max(cylinderDiameter, cylinderHeight + wallThickness)
     }
@@ -1461,7 +1557,19 @@ export default function Viewer3D(props: Viewer3DProps) {
       const needleL = Math.max(syringeNeedleLength ?? 0.2, 1e-6)
       return Math.max(barrelD + 2 * wallThickness, barrelL + needleL + wallThickness)
     }
-    return Math.max(plateSize + 2 * wallThickness, plateWallHeight + wallThickness)
+    const plateSpan = Math.max(plateSize + 2 * wallThickness, plateWallHeight + wallThickness)
+    if (showSyringeInPlate) {
+      const barrelD = Math.max(syringeBarrelDiameter ?? 0.2, 1e-6)
+      const barrelL = Math.max(syringeBarrelLength ?? 0.3, 1e-6)
+      const needleL = Math.max(syringeNeedleLength ?? 0.2, 1e-6)
+      const plateGap = Math.max(syringePlateGap ?? 0.01, 0)
+      const syringeSpan = Math.max(
+        barrelD + 2 * wallThickness,
+        wallThickness + plateGap + needleL + barrelL + wallThickness,
+      )
+      return Math.max(plateSpan, syringeSpan)
+    }
+    return plateSpan
   }, [
     environmentType,
     cylinderDiameter,
@@ -1469,12 +1577,22 @@ export default function Viewer3D(props: Viewer3DProps) {
     wallThickness,
     plateSize,
     plateWallHeight,
+    showSyringeInPlate,
     syringeBarrelDiameter,
     syringeBarrelLength,
     syringeNeedleLength,
+    syringePlateGap,
   ])
   const envSpanDisplay = Math.max(envSpanMeters * lengthScale, 1e-6)
-  const cameraDistance = Math.max(envSpanDisplay * 2.2, 1.2)
+  const fitFovDeg = 50
+  // Tight fit distance from FOV (vs old fixed 2.2x span, which over-zoomed out).
+  const cameraDistance = useMemo(() => {
+    const halfFovRad = (fitFovDeg * Math.PI) / 360
+    const tanHalf = Math.max(Math.tan(halfFovRad), 1e-6)
+    // Treat env span as bounding diameter; add modest headroom.
+    const base = (envSpanDisplay * 0.5) / tanHalf
+    return Math.max(base * 1.15, 1.2)
+  }, [envSpanDisplay])
   // Scale near-plane with scene span so it doesn't clip geometry in µm mode (lengthScale=1e6).
   const cameraNear = Math.max(cameraDistance / 5000, envSpanDisplay * 0.0005)
   const cameraFar = Math.max(cameraDistance * 25, 2000)
@@ -1490,13 +1608,22 @@ export default function Viewer3D(props: Viewer3DProps) {
   const cameraConfig = useMemo(
     () => ({
       position: [cameraDistance * 0.7, cameraY + cameraDistance * 0.9, cameraDistance * 0.9] as [number, number, number],
-      fov: 50,
+      fov: fitFovDeg,
       near: cameraNear,
       far: cameraFar,
     }),
-    [cameraDistance, cameraY, cameraNear, cameraFar],
+    [cameraDistance, cameraY, cameraNear, cameraFar, fitFovDeg],
   )
   const cameraTarget = useMemo<[number, number, number]>(() => [0, cameraY * 0.35, 0], [cameraY])
+  const viewPosition = useMemo<[number, number, number]>(() => {
+    const r = cameraDistance
+    const ty = cameraTarget[1]
+    if (viewPreset === 'front') return [0, ty + r * 0.25, r]
+    if (viewPreset === 'right') return [r, ty + r * 0.25, 0]
+    if (viewPreset === 'left') return [-r, ty + r * 0.25, 0]
+    if (viewPreset === 'top') return [0, ty + r * 1.35, 0.001 * r]
+    return [cameraDistance * 0.7, cameraY + cameraDistance * 0.9, cameraDistance * 0.9]
+  }, [viewPreset, cameraDistance, cameraTarget, cameraY])
   useEffect(() => {
     setMeshVerts(null)
     setSphereFallbackMesh(false)
@@ -1564,6 +1691,66 @@ export default function Viewer3D(props: Viewer3DProps) {
         }}
       >
         <div style={{ fontWeight: 700 }}>Orbit around</div>
+        <div style={{ fontWeight: 700, marginTop: 2 }}>View</div>
+        <button
+          type="button"
+          onClick={() => onToggleSyringe?.()}
+          style={{
+            border: '1px solid #bccbe0',
+            borderRadius: 6,
+            padding: '5px 7px',
+            background: syringeEnabled ? '#edf4ff' : '#fff5f5',
+            color: '#1d3553',
+            fontSize: 11,
+            fontWeight: 700,
+            cursor: 'pointer',
+          }}
+          title="Enable or disable syringe geometry in simulation and preview"
+        >
+          {syringeEnabled ? 'Disable syringe' : 'Enable syringe'}
+        </button>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 4 }}>
+          {(['front', 'right', 'left', 'top', 'isometric'] as const).map((vp) => (
+            <button
+              key={vp}
+              type="button"
+              onClick={() => setViewPreset(vp)}
+              style={{
+                border: '1px solid #bccbe0',
+                borderRadius: 6,
+                padding: '4px 5px',
+                background: viewPreset === vp ? '#1d3553' : '#fff',
+                color: viewPreset === vp ? '#fff' : '#1d3553',
+                fontSize: 10,
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              {vp === 'isometric' ? 'iso' : vp}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setViewPreset('isometric')
+            setOrbitTargetMode('scene-center')
+            setFitToken((v) => v + 1)
+          }}
+          style={{
+            border: '1px solid #bccbe0',
+            borderRadius: 6,
+            padding: '5px 7px',
+            background: '#edf4ff',
+            color: '#1d3553',
+            fontSize: 11,
+            fontWeight: 700,
+            cursor: 'pointer',
+          }}
+          title="Reset zoom/pan and frame the full environment"
+        >
+          Fit environment
+        </button>
         <select
           value={orbitTargetMode}
           onChange={(e) => setOrbitTargetMode(e.target.value as OrbitTargetMode)}
@@ -1612,11 +1799,12 @@ export default function Viewer3D(props: Viewer3DProps) {
         gl={{ alpha: false, preserveDrawingBuffer: true }}
       >
         <CameraAutoFit
-          position={cameraConfig.position}
+          position={viewPosition}
           near={cameraConfig.near}
           far={cameraConfig.far}
           fov={cameraConfig.fov}
           target={cameraTarget}
+          resetToken={fitToken}
         />
         <Scene
           count={particleCount}
@@ -1644,6 +1832,9 @@ export default function Viewer3D(props: Viewer3DProps) {
           syringeBottomThickness={syringeBottomThickness}
           syringePlateGap={syringePlateGap}
           syringeSegments={syringeSegments}
+          showLivePiston={showLivePiston}
+          containerMeshUrl={containerMeshUrl}
+          containerMeshScale={containerMeshScale}
           orbitTargetMode={orbitTargetMode}
           orbitParticleId={orbitParticleId}
         />

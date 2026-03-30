@@ -525,10 +525,11 @@ export default function ResultsOverlay({ screenshot, data, onClose }: Props) {
           <DownloadBtn href={`${BASE}/download/contacts-csv`} label="contact_pairs.csv" />
           <DownloadBtn href={`${BASE}/download/contact-points-csv`} label="contact_points.csv" />
           <DownloadBtn href={`${BASE}/download/summary-json`} label="summary.json" />
+          <DownloadBtn href={`${BASE}/download/particle-particle-plateau-csv`} label="particle-particle-plateau.csv" />
         </div>
         <DownloadBtn
           href={`${BASE}/download/obj`}
-          label={`↓  DOWNLOAD SETTLED GEOMETRY (.OBJ)  —  ${nParticles} particles · world-space coords + contact_network.obj in ZIP`}
+          label={`↓  DOWNLOAD SETTLED GEOMETRY (.OBJ)  —  particles + environment + contact_network in one ZIP`}
           prominent
         />
 

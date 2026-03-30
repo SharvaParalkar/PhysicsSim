@@ -14,6 +14,10 @@ type ParticlesResponse = {
   particles: string[]
   default?: string
 }
+type ContainerMeshesResponse = {
+  meshes: string[]
+  default?: string
+}
 
 /** Default throughput tuning (matches prior UI baseline). */
 const STANDARD_PHYSICS_TUNING: Pick<
@@ -186,6 +190,7 @@ export default function App() {
   const [loadProgress, setLoadProgress] = useState<{ phase: string; pct: number; detail: string } | null>(null)
   const [settledVertexStress, setSettledVertexStress] = useState<Record<string, number[]> | null>(null)
   const [availableParticles, setAvailableParticles] = useState<string[]>(['particle.obj'])
+  const [availableContainerMeshes, setAvailableContainerMeshes] = useState<string[]>([])
   const [simConfig, setSimConfig] = useState<SimulationConfig>({
     PARTICLE_FILE: 'Star600M.obj',
     N_PARTICLES: MICRON_SCALE_SETTINGS.N_PARTICLES,
@@ -204,6 +209,13 @@ export default function App() {
     STRESS_SIGMA: 0.4,
     ...MICRON_SYRINGE_SETTINGS,
     PISTON_SPEED: 0,
+    PISTON_ENABLED: false,
+    ENABLE_SYRINGE: true,
+    FILL_CONTAINER_MESH: false,
+    CONTAINER_MESH_FILE: '',
+    CONTAINER_MESH_SCALE: 0.001,
+    AUTO_MAX_PARTICLES: true,
+    FILL_SPACING_FACTOR: 1.1,
   })
   const [lengthUnit, setLengthUnit] = useState<LengthUnit>('um')
   const { metersPerUnit, short: lengthUnitLabel } = LENGTH_UNITS[lengthUnit]
@@ -240,6 +252,18 @@ export default function App() {
     })
   }, [])
 
+  const refreshContainerMeshList = useCallback(async () => {
+    const resp = (await fetch('http://localhost:8000/container-meshes').then((r) => r.json())) as ContainerMeshesResponse
+    const list = Array.isArray(resp.meshes) ? resp.meshes.filter((v) => typeof v === 'string' && v.length > 0) : []
+    const defaultName = typeof resp.default === 'string' ? resp.default : ''
+    setAvailableContainerMeshes(list)
+    setSimConfig((prev) => {
+      const chosen = prev.CONTAINER_MESH_FILE ?? ''
+      const next = list.includes(chosen) ? chosen : defaultName
+      return { ...prev, CONTAINER_MESH_FILE: next }
+    })
+  }, [])
+
   const refreshResults = useCallback(async () => {
     const [mRes, rRes] = await Promise.all([fetch('http://localhost:8000/metrics'), fetch('http://localhost:8000/results')])
     const mJson = (await mRes.json()) as MetricsResponse
@@ -258,6 +282,32 @@ export default function App() {
   const appendLog = useCallback((line: string) => {
     setLogs((prev) => [...prev, line])
   }, [])
+
+  const uploadContainerMesh = useCallback(
+    async (file: File) => {
+      const name = file.name.toLowerCase()
+      if (!(name.endsWith('.obj') || name.endsWith('.stl'))) {
+        throw new Error('Only .obj or .stl files are supported')
+      }
+      const body = new FormData()
+      body.append('file', file)
+      const r = await fetch('http://localhost:8000/container-meshes/upload', { method: 'POST', body })
+      if (!r.ok) throw new Error(await r.text())
+      const data = (await r.json()) as { name?: string }
+      await refreshContainerMeshList()
+      if (data.name) {
+        setSimConfig((p) => ({
+          ...p,
+          FILL_CONTAINER_MESH: true,
+          CONTAINER_MESH_FILE: data.name ?? p.CONTAINER_MESH_FILE,
+          CONTAINER_MESH_SCALE: 0.001, // uploaded container meshes are assumed mm
+          ENABLE_SYRINGE: false,
+        }))
+      }
+      appendLog(`[info] Uploaded container mesh '${data.name ?? file.name}'`)
+    },
+    [appendLog, refreshContainerMeshList],
+  )
 
   const copyLogs = useCallback(async () => {
     const text = logs.join('\n')
@@ -405,6 +455,17 @@ export default function App() {
   }, [refreshParticleList])
 
   useEffect(() => {
+    let cancelled = false
+    refreshContainerMeshList().catch(() => {
+      if (cancelled) return
+      setAvailableContainerMeshes([])
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [refreshContainerMeshList])
+
+  useEffect(() => {
     if (runSignal === 0) return
     setSettledVertexStress(null)
     // Reset overlay state when a new run starts
@@ -414,9 +475,13 @@ export default function App() {
   }, [runSignal])
 
   useEffect(() => {
-    // Single supported environment: flat plate + syringe.
-    // Drop height is derived from syringe barrel length.
+    // Single supported base environment: flat plate, with optional syringe overlay.
+    // When syringe is enabled, drop height is derived from syringe barrel length.
     setSimConfig((p) => {
+      if (p.ENABLE_SYRINGE === false) {
+        if (p.ENVIRONMENT_TYPE === 'plate' && Math.abs(p.DROP_HEIGHT - 0) < 1e-12) return p
+        return { ...p, ENVIRONMENT_TYPE: 'plate', DROP_HEIGHT: 0 }
+      }
       const derivedDropHeight = Math.max(0, (p.SYRINGE_BARREL_LENGTH ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_BARREL_LENGTH) * 0.5)
       if (p.ENVIRONMENT_TYPE === 'plate' && Math.abs(p.DROP_HEIGHT - derivedDropHeight) < 1e-12) return p
       return {
@@ -716,6 +781,12 @@ export default function App() {
     // Bust browser + R3F loader caches so edited/replaced OBJ files are reloaded.
     return `http://localhost:8000/particles/${file}?run=${runSignal}`
   }, [simConfig.PARTICLE_FILE, runSignal])
+  const containerMeshObjectUrl = useMemo(() => {
+    const name = simConfig.CONTAINER_MESH_FILE ?? ''
+    if (!name) return null
+    const file = encodeURIComponent(name)
+    return `http://localhost:8000/container-meshes/${file}?run=${runSignal}`
+  }, [simConfig.CONTAINER_MESH_FILE, runSignal])
 
   // Mirrors the server-side _infer_scale_factor_for_particle_file heuristic.
   // OBJ files named *600M* are authored in µm; the physics server scales them by 1e-6 to convert
@@ -1039,6 +1110,124 @@ export default function App() {
               {sectionOpen.environment ? (
                 <>
                   <div style={labelStyle}>Container: Flat plate + syringe</div>
+                  <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={simConfig.ENABLE_SYRINGE !== false}
+                      disabled={simConfig.FILL_CONTAINER_MESH === true}
+                      onChange={(e) => setSimConfig((p) => ({ ...p, ENABLE_SYRINGE: e.target.checked }))}
+                    />
+                    <span>Enable syringe</span>
+                  </label>
+                  <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={simConfig.FILL_CONTAINER_MESH === true}
+                      onChange={(e) =>
+                        setSimConfig((p) => ({
+                          ...p,
+                          FILL_CONTAINER_MESH: e.target.checked,
+                          ENABLE_SYRINGE: e.target.checked ? false : p.ENABLE_SYRINGE,
+                        }))
+                      }
+                    />
+                    <span>Fill loaded mesh volume</span>
+                  </label>
+                  {simConfig.FILL_CONTAINER_MESH ? (
+                    <>
+                      <label style={labelStyle}>
+                        Drag and drop mesh (.obj/.stl)
+                        <div
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={(e) => {
+                            e.preventDefault()
+                            const f = e.dataTransfer.files?.[0]
+                            if (!f) return
+                            uploadContainerMesh(f).catch((err) => appendLog(`[error] Upload failed: ${err}`))
+                          }}
+                          style={{
+                            marginTop: 6,
+                            border: '1px dashed #8fb0d9',
+                            borderRadius: 8,
+                            background: '#f7fbff',
+                            padding: '10px 8px',
+                            textAlign: 'center',
+                            color: '#4d6b8f',
+                            fontSize: 12,
+                          }}
+                        >
+                          Drop file here, or{' '}
+                          <label style={{ color: '#2b6cff', cursor: 'pointer', fontWeight: 700 }}>
+                            browse
+                            <input
+                              type="file"
+                              accept=".obj,.stl"
+                              style={{ display: 'none' }}
+                              onChange={(e) => {
+                                const f = e.target.files?.[0]
+                                if (!f) return
+                                uploadContainerMesh(f).catch((err) => appendLog(`[error] Upload failed: ${err}`))
+                                e.currentTarget.value = ''
+                              }}
+                            />
+                          </label>
+                        </div>
+                      </label>
+                      <label style={labelStyle}>
+                        Container mesh
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <select
+                            value={simConfig.CONTAINER_MESH_FILE ?? ''}
+                            onChange={(e) => setSimConfig((p) => ({ ...p, CONTAINER_MESH_FILE: e.target.value }))}
+                            style={{ flex: 1, border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                          >
+                            {availableContainerMeshes.map((name) => (
+                              <option key={name} value={name}>
+                                {name}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              refreshContainerMeshList().catch(() => setAvailableContainerMeshes([]))
+                            }}
+                            style={{
+                              border: '1px solid #bccbe0',
+                              borderRadius: 6,
+                              padding: '4px 8px',
+                              background: '#fff',
+                              color: '#1d3553',
+                              cursor: 'pointer',
+                              fontSize: 12,
+                              fontWeight: 700,
+                            }}
+                          >
+                            Refresh
+                          </button>
+                        </div>
+                      </label>
+                      <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <input
+                          type="checkbox"
+                          checked={simConfig.AUTO_MAX_PARTICLES !== false}
+                          onChange={(e) => setSimConfig((p) => ({ ...p, AUTO_MAX_PARTICLES: e.target.checked }))}
+                        />
+                        <span>Auto max particles</span>
+                      </label>
+                      <label style={labelStyle}>
+                        Fill spacing factor
+                        <input
+                          type="number"
+                          step={0.05}
+                          min={1}
+                          value={simConfig.FILL_SPACING_FACTOR ?? 1.1}
+                          onChange={(e) => setSimConfig((p) => ({ ...p, FILL_SPACING_FACTOR: Math.max(1, Number(e.target.value) || 1) }))}
+                          style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                        />
+                      </label>
+                    </>
+                  ) : null}
                   <label style={labelStyle}>
                     Plate size ({lengthUnitLabel})
                     <input
@@ -1068,6 +1257,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => setShowSyringeOverlay(true)}
+                    disabled={simConfig.ENABLE_SYRINGE === false}
                     style={{
                       width: '100%',
                       border: '1px solid #95b4d9',
@@ -1076,7 +1266,8 @@ export default function App() {
                       borderRadius: 8,
                       padding: '8px 10px',
                       fontWeight: 700,
-                      cursor: 'pointer',
+                      cursor: simConfig.ENABLE_SYRINGE === false ? 'not-allowed' : 'pointer',
+                      opacity: simConfig.ENABLE_SYRINGE === false ? 0.5 : 1,
                     }}
                   >
                     Configure syringe
@@ -1088,11 +1279,26 @@ export default function App() {
                       step={0.0005}
                       min={0}
                       value={simConfig.PISTON_SPEED ?? 0}
+                      disabled={simConfig.ENABLE_SYRINGE === false}
                       onChange={(e) =>
                         setSimConfig((p) => ({ ...p, PISTON_SPEED: Math.max(0, Number(e.target.value) || 0) }))
                       }
                       style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
                     />
+                  </label>
+                  <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={simConfig.PISTON_ENABLED !== false}
+                      disabled={simConfig.ENABLE_SYRINGE === false}
+                      onChange={(e) =>
+                        setSimConfig((p) => ({
+                          ...p,
+                          PISTON_ENABLED: e.target.checked,
+                        }))
+                      }
+                    />
+                    <span>Enable piston</span>
                   </label>
                   <label style={labelStyle}>
                     Wall thickness ({lengthUnitLabel})
@@ -1431,7 +1637,7 @@ export default function App() {
                 liveFrameRef={liveFrameRef}
                 simRunId={runSignal}
                 settledVertexStress={settledVertexStress}
-                environmentType="plate"
+                environmentType={simConfig.FILL_CONTAINER_MESH ? 'mesh' : 'plate'}
                 plateSize={simConfig.PLATE_SIZE}
                 wallThickness={simConfig.WALL_THICKNESS}
                 plateWallHeight={simConfig.PLATE_WALL_HEIGHT}
@@ -1441,7 +1647,9 @@ export default function App() {
                 transparentContainer={false}
                 lengthScale={lengthScale}
                 meshScale={meshScale}
-                showSyringeInPlate
+                containerMeshUrl={simConfig.FILL_CONTAINER_MESH ? containerMeshObjectUrl : null}
+                containerMeshScale={simConfig.CONTAINER_MESH_SCALE ?? 0.001}
+                showSyringeInPlate={!simConfig.FILL_CONTAINER_MESH && simConfig.ENABLE_SYRINGE !== false}
                 syringeBarrelDiameter={simConfig.SYRINGE_BARREL_DIAMETER}
                 syringeBarrelLength={simConfig.SYRINGE_BARREL_LENGTH}
                 syringeNeedleDiameter={simConfig.SYRINGE_NEEDLE_DIAMETER}
@@ -1450,6 +1658,9 @@ export default function App() {
                 syringeBottomThickness={simConfig.SYRINGE_BOTTOM_THICKNESS}
                 syringePlateGap={simConfig.SYRINGE_PLATE_GAP}
                 syringeSegments={simConfig.SYRINGE_SEGMENTS}
+                showLivePiston={simConfig.PISTON_ENABLED !== false}
+                syringeEnabled={simConfig.ENABLE_SYRINGE !== false}
+                onToggleSyringe={() => setSimConfig((p) => ({ ...p, ENABLE_SYRINGE: p.ENABLE_SYRINGE === false }))}
               />
             </div>
           </div>
@@ -1643,7 +1854,7 @@ export default function App() {
                 liveFrameRef={liveFrameRef}
                 simRunId={runSignal + 1_000_000}
                 settledVertexStress={null}
-                environmentType="plate"
+                environmentType={simConfig.FILL_CONTAINER_MESH ? 'mesh' : 'plate'}
                 plateSize={Math.max(simConfig.PLATE_SIZE, (simConfig.SYRINGE_BARREL_DIAMETER ?? DEFAULT_SYRINGE_SETTINGS.SYRINGE_BARREL_DIAMETER) * 1.8)}
                 wallThickness={simConfig.WALL_THICKNESS}
                 plateWallHeight={simConfig.PLATE_WALL_HEIGHT}
@@ -1653,7 +1864,9 @@ export default function App() {
                 transparentContainer={false}
                 lengthScale={lengthScale}
                 meshScale={meshScale}
-                showSyringeInPlate
+                containerMeshUrl={simConfig.FILL_CONTAINER_MESH ? containerMeshObjectUrl : null}
+                containerMeshScale={simConfig.CONTAINER_MESH_SCALE ?? 0.001}
+                showSyringeInPlate={!simConfig.FILL_CONTAINER_MESH && simConfig.ENABLE_SYRINGE !== false}
                 syringeBarrelDiameter={simConfig.SYRINGE_BARREL_DIAMETER}
                 syringeBarrelLength={simConfig.SYRINGE_BARREL_LENGTH}
                 syringeNeedleDiameter={simConfig.SYRINGE_NEEDLE_DIAMETER}
@@ -1662,6 +1875,8 @@ export default function App() {
                 syringeBottomThickness={simConfig.SYRINGE_BOTTOM_THICKNESS}
                 syringePlateGap={simConfig.SYRINGE_PLATE_GAP}
                 syringeSegments={simConfig.SYRINGE_SEGMENTS}
+                showLivePiston={simConfig.PISTON_ENABLED !== false}
+                syringeEnabled={simConfig.ENABLE_SYRINGE !== false}
               />
             </div>
           </div>
