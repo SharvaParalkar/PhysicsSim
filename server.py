@@ -5,6 +5,7 @@ import math
 import os
 import sys
 import zipfile
+import atexit
 
 import asyncio
 import queue
@@ -52,6 +53,24 @@ def _patch_uvicorn_h11_graceful_400() -> None:
 
 
 _patch_uvicorn_h11_graceful_400()
+
+
+def _disable_genesis_atexit_destroy() -> None:
+    """
+    Genesis registers an atexit destroy() hook that can run after OpenGL context
+    teardown on Windows, producing noisy "no valid context" exceptions.
+    We already destroy Genesis explicitly on the simulation thread during lifespan
+    shutdown, so unregister the atexit hook to avoid duplicate teardown.
+    """
+    try:
+        destroy_fn = getattr(simulation.gs, "destroy", None)
+        if destroy_fn is not None:
+            atexit.unregister(destroy_fn)
+    except Exception:
+        pass
+
+
+_disable_genesis_atexit_destroy()
 
 
 def _sanitize_floats(obj: Any) -> Any:
@@ -114,7 +133,12 @@ def _init_genesis_on_sim_thread() -> None:
         _prepare_cuda_on_worker_thread()
     backend = simulation.gs.cpu if use_cpu else simulation.gs.gpu
     try:
-        simulation.init_genesis_compat(simulation.gs, backend=backend, n_envs=n_envs)
+        simulation.init_genesis_compat(
+            simulation.gs,
+            backend=backend,
+            n_envs=n_envs,
+            logging_level=logging.WARNING,
+        )
         return
     except Exception as exc:
         if "already initialized" in str(exc).lower():
@@ -128,7 +152,12 @@ def _init_genesis_on_sim_thread() -> None:
             ) from exc
         logger.warning("Genesis GPU init failed (%s: %s); falling back to gs.cpu.", type(exc).__name__, exc)
     try:
-        simulation.init_genesis_compat(simulation.gs, backend=simulation.gs.cpu, n_envs=n_envs)
+        simulation.init_genesis_compat(
+            simulation.gs,
+            backend=simulation.gs.cpu,
+            n_envs=n_envs,
+            logging_level=logging.WARNING,
+        )
     except Exception as exc2:
         if "already initialized" in str(exc2).lower():
             return
@@ -305,6 +334,30 @@ def _rescale_positions(particles: list[dict], factor: float) -> list[dict]:
     return out
 
 
+def _attach_piston_y(frame: dict[str, Any]) -> dict[str, Any]:
+    py = simulation.piston_center_y_display(RUNTIME.piston, RUNTIME._physics_norm)
+    if py is not None:
+        frame["piston_y"] = py
+    return frame
+
+
+def _mirror_sim_output_to_terminal(item: Any) -> None:
+    """Echo WebSocket-bound status to stderr so IDE / non-TTY consoles still show step progress."""
+    if not isinstance(item, dict):
+        return
+    t = item.get("type")
+    if t == "log":
+        line = item.get("line")
+        if isinstance(line, str) and line.strip():
+            print(line, file=sys.stderr, flush=True)
+    elif t == "progress":
+        phase = item.get("phase")
+        detail = item.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            ph = phase if isinstance(phase, str) else "progress"
+            print(f"[{ph}] {detail}", file=sys.stderr, flush=True)
+
+
 class SimulationAborted(Exception):
     """User requested cancel during scene build or other cooperative checkpoints."""
 
@@ -324,6 +377,9 @@ class SimulationRuntime:
         self._coacd_proxy_file: Optional[str] = None
         self._physics_norm: float = 1.0
         self._phys_cfg: dict = {}
+        self.piston: Any = None
+        self.piston_min_center_y: Optional[float] = None
+        self.piston_max_center_y: Optional[float] = None
         self.default_particle_file = _resolve_particle_file(DEFAULT_PARTICLE_NAME)
         self._busy = asyncio.Lock()
         self.cancel_requested = False
@@ -372,6 +428,9 @@ class SimulationRuntime:
             self.scene = None
         self.active_entities = []
         self.active_containers = []
+        self.piston = None
+        self.piston_min_center_y = None
+        self.piston_max_center_y = None
 
     def clear_scene(self) -> None:
         """Alias: full destroy for API compatibility with /ws clear command."""
@@ -483,6 +542,9 @@ class SimulationRuntime:
             syringe_segments=int(_phys_cfg.get("SYRINGE_SEGMENTS", simulation.SYRINGE_SEGMENTS)),
         )
         self.active_containers = list(containers)
+        self.piston = env_info.get("piston")
+        self.piston_min_center_y = env_info.get("piston_min_center_y")
+        self.piston_max_center_y = env_info.get("piston_max_center_y")
         _p("spawn", 0.55, f"Spawning {int(_phys_cfg['N_PARTICLES'])} particles…")
         entities = simulation.spawn_particles(
             self.scene,
@@ -522,12 +584,20 @@ RUNTIME = SimulationRuntime()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    yield
-    # Tear down Genesis on the same thread as gs.init() so OpenGL / Taichi contexts match.
-    RUNTIME.cancel_requested = True
-    done = threading.Event()
-    RUNTIME._job_queue.put(("shutdown", done))
-    await asyncio.to_thread(done.wait, 30.0)
+    try:
+        yield
+    except asyncio.CancelledError:
+        # Expected during Ctrl+C shutdown; continue into explicit teardown below.
+        pass
+    finally:
+        # Tear down Genesis on the same thread as gs.init() so OpenGL / Taichi contexts match.
+        RUNTIME.cancel_requested = True
+        done = threading.Event()
+        RUNTIME._job_queue.put(("shutdown", done))
+        try:
+            await asyncio.shield(asyncio.to_thread(done.wait, 30.0))
+        except Exception:
+            pass
 
 
 app = FastAPI(lifespan=lifespan)
@@ -1128,14 +1198,141 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                 depth_tol = float(RUNTIME._phys_cfg.get("CONTACT_DEPTH_TOL", depth_tol))
 
         dt = float(cfg_run["DT"])
+        piston_speed = float(cfg_run.get("PISTON_SPEED", 0.0))
+
+        def _bounds_cfg() -> dict:
+            """Lengths in the same space as the built scene (physics-normalised when RUNTIME._phys_cfg is set)."""
+            pc = getattr(RUNTIME, "_phys_cfg", None)
+            if isinstance(pc, dict) and pc:
+                return pc
+            return cfg_run
+
         # Headless: skip per-step visualizer GPU/raster updates (still built at scene.build()).
         # Otherwise each step pays full visualizer.update() cost even with show_viewer=False.
-        def _step() -> None:
+        def _physics_step(*, advance_piston: bool) -> None:
+            if (
+                advance_piston
+                and RUNTIME.piston is not None
+                and RUNTIME.piston_min_center_y is not None
+            ):
+                simulation.advance_piston_step(
+                    RUNTIME.piston,
+                    dt,
+                    min_center_y=float(RUNTIME.piston_min_center_y),
+                    speed=piston_speed,
+                )
             RUNTIME.scene.step(update_visualizer=False)
-            simulation.enforce_container_bounds(entities, RUNTIME.physics_mesh, cfg_run)
+            simulation.enforce_container_bounds(entities, RUNTIME.physics_mesh, _bounds_cfg())
 
+        def _step() -> None:
+            _physics_step(advance_piston=True)
+
+        # Fraction of the UI progress bar reserved for pre-compression settle (rest = main SIM_DURATION).
+        _PRECOMPRESS_BAR_FRAC = 0.22
+
+        def _syringe_settle_then_align_piston_fill(
+            cfg_src: dict[str, Any],
+            *,
+            skip_physics_settle: bool = False,
+        ) -> tuple[int, float]:
+            """Returns (physics_steps_during_settle, simulated_time_during_settle)."""
+            if not bool(cfg_src.get("PISTON_DYNAMIC_FILL_LEVEL", True)):
+                return (0, 0.0)
+            if RUNTIME.piston is None or not entities:
+                return (0, 0.0)
+            max_pre = max(1, int(cfg_src.get("PISTON_FILL_SETTLE_MAX_STEPS", 700)))
+            clearance = float(cfg_src.get("PISTON_FILL_CLEARANCE_M", 1e-3))
+            pn = float(RUNTIME._physics_norm)
+            if abs(pn - 1.0) > 1e-15 and pn > 1e-18:
+                clearance *= pn
+            pmin = RUNTIME.piston_min_center_y
+            pmax = RUNTIME.piston_max_center_y
+            pre_t = 0.0
+            n = 0
+            stream_frames = max(3, min(frame_every, 15))
+            progress_stride = max(5, min(30, frame_every))
+            if not skip_physics_settle:
+                sync_q.put({"type": "log", "line": "Pre-compression: settling with piston held fixed…"})
+                while n < max_pre:
+                    if RUNTIME.cancel_requested:
+                        return (n, pre_t)
+                    _physics_step(advance_piston=False)
+                    n += 1
+                    pre_t += dt
+                    mv = simulation.compute_max_velocity(entities)
+                    if n == 1 or n % progress_stride == 0:
+                        mv_s = "n/a" if mv is None else f"{float(mv):.4g}"
+                        sync_q.put(
+                            {
+                                "type": "progress",
+                                "phase": "precompress",
+                                "pct": min(
+                                    _PRECOMPRESS_BAR_FRAC,
+                                    _PRECOMPRESS_BAR_FRAC * (float(n) / float(max_pre)),
+                                ),
+                                "detail": f"settling step {n}/{max_pre}  t={pre_t:.3f}s  max_vel={mv_s} m/s",
+                            }
+                        )
+                    if n % stream_frames == 0:
+                        # Omit piston_y until pre-compression finishes so the viewer piston appears
+                        # only after the fill-level alignment (up to PISTON_FILL_SETTLE_MAX_STEPS).
+                        sync_q.put(
+                            {
+                                "type": "frame",
+                                "step": -3,
+                                "t": float(pre_t),
+                                "max_vel": float(mv or 0.0),
+                                "Z": 0.0,
+                                "particles": _rescale_positions(
+                                    _collect_particles_for_frame(),
+                                    RUNTIME._physics_norm,
+                                ),
+                            }
+                        )
+                    # If the engine exposes no velocity channel (mv is None), do not spin for
+                    # max_pre steps — that would leave the UI blank until this loop finishes.
+                    if mv is None:
+                        if n >= 60:
+                            break
+                    elif float(mv) < settle_threshold:
+                        break
+                sync_q.put(
+                    {
+                        "type": "log",
+                        "line": f"Pre-compression: settled in {n} step(s); piston aligned to fill level.",
+                    }
+                )
+            tb = float(cfg_src.get("SYRINGE_BOTTOM_THICKNESS", 0.0))
+            simulation.reset_piston_to_fill_level(
+                entities,
+                RUNTIME.piston,
+                clearance=clearance,
+                piston_min_center_y=float(pmin) if pmin is not None else None,
+                piston_max_center_y=float(pmax) if pmax is not None else None,
+                physics_mesh=RUNTIME.physics_mesh,
+                piston_box_height_y=tb if tb > 1e-18 else None,
+            )
+            return (n, pre_t)
+
+        def _collect_particles_for_frame(
+            stress_map: Optional[dict[int, float]] = None,
+            *,
+            fem_vertex_norms: Optional[dict] = None,
+            fem_norm_global_max: float = 1.0,
+        ) -> list[dict]:
+            simulation.enforce_container_bounds(entities, RUNTIME.physics_mesh, _bounds_cfg())
+            return simulation._collect_particle_transforms(
+                entities,
+                stress_map,
+                fem_vertex_norms=fem_vertex_norms,
+                fem_norm_global_max=fem_norm_global_max,
+            )
+
+        wall_precompress_t = 0.0
+        t_elapsed = 0.0
         if not sequential:
-            # Show spawn poses immediately so the UI is not blank until the first (slow) CPU step.
+            # Immediate spawn frame so the viewer is not empty while pre-compression settle runs.
+            # Omit piston_y here and during settle streaming; first piston_y is sent after fill alignment.
             sync_q.put(
                 {
                     "type": "frame",
@@ -1144,14 +1341,44 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                     "max_vel": 0.0,
                     "Z": 0.0,
                     "particles": _rescale_positions(
-                        simulation._collect_particle_transforms(entities),
+                        _collect_particles_for_frame(),
                         RUNTIME._physics_norm,
                     ),
                 }
             )
+            _, pre_t = (0, 0.0)
+            if (
+                bool(cfg_run.get("PISTON_DYNAMIC_FILL_LEVEL", True))
+                and RUNTIME.piston is not None
+                and entities
+            ):
+                _, pre_t = _syringe_settle_then_align_piston_fill(cfg_run)
+            wall_precompress_t = float(pre_t)
+            if RUNTIME.cancel_requested:
+                sync_q.put({"type": "log", "line": "Simulation cancelled by user"})
+                sync_q.put({"type": "cancelled"})
+                sync_q.put({"type": "idle", "message": "Ready for next run"})
+                return
+            mv_end = simulation.compute_max_velocity(entities)
+            # Post–fill-level frame: settled pile + piston just above the heap.
+            sync_q.put(
+                _attach_piston_y(
+                    {
+                        "type": "frame",
+                        "step": -1,
+                        "t": float(pre_t),
+                        "max_vel": float(mv_end or 0.0),
+                        "Z": 0.0,
+                        "particles": _rescale_positions(
+                            _collect_particles_for_frame(),
+                            RUNTIME._physics_norm,
+                        ),
+                    }
+                )
+            )
+            t_elapsed = float(pre_t)
 
         precision_phase = not analytical
-        t_elapsed = 0.0
         last_ws_pct = -1.0
         last_live_Z = 0.0
 
@@ -1165,7 +1392,7 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
             After a physics substep: metrics, frames, settle / analytical handoff.
             Returns True to stop the outer simulation (cancel, settle, or completed precision phase).
             """
-            nonlocal entities, particle_ids, container_ids, contact_cache, dt, precision_phase, t_elapsed, last_ws_pct, particle_mass_kg, last_live_Z
+            nonlocal entities, particle_ids, container_ids, contact_cache, dt, depth_tol, precision_phase, t_elapsed, last_ws_pct, particle_mass_kg, last_live_Z
             if RUNTIME.cancel_requested:
                 sync_q.put({"type": "log", "line": "Simulation cancelled by user"})
                 sync_q.put({"type": "cancelled"})
@@ -1176,7 +1403,12 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
             skip = _force_skip_contacts(max_vel)
 
             if duration > 0:
-                sp = t_now / duration
+                # After pre-compression, t_now includes wall_precompress_t; map main-run time onto
+                # (1 - PRE) of the bar so the UI does not snap backward when the main loop starts.
+                main_elapsed = max(0.0, float(t_now) - float(wall_precompress_t))
+                sp_main = min(1.0, main_elapsed / float(duration))
+                pre_w = float(_PRECOMPRESS_BAR_FRAC) if wall_precompress_t > 1e-12 else 0.0
+                sp = pre_w + (1.0 - pre_w) * sp_main
                 if sp >= 1.0:
                     sp = 1.0
                 if sp - last_ws_pct >= 0.02 or frame_step_idx == 0:
@@ -1186,7 +1418,10 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                             "type": "progress",
                             "phase": "simulate",
                             "pct": sp,
-                            "detail": f"t={t_now:.3f}s frame={frame_step_idx} phase_step={phase_step + 1}/{phase_len}",
+                            "detail": (
+                                f"t={t_now:.3f}s frame={frame_step_idx} "
+                                f"phase_step={phase_step + 1}/{phase_len}"
+                            ),
                         }
                     )
 
@@ -1220,6 +1455,7 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                     particle_mass_kg=particle_mass_kg,
                     surface_area_m2=surface_area_m2,
                     depth_tol=depth_tol,
+                    piston=RUNTIME.piston,
                 )
                 last_live_Z = float(lm["Z"])
                 LATEST_Z_HISTORY.append({"t": t_now, "Z": last_live_Z})
@@ -1246,22 +1482,23 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                 gmax = 1.0
                 LATEST_MAX_VEL_HISTORY.append({"t": t_now, "max_vel": float(max_vel or 0.0)})
                 sync_q.put(
-                    {
-                        "type": "frame",
-                        "step": int(frame_step_idx),
-                        "t": t_now,
-                        "max_vel": float(max_vel or 0.0),
-                        "Z": last_live_Z,
-                        "particles": _rescale_positions(
-                            simulation._collect_particle_transforms(
-                                entities,
-                                stress_map,
-                                fem_vertex_norms=fem_maps,
-                                fem_norm_global_max=gmax,
+                    _attach_piston_y(
+                        {
+                            "type": "frame",
+                            "step": int(frame_step_idx),
+                            "t": t_now,
+                            "max_vel": float(max_vel or 0.0),
+                            "Z": last_live_Z,
+                            "particles": _rescale_positions(
+                                _collect_particles_for_frame(
+                                    stress_map,
+                                    fem_vertex_norms=fem_maps,
+                                    fem_norm_global_max=gmax,
+                                ),
+                                RUNTIME._physics_norm,
                             ),
-                            RUNTIME._physics_norm,
-                        ),
-                    }
+                        }
+                    )
                 )
 
             if (phase_step % log_every == 0) or (phase_step == phase_len - 1):
@@ -1308,6 +1545,14 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                         sync_q.put({"type": "log", "line": f"[warn] FEM state restore failed ({exc}); continuing from spawn."})
                     contact_cache = simulation.ContactSampleCache()
                     dt = float(cfg2["DT"])
+                    if RUNTIME._phys_cfg:
+                        depth_tol = float(RUNTIME._phys_cfg.get("CONTACT_DEPTH_TOL", depth_tol))
+                    _syringe_settle_then_align_piston_fill(cfg2, skip_physics_settle=True)
+                    if RUNTIME.cancel_requested:
+                        sync_q.put({"type": "log", "line": "Simulation cancelled by user"})
+                        sync_q.put({"type": "cancelled"})
+                        sync_q.put({"type": "idle", "message": "Ready for next run"})
+                        return True
                     precision_phase = True
                     phase2_steps = max(0, int(remaining / dt))
                     phase2_frame0 = frame_step_idx + 1
@@ -1381,10 +1626,39 @@ def _simulation_thread_main(sync_q: "queue.Queue[Any | None]", cfg: dict[str, An
                         "max_vel": 0.0,
                         "Z": 0.0,
                         "particles": _rescale_positions(
-                            simulation._collect_particle_transforms(entities),
+                            _collect_particles_for_frame(),
                             RUNTIME._physics_norm,
                         ),
                     }
+                )
+                _, pre_stage_t = (0, 0.0)
+                if (
+                    bool(cfg_k.get("PISTON_DYNAMIC_FILL_LEVEL", True))
+                    and RUNTIME.piston is not None
+                    and entities
+                ):
+                    _, pre_stage_t = _syringe_settle_then_align_piston_fill(cfg_k)
+                if RUNTIME.cancel_requested:
+                    sync_q.put({"type": "log", "line": "Simulation cancelled by user"})
+                    sync_q.put({"type": "cancelled"})
+                    sync_q.put({"type": "idle", "message": "Ready for next run"})
+                    return
+                t_elapsed += float(pre_stage_t)
+                mv_stage = simulation.compute_max_velocity(entities)
+                sync_q.put(
+                    _attach_piston_y(
+                        {
+                            "type": "frame",
+                            "step": -1,
+                            "t": float(t_elapsed),
+                            "max_vel": float(mv_stage or 0.0),
+                            "Z": 0.0,
+                            "particles": _rescale_positions(
+                                _collect_particles_for_frame(),
+                                RUNTIME._physics_norm,
+                            ),
+                        }
+                    )
                 )
                 stage_budget = min(stage_cap_default, total_budget)
                 steps_stage = int(stage_budget / dt) if dt > 0 else 0
@@ -1563,6 +1837,7 @@ async def _run_simulation(ws: WebSocket, payload: dict[str, Any]) -> None:
                 item = await asyncio.to_thread(sync_q.get)
                 if item is None:
                     break
+                _mirror_sim_output_to_terminal(item)
                 await ws.send_json(item)
     except WebSocketDisconnect:
         RUNTIME.cancel_requested = True
@@ -1639,5 +1914,9 @@ if __name__ == "__main__":
 
     # Pass `app` directly. Using "server:app" makes uvicorn import `server` again while
     # this file already ran as __main__, duplicating RUNTIME / genesis-worker / gs.init.
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)
+    try:
+        uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)
+    except KeyboardInterrupt:
+        # Quiet Ctrl+C termination (uvicorn already requested shutdown).
+        pass
 

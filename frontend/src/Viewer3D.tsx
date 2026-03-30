@@ -1,5 +1,5 @@
 import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber'
-import { OrbitControls } from '@react-three/drei'
+import { Edges, OrbitControls } from '@react-three/drei'
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import * as THREE from 'three'
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
@@ -12,6 +12,170 @@ const _qOut = new THREE.Quaternion()
 const _posA = new THREE.Vector3()
 const _posB = new THREE.Vector3()
 const _scale = new THREE.Vector3(1, 1, 1)
+
+/** Sim metres: if two server frames disagree by more than this, skip lerp (avoids drifting "through" walls). */
+const LERP_TELEPORT_DIST_SQ = (2e-3) * (2e-3)
+
+/** Closed rectangle in XZ at fixed Y; each edge is one line segment pair for LineSegments. */
+function pushRectXZRing(positions: number[], y: number, half: number) {
+  const pts: [number, number][] = [
+    [half, half],
+    [half, -half],
+    [-half, -half],
+    [-half, half],
+  ]
+  for (let i = 0; i < 4; i++) {
+    const a = pts[i]!
+    const b = pts[(i + 1) % 4]!
+    positions.push(a[0], y, a[1], b[0], y, b[1])
+  }
+}
+
+/** Horizontal circle in XZ at Y (needle / hole outline). */
+function pushCircleXZRing(positions: number[], y: number, radius: number, segments: number) {
+  const n = Math.max(8, Math.round(segments))
+  for (let i = 0; i < n; i++) {
+    const t0 = (i / n) * Math.PI * 2
+    const t1 = ((i + 1) / n) * Math.PI * 2
+    positions.push(
+      radius * Math.cos(t0),
+      y,
+      radius * Math.sin(t0),
+      radius * Math.cos(t1),
+      y,
+      radius * Math.sin(t1),
+    )
+  }
+}
+
+/** Outer open cylinder: full top & bottom rims; only two opposite vertical seams (+X / −X). */
+function pushOpenCylinderOuterShell(
+  positions: number[],
+  radius: number,
+  yBottom: number,
+  yTop: number,
+  segments: number,
+) {
+  const n = Math.max(8, Math.round(segments))
+  for (let i = 0; i < n; i++) {
+    const t0 = (i / n) * Math.PI * 2
+    const t1 = ((i + 1) / n) * Math.PI * 2
+    const x0 = radius * Math.cos(t0)
+    const z0 = radius * Math.sin(t0)
+    const x1 = radius * Math.cos(t1)
+    const z1 = radius * Math.sin(t1)
+    positions.push(x0, yBottom, z0, x1, yBottom, z1)
+    positions.push(x0, yTop, z0, x1, yTop, z1)
+  }
+  for (const th of [0, Math.PI] as const) {
+    const x = radius * Math.cos(th)
+    const z = radius * Math.sin(th)
+    positions.push(x, yBottom, z, x, yTop, z)
+  }
+}
+
+function PlateRimOuterOutline(props: { plateSize: number; wallThickness: number; wallHeight: number }) {
+  const { plateSize, wallThickness, wallHeight } = props
+  const geom = useMemo(() => {
+    const s = plateSize
+    const t = wallThickness
+    const h = wallHeight
+    const span = s + 2 * t
+    const hs = s / 2
+    const hsp = span / 2
+    const y0 = 0
+    const yPlateTop = t
+    const yRimTop = t + h
+    const positions: number[] = []
+    pushRectXZRing(positions, y0, hs)
+    pushRectXZRing(positions, yPlateTop, hsp)
+    pushRectXZRing(positions, yRimTop, hsp)
+    const corners: [number, number][] = [
+      [hsp, hsp],
+      [hsp, -hsp],
+      [-hsp, hsp],
+      [-hsp, -hsp],
+    ]
+    for (const [cx, cz] of corners) {
+      positions.push(cx, yPlateTop, cz, cx, yRimTop, cz)
+    }
+    const plateCorners: [number, number][] = [
+      [hs, hs],
+      [hs, -hs],
+      [-hs, hs],
+      [-hs, -hs],
+    ]
+    for (const [cx, cz] of plateCorners) {
+      positions.push(cx, y0, cz, cx, yPlateTop, cz)
+    }
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    return g
+  }, [plateSize, wallThickness, wallHeight])
+
+  useEffect(() => () => geom.dispose(), [geom])
+
+  return (
+    <lineSegments geometry={geom}>
+      <lineBasicMaterial color="#000000" />
+    </lineSegments>
+  )
+}
+
+function SyringeOutlineLines(props: {
+  junctionY: number
+  barrelLength: number
+  barrelRadiusOuter: number
+  barrelRadiusInner: number
+  needleLength: number
+  needleRadiusOuter: number
+  needleInnerRadius: number
+  annulusTopY: number
+  segments: number
+}) {
+  const {
+    junctionY,
+    barrelLength,
+    barrelRadiusOuter,
+    barrelRadiusInner,
+    needleLength,
+    needleRadiusOuter,
+    needleInnerRadius,
+    annulusTopY,
+    segments,
+  } = props
+  const geom = useMemo(() => {
+    const positions: number[] = []
+    const yB = junctionY
+    const yT = junctionY + barrelLength
+    pushOpenCylinderOuterShell(positions, barrelRadiusOuter, yB, yT, segments)
+    pushCircleXZRing(positions, yT, barrelRadiusInner, segments)
+    const nTip = junctionY - needleLength
+    pushOpenCylinderOuterShell(positions, needleRadiusOuter, nTip, junctionY, segments)
+    pushCircleXZRing(positions, annulusTopY, needleInnerRadius, segments)
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    return g
+  }, [
+    junctionY,
+    barrelLength,
+    barrelRadiusOuter,
+    barrelRadiusInner,
+    needleLength,
+    needleRadiusOuter,
+    needleInnerRadius,
+    annulusTopY,
+    segments,
+  ])
+
+  useEffect(() => () => geom.dispose(), [geom])
+
+  return (
+    <lineSegments geometry={geom}>
+      <lineBasicMaterial color="#000000" />
+    </lineSegments>
+  )
+}
 
 function withSettledVertexStress(
   p: WsFrameParticle | undefined,
@@ -36,8 +200,14 @@ function cloneParticles(ps: WsFrameParticle[]): WsFrameParticle[] {
   return out
 }
 
-function lerpParticleTransform(a: WsFrameParticle, b: WsFrameParticle, alpha: number, target: WsFrameParticle) {
-  const t = alpha
+/** Returns the blend factor actually used (may be 1 when ids mismatch or position jumps — avoids wall "drift"). */
+function lerpParticleTransform(a: WsFrameParticle, b: WsFrameParticle, alpha: number, target: WsFrameParticle): number {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const dz = b.z - a.z
+  const jumpSq = dx * dx + dy * dy + dz * dz
+  const t =
+    a.id !== b.id || jumpSq > LERP_TELEPORT_DIST_SQ ? 1 : THREE.MathUtils.clamp(alpha, 0, 1)
   target.id = b.id
   _posA.set(a.x, a.y, a.z)
   _posB.set(b.x, b.y, b.z)
@@ -54,6 +224,7 @@ function lerpParticleTransform(a: WsFrameParticle, b: WsFrameParticle, alpha: nu
   const sa = a.stress_intensity ?? 0
   const sb = b.stress_intensity ?? 0
   target.stress_intensity = THREE.MathUtils.lerp(sa, sb, t)
+  return t
 }
 
 /** Writes lerped per-vertex stress into `row` (length ≥ verts) without allocating. */
@@ -125,8 +296,8 @@ function fillStressRowLerp(
 function createBootstrapMaterial() {
   return new THREE.MeshStandardMaterial({
     color: '#c8d6e8',
-    roughness: 0.45,
-    metalness: 0.06,
+    roughness: 1,
+    metalness: 0,
     emissive: new THREE.Color('#15304f'),
     emissiveIntensity: 0.06,
   })
@@ -631,8 +802,9 @@ function InstancedFemParticles(props: {
       const pa = particlesA?.[i]
       const pb = particlesB[i]
       const tgt = scratch[i]!
+      let stressAlpha = alpha
       if (pa && pb && alpha < 1) {
-        lerpParticleTransform(pa, pb, alpha, tgt)
+        stressAlpha = lerpParticleTransform(pa, pb, alpha, tgt)
       } else if (pb) {
         tgt.id = pb.id
         tgt.x = pb.x
@@ -668,7 +840,7 @@ function InstancedFemParticles(props: {
           verts,
           withSettledVertexStress(pa, settledVertexStress),
           withSettledVertexStress(pb, settledVertexStress),
-          alpha,
+          stressAlpha,
         )
       } else {
         const fb = Math.max(0, Math.min(1, tgt.stress_intensity ?? 0))
@@ -770,20 +942,17 @@ function ShallowBasket(props: {
 
   const wallMat = useMemo(() => {
     if (transparent) {
-      return new THREE.MeshPhysicalMaterial({
+      return new THREE.MeshStandardMaterial({
         color: '#9db4d4',
-        roughness: 0.35,
-        metalness: 0.05,
+        roughness: 1,
+        metalness: 0,
         transparent: true,
         opacity: 0.22,
         depthWrite: false,
         side: THREE.DoubleSide,
-        transmission: 0.15,
-        thickness: 0.02,
-        clearcoat: 0.2,
       })
     }
-    return new THREE.MeshStandardMaterial({ color: '#b8c4d4', roughness: 0.55, metalness: 0.12, side: THREE.DoubleSide })
+    return new THREE.MeshStandardMaterial({ color: '#b8c4d4', roughness: 0.9, metalness: 0, side: THREE.DoubleSide })
   }, [transparent])
 
   const bottomMat = wallMat
@@ -798,16 +967,86 @@ function ShallowBasket(props: {
     <group>
       <mesh position={[0, py, 0]} receiveShadow material={bottomMat}>
         <cylinderGeometry args={[rInner + wallThickness, rInner + wallThickness, wallThickness, seg]} />
+        <Edges color="#000000" threshold={15} />
       </mesh>
       <mesh position={[0, wallY, 0]} receiveShadow material={wallMat}>
         <cylinderGeometry args={[rInner + wallThickness, rInner + wallThickness, height, seg, 1, true]} />
+        <Edges color="#000000" threshold={15} />
       </mesh>
       <mesh position={[0, wallY, 0]} receiveShadow material={wallMat}>
         <cylinderGeometry args={[rInner, rInner, height, seg, 1, true]} />
+        <Edges color="#000000" threshold={15} />
       </mesh>
       <mesh position={[0, wallThickness + height, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={wallMat}>
         <ringGeometry args={[rInner, rInner + wallThickness, seg]} />
+        <Edges color="#000000" threshold={15} />
       </mesh>
+    </group>
+  )
+}
+
+function PistonHead({
+  position,
+  radius,
+  thickness,
+}: {
+  position: [number, number, number]
+  radius: number
+  thickness: number
+}) {
+  return (
+    <mesh position={position} castShadow receiveShadow renderOrder={10}>
+      <cylinderGeometry args={[radius, radius, thickness, 32]} />
+      <meshStandardMaterial
+        color="#4a90e2"
+        metalness={0}
+        roughness={1}
+        transparent
+        opacity={0.8}
+        depthWrite={false}
+      />
+      <Edges color="#000000" threshold={15} />
+    </mesh>
+  )
+}
+
+/** Streamed piston centre Y from the solver; cylinder visual matches the Box collider extent. */
+function LiveSyringePiston(props: {
+  liveFrameRef: MutableRefObject<LivePhysicsFrame>
+  barrelDiameter: number
+  wallThickness: number
+  bottomThickness: number
+  enabled: boolean
+}) {
+  const { liveFrameRef, barrelDiameter, wallThickness, bottomThickness, enabled } = props
+  const groupRef = useRef<THREE.Group>(null)
+  const radius = useMemo(() => {
+    const epsGeom = Math.max(1e-5, wallThickness * 0.02)
+    return Math.max(barrelDiameter * 0.5 - epsGeom * 2, 1e-6)
+  }, [barrelDiameter, wallThickness])
+  const thickness = Math.max(bottomThickness, 1e-6)
+
+  useFrame(() => {
+    const g = groupRef.current
+    if (!g) return
+    if (!enabled) {
+      g.visible = false
+      return
+    }
+    const py = liveFrameRef.current.piston_y
+    if (py != null && Number.isFinite(py)) {
+      g.position.set(0, py, 0)
+      g.visible = true
+    } else {
+      g.visible = false
+    }
+  })
+
+  if (!enabled) return null
+
+  return (
+    <group ref={groupRef} visible={false}>
+      <PistonHead position={[0, 0, 0]} radius={radius} thickness={thickness} />
     </group>
   )
 }
@@ -848,49 +1087,40 @@ function SyringePreview(props: {
 
   const barrelMat = useMemo(
     () =>
-      new THREE.MeshPhysicalMaterial({
+      new THREE.MeshStandardMaterial({
         color: '#80a7d9',
-        roughness: 0.12,
-        metalness: 0.02,
+        roughness: 1,
+        metalness: 0,
         transparent: true,
         opacity: 0.26,
         depthWrite: false,
         side: THREE.DoubleSide,
-        transmission: 0.8,
-        thickness: 0.12,
-        ior: 1.42,
       }),
     [],
   )
   const needleMat = useMemo(
     () =>
-      new THREE.MeshPhysicalMaterial({
+      new THREE.MeshStandardMaterial({
         color: '#6694cc',
-        roughness: 0.15,
-        metalness: 0.03,
+        roughness: 1,
+        metalness: 0,
         transparent: true,
         opacity: 0.32,
         depthWrite: false,
         side: THREE.DoubleSide,
-        transmission: 0.74,
-        thickness: 0.08,
-        ior: 1.42,
       }),
     [],
   )
   const bottomMat = useMemo(
     () =>
-      new THREE.MeshPhysicalMaterial({
+      new THREE.MeshStandardMaterial({
         color: '#7f9fc8',
-        roughness: 0.2,
-        metalness: 0.02,
+        roughness: 1,
+        metalness: 0,
         transparent: true,
         opacity: 0.2,
         depthWrite: false,
         side: THREE.DoubleSide,
-        transmission: 0.72,
-        thickness: 0.05,
-        ior: 1.42,
       }),
     [],
   )
@@ -909,6 +1139,8 @@ function SyringePreview(props: {
 
   const annulusCenterY = junctionY
 
+  const annulusTopY = annulusCenterY + tBottom / 2
+
   return (
     <group position={[0, syringeLiftY, 0]}>
       <mesh position={[0, junctionY + barrelLength / 2, 0]} receiveShadow material={barrelMat}>
@@ -922,7 +1154,7 @@ function SyringePreview(props: {
       <mesh position={[0, annulusCenterY, 0]} receiveShadow material={bottomMat}>
         <cylinderGeometry args={[barrelR, barrelR, tBottom, seg, 1, true]} />
       </mesh>
-      <mesh position={[0, annulusCenterY + tBottom / 2, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={bottomMat}>
+      <mesh position={[0, annulusTopY, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={bottomMat}>
         <ringGeometry args={[needleR, barrelR, seg]} />
       </mesh>
       <mesh position={[0, annulusCenterY - tBottom / 2, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={bottomMat}>
@@ -935,6 +1167,18 @@ function SyringePreview(props: {
       <mesh position={[0, junctionY, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow material={needleMat}>
         <ringGeometry args={[needleR, needleR + tWall, seg]} />
       </mesh>
+      {/* Custom outlines: outer shell + inner top lip circle + needle hole circle; two vertical seams each tube. */}
+      <SyringeOutlineLines
+        junctionY={junctionY}
+        barrelLength={barrelLength}
+        barrelRadiusOuter={barrelR + tWall}
+        barrelRadiusInner={barrelR}
+        needleLength={needleLength}
+        needleRadiusOuter={needleR + tWall}
+        needleInnerRadius={needleR}
+        annulusTopY={annulusTopY}
+        segments={seg}
+      />
       {/* Backend has a hidden collision cap at the outlet; skip drawing it to avoid a fake extra needle tip. */}
     </group>
   )
@@ -1013,27 +1257,23 @@ function Scene(props: {
     () =>
       new THREE.MeshStandardMaterial({
         color: '#b8c4d4',
-        roughness: 0.55,
-        metalness: 0.12,
+        roughness: 0.9,
+        metalness: 0,
       }),
     [],
   )
 
-  /** Rim walls: nearly invisible glass (geometry stays for depth / collisions in scene). */
+  /** Rim walls: faint tint, matte (no transmission — avoids mirror-like glass reflections). */
   const plateWallMat = useMemo(
     () =>
-      new THREE.MeshPhysicalMaterial({
+      new THREE.MeshStandardMaterial({
         color: '#9eb6d4',
-        roughness: 0.2,
+        roughness: 1,
         metalness: 0,
         transparent: true,
-        opacity: 0.04,
+        opacity: 0.12,
         depthWrite: false,
         side: THREE.DoubleSide,
-        transmission: 0.98,
-        thickness: 0.12,
-        ior: 1.45,
-        clearcoat: 0,
       }),
     [],
   )
@@ -1047,7 +1287,7 @@ function Scene(props: {
 
   return (
     <>
-      <color attach="background" args={['#dfeaf7']} />
+      <color attach="background" args={['#ffffff']} />
       <OrbitControls ref={controlsRef} makeDefault enableDamping dampingFactor={0.08} screenSpacePanning />
       <OrbitTargetController
         controlsRef={controlsRef}
@@ -1065,6 +1305,7 @@ function Scene(props: {
           <group>
             <mesh position={[0, py, 0]} receiveShadow material={plateBaseMat}>
               <boxGeometry args={[plateSize, wallThickness, plateSize]} />
+              {h <= 1e-6 ? <Edges color="#000000" threshold={15} /> : null}
             </mesh>
             {h > 1e-6 ? (
               <>
@@ -1080,6 +1321,7 @@ function Scene(props: {
                 <mesh position={[-(s / 2 + t / 2), yWall, 0]} receiveShadow material={plateWallMat}>
                   <boxGeometry args={[t, h, span]} />
                 </mesh>
+                <PlateRimOuterOutline plateSize={s} wallThickness={t} wallHeight={h} />
               </>
             ) : null}
             {showSyringeInPlate ? (
@@ -1127,6 +1369,15 @@ function Scene(props: {
           onMeshVertexCount={onMeshVertexCount}
           meshScale={meshScale}
         />
+        {environmentType === 'plate' && showSyringeInPlate ? (
+          <LiveSyringePiston
+            liveFrameRef={liveFrameRef}
+            barrelDiameter={syringeBarrelDiameter}
+            wallThickness={syringeWallThickness}
+            bottomThickness={syringeBottomThickness}
+            enabled
+          />
+        ) : null}
       </group>
     </>
   )

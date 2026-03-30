@@ -82,6 +82,8 @@ export interface LivePhysicsFrame {
   step: number
   t: number
   particles: WsFrameParticle[]
+  /** Syringe piston centre Y (m), display scale — matches particle positions. */
+  piston_y?: number | null
   /** Increments on every `frame` message so the viewer always ingests new poses. */
   serial: number
 }
@@ -134,10 +136,20 @@ export interface SimulationConfig {
   SYRINGE_PLATE_GAP?: number
   /** Facet count for syringe wall approximation. */
   SYRINGE_SEGMENTS?: number
+  /** Syringe piston descent speed (m/s) per outer timestep; 0 keeps the piston fixed. */
+  PISTON_SPEED?: number
 }
 
 export type WsLog = { type: 'log'; line: string }
-export type WsFrame = { type: 'frame'; step: number; t: number; Z?: number; max_vel?: number; particles: WsFrameParticle[] }
+export type WsFrame = {
+  type: 'frame'
+  step: number
+  t: number
+  Z?: number
+  max_vel?: number
+  piston_y?: number
+  particles: WsFrameParticle[]
+}
 export type WsComplete = {
   type: 'complete'
   metrics?: { Z?: number; total_pp?: number; system_pressure?: number }

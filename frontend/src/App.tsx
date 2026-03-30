@@ -83,8 +83,7 @@ const LENGTH_UNITS: Record<LengthUnit, { label: string; short: string; metersPer
  *      DROP_SPREAD=0 and many particles — a 90 mm column above a 6 mm plate causes
  *      catastrophic collision cascades when particles all land at once.
  *  - N_PARTICLES 20: Reasonable packing for a 6 mm plate; more than ~20 would overflow.
- *  - SUBSTEPS 16: 4× the standard value; keeps Genesis's internal substep_dt small
- *      enough that µm-scale contacts are resolved before penetration accumulates.
+ *  - SUBSTEPS 24: Higher internal temporal resolution for thin syringe mesh contacts and piston compression.
  *  - DT 1/240: Same outer timestep as standard — increased SUBSTEPS already reduces the
  *      internal step. Reducing DT further would slow the run without extra benefit here.
  *  - SETTLE_THRESHOLD 5e-4 m/s: Tighter than the 1e-3 standard so tiny particles are
@@ -104,7 +103,7 @@ const MICRON_SCALE_SETTINGS = {
   // Physics
   N_PARTICLES: 20,
   DROP_SPREAD: 0.5,
-  SUBSTEPS: 16,
+  SUBSTEPS: 24,
   DT: 1 / 240,
   SETTLE_THRESHOLD: 5e-4,
   SIM_DURATION: 3.0,
@@ -145,8 +144,9 @@ const MICRON_SYRINGE_SETTINGS = {
   SYRINGE_BARREL_LENGTH: 0.0035,
   SYRINGE_NEEDLE_DIAMETER: 0.00028,
   SYRINGE_NEEDLE_LENGTH: 0.0024,
-  SYRINGE_WALL_THICKNESS: 0.00008,
-  SYRINGE_BOTTOM_THICKNESS: 0.00012,
+  // Thicker collision padding than visual glass: reduces tunneling vs ~80 µm walls at high speed / pressure.
+  SYRINGE_WALL_THICKNESS: 0.00025,
+  SYRINGE_BOTTOM_THICKNESS: 0.0003,
   SYRINGE_PLATE_GAP: 0.0002,
   SYRINGE_SEGMENTS: 32,
 }
@@ -203,6 +203,7 @@ export default function App() {
     PLATE_WALL_HEIGHT: MICRON_SCALE_SETTINGS.PLATE_WALL_HEIGHT,
     STRESS_SIGMA: 0.4,
     ...MICRON_SYRINGE_SETTINGS,
+    PISTON_SPEED: 0,
   })
   const [lengthUnit, setLengthUnit] = useState<LengthUnit>('um')
   const { metersPerUnit, short: lengthUnitLabel } = LENGTH_UNITS[lengthUnit]
@@ -533,13 +534,20 @@ export default function App() {
         return
       }
       if (msg.type === 'frame') {
-        const fm = msg as { step?: number; t?: number; particles?: LivePhysicsFrame['particles'] }
+        const fm = msg as {
+          step?: number
+          t?: number
+          particles?: LivePhysicsFrame['particles']
+          piston_y?: number
+        }
         liveFrameSerialRef.current += 1
         liveFrameRef.current = {
           step: typeof fm.step === 'number' ? fm.step : -1,
           t: typeof fm.t === 'number' ? fm.t : 0,
           particles: fm.particles ?? [],
           serial: liveFrameSerialRef.current,
+          piston_y:
+            typeof fm.piston_y === 'number' && Number.isFinite(fm.piston_y) ? fm.piston_y : undefined,
         }
         onFrameMetricsRef.current({
           t: typeof msg.t === 'number' ? msg.t : 0,
@@ -627,7 +635,7 @@ export default function App() {
       config: simConfigRef.current,
     })
     liveFrameSerialRef.current = 0
-    liveFrameRef.current = { step: -99999, t: 0, particles: [], serial: 0 }
+    liveFrameRef.current = { step: -99999, t: 0, particles: [], serial: 0, piston_y: undefined }
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(payload)
     } else {
@@ -764,7 +772,9 @@ export default function App() {
           {mode === 'falling' && loadProgress ? (
             <div style={{ marginTop: 4 }}>
               <div style={{ ...labelStyle, marginBottom: 4 }}>
-                {loadProgress.phase === 'simulate' ? 'Simulation' : 'Loading'}{' '}
+                {loadProgress.phase === 'simulate' || loadProgress.phase === 'precompress'
+                  ? 'Simulation'
+                  : 'Loading'}{' '}
                 {loadProgress.detail ? `— ${loadProgress.detail}` : ''}
               </div>
               <div
@@ -1071,6 +1081,19 @@ export default function App() {
                   >
                     Configure syringe
                   </button>
+                  <label style={labelStyle} title="Downward kinematic speed of the syringe piston (m/s). 0 disables motion.">
+                    Piston speed (m/s)
+                    <input
+                      type="number"
+                      step={0.0005}
+                      min={0}
+                      value={simConfig.PISTON_SPEED ?? 0}
+                      onChange={(e) =>
+                        setSimConfig((p) => ({ ...p, PISTON_SPEED: Math.max(0, Number(e.target.value) || 0) }))
+                      }
+                      style={{ width: '100%', border: '1px solid #bccbe0', borderRadius: 6, padding: '4px 6px' }}
+                    />
+                  </label>
                   <label style={labelStyle}>
                     Wall thickness ({lengthUnitLabel})
                     <input
@@ -1153,7 +1176,7 @@ export default function App() {
                     <input
                       type="range"
                       min={1}
-                      max={20}
+                      max={32}
                       step={1}
                       value={simConfig.SUBSTEPS}
                       onChange={(e) => setSimConfig((p) => ({ ...p, SUBSTEPS: Math.round(Number(e.target.value)) }))}
@@ -1320,7 +1343,7 @@ export default function App() {
           </div>
         </div>
 
-        <div style={{ flexGrow: 1, background: '#eaf1f9', position: 'relative', display: 'grid', gridTemplateRows: '1fr auto' }}>
+        <div style={{ flexGrow: 1, background: '#ffffff', position: 'relative', display: 'grid', gridTemplateRows: '1fr auto' }}>
           {mode === 'idle' ? (
             <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: '#5b7598', fontSize: 14 }}>
               Click “Run Simulation” to stream frames

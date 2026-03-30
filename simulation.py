@@ -79,16 +79,31 @@ def _kwarg_not_supported(exc: Exception, kw: str) -> bool:
     return ("unexpected keyword argument" in msg) and (kw in msg)
 
 
-def init_genesis_compat(gs_mod, backend, n_envs: Optional[int] = None):
-    """Initialize Genesis, using n_envs only when supported by this version."""
-    if n_envs is None:
-        return gs_mod.init(backend=backend)
-    try:
-        return gs_mod.init(backend=backend, n_envs=int(n_envs))
-    except TypeError as exc:
-        if _kwarg_not_supported(exc, "n_envs"):
-            return gs_mod.init(backend=backend)
-        raise
+def init_genesis_compat(
+    gs_mod,
+    backend,
+    n_envs: Optional[int] = None,
+    logging_level: Optional[int] = None,
+):
+    """Initialize Genesis, using n_envs / logging_level only when supported by this version."""
+    attempts: list[dict[str, Any]] = []
+    if n_envs is not None and logging_level is not None:
+        attempts.append({"n_envs": int(n_envs), "logging_level": logging_level})
+    if n_envs is not None:
+        attempts.append({"n_envs": int(n_envs)})
+    if logging_level is not None:
+        attempts.append({"logging_level": logging_level})
+    attempts.append({})
+    last_exc: Optional[TypeError] = None
+    for extra in attempts:
+        try:
+            return gs_mod.init(backend=backend, **extra)
+        except TypeError as exc:
+            last_exc = exc
+            continue
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("init_genesis_compat: no init attempts (internal error)")
 
 
 def create_scene_compat(gs_mod, *, n_envs: Optional[int] = None, **scene_kwargs):
@@ -261,6 +276,10 @@ def make_rigid_options(gs_mod, _cfg: Optional[dict] = None):
     Tighter `constraint_timeconst` (0.001) shrinks per-step penetration residual before it accumulates.
     With compound-hull collision proxies the solver sees accurate geometry, so tighter settings
     converge cleanly without instability.
+
+    Note: Genesis `RigidOptions` (this version) does not expose a rigid-body CCD toggle; narrow-phase
+    CCD is internal. Mitigate tunneling with substeps, `enforce_container_bounds`, and thicker
+    analytical / mesh collision margins where needed.
     """
     g = getattr(gs_mod, "options", gs_mod)
     return g.RigidOptions(
@@ -362,6 +381,14 @@ DEFAULT_CONFIG = {
     "SEQUENTIAL_DROP": False,
     # Max simulated time per staging step (s). None → max(SIM_DURATION / N_PARTICLES, 0.25).
     "SEQUENTIAL_STAGE_DURATION": None,
+    # Syringe piston: downward kinematic speed (m/s) per outer step; 0 keeps piston fixed after fill alignment.
+    "PISTON_SPEED": 0.0,
+    # After spawn, settle with piston held fixed, then place piston at max(particle Y)+clearance.
+    "PISTON_DYNAMIC_FILL_LEVEL": True,
+    # Clearance above highest particle top surface (m, display scale); scaled by physics_norm in the worker.
+    "PISTON_FILL_CLEARANCE_M": 1e-3,
+    # Cap for pre-main-run settle (piston fixed); not tied to N_PARTICLES.
+    "PISTON_FILL_SETTLE_MAX_STEPS": 700,
 }
 
 
@@ -435,10 +462,17 @@ def build_runtime_config(payload: Optional[dict]) -> dict:
     cfg["ANALYTICAL_VEL_THRESHOLD"] = float(cfg.get("ANALYTICAL_VEL_THRESHOLD", 0.1))
     cfg["DT"] = float(cfg["DT"])
     cfg["SUBSTEPS"] = int(cfg["SUBSTEPS"])
+    cfg["PISTON_SPEED"] = float(cfg.get("PISTON_SPEED", 0.0))
+    cfg["PISTON_DYNAMIC_FILL_LEVEL"] = bool(cfg.get("PISTON_DYNAMIC_FILL_LEVEL", True))
+    cfg["PISTON_FILL_CLEARANCE_M"] = float(cfg.get("PISTON_FILL_CLEARANCE_M", 1e-3))
+    cfg["PISTON_FILL_SETTLE_MAX_STEPS"] = max(1, int(cfg.get("PISTON_FILL_SETTLE_MAX_STEPS", 700)))
     # The syringe always has thin curved mesh colliders; keep a minimum substep budget
     # so the per-substep dt is short enough for the constraint solver to resolve contacts
     # before penetration accumulates into tunneling through the annulus floor.
     cfg["SUBSTEPS"] = max(cfg["SUBSTEPS"], 10)
+    # Active piston compression raises contact impulses — keep internal temporal resolution high.
+    if cfg["PISTON_SPEED"] > 1e-12:
+        cfg["SUBSTEPS"] = max(int(cfg["SUBSTEPS"]), 24)
     cfg["SIM_DURATION"] = float(cfg["SIM_DURATION"])
     cfg["SETTLE_THRESHOLD"] = float(cfg["SETTLE_THRESHOLD"])
     cfg["STOP_ON_SETTLE"] = bool(cfg.get("STOP_ON_SETTLE", False))
@@ -1474,6 +1508,8 @@ def create_environment(
 ) -> tuple[set, dict]:
     container_ids = set()
     mat = _rigid_material(0.55, float(env_restitution))
+    # Piston must grip soft / granular material and shear it toward the needle.
+    piston_mat = _rigid_material(0.92, float(env_restitution))
 
     if kind == "plate":
         t = float(wall_thickness)
@@ -1661,10 +1697,28 @@ def create_environment(
         container_ids.add(tip_cap)
 
         syringe_top_y = syringe_lift_y + junction_y_local + barrel_h
+        junction_world_y = float(syringe_lift_y + junction_y_local)
+        eps_geom = max(1e-5, float(t_wall) * 0.02)
+        piston_radius = max(barrel_r - (eps_geom * 2.0), 1e-6)
+        # fixed=True: kinematic plunger — only moves via set_pos (fill alignment / optional PISTON_SPEED).
+        # A free rigid piston falls under gravity and can tunnel through FEM particles.
+        piston = scene.add_entity(
+            gs.morphs.Box(
+                size=(piston_radius * 2.0, t_bottom, piston_radius * 2.0),
+                pos=(0.0, syringe_top_y + 0.05, 0.0),
+                fixed=True,
+            ),
+            material=piston_mat,
+        )
+        container_ids.add(piston)
         env_info = {
             "surface_y": t,
             "top_y": max(top_y, syringe_top_y),
             "spread_radius": barrel_r,
+            "piston": piston,
+            "junction_world_y": junction_world_y,
+            "piston_min_center_y": junction_world_y + float(t_bottom),
+            "piston_max_center_y": float(syringe_top_y) + 0.05,
         }
         return (container_ids, env_info)
 
@@ -1787,13 +1841,30 @@ def create_environment(
         )
         container_ids.add(needle)
 
+        syringe_top_y = junction_y + barrel_h
+        junction_world_y = float(junction_y)
+        eps_geom = max(1e-5, float(t_wall) * 0.02)
+        piston_radius = max(barrel_r - (eps_geom * 2.0), 1e-6)
+        piston = scene.add_entity(
+            gs.morphs.Box(
+                size=(piston_radius * 2.0, t_bottom, piston_radius * 2.0),
+                pos=(0.0, syringe_top_y + 0.05, 0.0),
+                fixed=True,
+            ),
+            material=piston_mat,
+        )
+        container_ids.add(piston)
         env_info = {
             "surface_y": t_bottom,
-            "top_y": junction_y + barrel_h,
+            "top_y": syringe_top_y,
             "inner_radius": barrel_r,
             "spread_radius": barrel_r,
             "outlet_radius": needle_r,
             "needle_bottom_y": junction_y - needle_h,
+            "piston": piston,
+            "junction_world_y": junction_world_y,
+            "piston_min_center_y": junction_world_y + float(t_bottom),
+            "piston_max_center_y": float(syringe_top_y) + 0.05,
         }
         return (container_ids, env_info)
 
@@ -1967,9 +2038,158 @@ def spawn_particles(
     return entities
 
 
-def run_simulation(scene, entities, dt, substeps, duration, settle_threshold, *, update_visualizer: bool = False) -> int:
+def advance_piston_step(
+    piston: Any,
+    dt: float,
+    *,
+    min_center_y: float,
+    speed: float = 0.01,
+) -> None:
+    """Step the syringe plunger downward (kinematic set_pos). Entity is fixed in Genesis so gravity cannot drop it."""
+    if piston is None or dt <= 0.0:
+        return
+    try:
+        x, y, z = piston.get_pos()
+        p = _vec3_from_xyz(x, y, z)
+        new_y = max(float(p[1]) - float(speed) * float(dt), float(min_center_y))
+        new_pos = np.array([float(p[0]), new_y, float(p[2])], dtype=float)
+        piston.set_pos(new_pos, zero_velocity=False)
+    except Exception:
+        pass
+
+
+def reset_piston_to_fill_level(
+    entities: list[Any],
+    piston: Any,
+    *,
+    clearance: float = 1e-3,
+    piston_min_center_y: Optional[float] = None,
+    piston_max_center_y: Optional[float] = None,
+    physics_mesh: Any = None,
+    piston_box_height_y: Optional[float] = None,
+) -> Optional[float]:
+    """
+    Set piston centre Y so its bottom sits just above the highest particle top surface.
+
+    Uses mesh-local AABB half-extents rotated with each particle pose when `physics_mesh` is set;
+    otherwise falls back to max particle centre Y. Adds `clearance` above the pile; if
+    `piston_box_height_y` is set (full box height along Y), centres the piston so its bottom is
+    at pile_top + clearance.
+
+    Clamps to [piston_min_center_y, piston_max_center_y] when provided (same units as get_pos).
+    """
+    if piston is None or not entities:
+        return None
+    max_top = -float("inf")
+    if physics_mesh is not None:
+        try:
+            b0 = np.asarray(physics_mesh.bounds[0], dtype=float)
+            b1 = np.asarray(physics_mesh.bounds[1], dtype=float)
+            half = (b1 - b0) * 0.5
+            for e in entities:
+                try:
+                    pos, quat = _entity_pose(e)
+                    corners = _obb_world_corners(pos, quat, half)
+                    max_top = max(max_top, float(np.max(corners[:, 1])))
+                except Exception:
+                    continue
+        except Exception:
+            max_top = -float("inf")
+    if not math.isfinite(max_top) or max_top <= -1e90:
+        max_top = -float("inf")
+        for e in entities:
+            try:
+                pos, _ = _entity_pose(e)
+                yp = float(pos[1])
+                if math.isfinite(yp):
+                    max_top = max(max_top, yp)
+            except Exception:
+                continue
+    if not math.isfinite(max_top):
+        return None
+    pile_top = max_top + float(clearance)
+    ph = float(piston_box_height_y) if piston_box_height_y is not None else 0.0
+    if ph > 1e-18:
+        new_y = pile_top + 0.5 * ph
+    else:
+        new_y = pile_top
+    if piston_min_center_y is not None:
+        new_y = max(new_y, float(piston_min_center_y))
+    if piston_max_center_y is not None:
+        new_y = min(new_y, float(piston_max_center_y))
+    try:
+        x, _, z = piston.get_pos()
+        piston.set_pos(
+            np.array([float(x), float(new_y), float(z)], dtype=float),
+            zero_velocity=False,
+        )
+        return float(new_y)
+    except Exception:
+        return None
+
+
+def piston_center_y_display(piston: Any, physics_norm: float = 1.0) -> Optional[float]:
+    """World-space piston centre Y in display metres (undo physics normalisation)."""
+    if piston is None:
+        return None
+    try:
+        x, y, z = piston.get_pos()
+        yf = float(y)
+        if not math.isfinite(yf):
+            return None
+        pn = float(physics_norm)
+        if abs(pn - 1.0) > 1e-15 and pn > 1e-18:
+            yf = yf / pn
+        return yf
+    except Exception:
+        return None
+
+
+def piston_reaction_force_magnitude(piston: Any) -> float:
+    """Total |F| from the solver on the piston (gel push-back), or 0 if unavailable."""
+    if piston is None:
+        return 0.0
+    try:
+        gf = getattr(piston, "get_forces", None)
+        if gf is None:
+            return 0.0
+        raw = gf() if callable(gf) else gf
+        if raw is None:
+            return 0.0
+        arr = _tensor_to_numpy(raw).astype(float, copy=False)
+        if arr.size == 0 or not np.isfinite(arr).all():
+            return 0.0
+        if arr.ndim >= 2:
+            arr = np.sum(arr.reshape(-1, arr.shape[-1]), axis=0)
+        elif arr.ndim == 0:
+            return float(abs(float(arr)))
+        return float(np.linalg.norm(arr.ravel()))
+    except Exception:
+        return 0.0
+
+
+def run_simulation(
+    scene,
+    entities,
+    dt,
+    substeps,
+    duration,
+    settle_threshold,
+    *,
+    update_visualizer: bool = False,
+    piston: Any = None,
+    piston_min_center_y: Optional[float] = None,
+    piston_speed: float = 0.01,
+) -> int:
     total_steps = int(duration / dt)
     for step in range(total_steps):
+        if piston is not None and piston_min_center_y is not None:
+            advance_piston_step(
+                piston,
+                dt,
+                min_center_y=float(piston_min_center_y),
+                speed=float(piston_speed),
+            )
         scene.step(update_visualizer=update_visualizer)
         if step % 60 == 0:
             max_vel = compute_max_velocity(entities) if entities else None
@@ -2091,6 +2311,7 @@ def calculate_live_metrics(
     particle_mass_kg: float,
     surface_area_m2: Optional[float] = None,
     depth_tol: float = CONTACT_DEPTH_TOL,
+    piston: Any = None,
 ) -> dict:
     """
     Lightweight metrics for high-frequency WebSocket updates (jamming / rattlers / energy).
@@ -2100,11 +2321,15 @@ def calculate_live_metrics(
     """
     m = compute_metrics(contacts, particle_ids, container_surface_area_m2=surface_area_m2, depth_tol=depth_tol)
     ke = compute_total_kinetic_energy(entities, particle_mass_kg)
+    base_p = float(m.get("system_pressure", 0.0))
+    area = float(surface_area_m2) if surface_area_m2 is not None else 0.0
+    f_p = piston_reaction_force_magnitude(piston)
+    extra_p = (f_p / area) if (area > 0.0 and math.isfinite(area) and math.isfinite(f_p)) else 0.0
     return {
         "Z": float(m.get("Z", 0.0)),
         "n_rattlers": int(m.get("n_isolated_particles", 0)),
         "kinetic_energy": float(ke),
-        "system_pressure": float(m.get("system_pressure", 0.0)),
+        "system_pressure": float(base_p + extra_p),
     }
 
 
@@ -2296,6 +2521,9 @@ def run_simulation_stream(
     update_visualizer: bool = False,
     on_log: Optional[Callable[[str], None]] = None,
     on_frame: Optional[Callable[[dict], None]] = None,
+    piston: Any = None,
+    piston_min_center_y: Optional[float] = None,
+    piston_speed: float = 0.01,
 ) -> int:
     """
     Headless simulation loop that can stream:
@@ -2319,6 +2547,14 @@ def run_simulation_stream(
                     "t": float(step * dt),
                     "particles": _collect_particle_transforms(entities),
                 }
+            )
+
+        if piston is not None and piston_min_center_y is not None:
+            advance_piston_step(
+                piston,
+                dt,
+                min_center_y=float(piston_min_center_y),
+                speed=float(piston_speed),
             )
 
         scene.step(update_visualizer=update_visualizer)
@@ -3122,6 +3358,8 @@ def main():
         args.duration,
         SETTLE_THRESHOLD,
         update_visualizer=bool(args.show_viewer),
+        piston=env_info.get("piston"),
+        piston_min_center_y=env_info.get("piston_min_center_y"),
     )
     contacts = extract_contacts(scene, particle_ids, container_ids, CONTACT_DEPTH_TOL)
     metrics = compute_metrics(
