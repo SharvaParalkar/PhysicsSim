@@ -1,0 +1,1137 @@
+<!DOCTYPE html>
+<!--
+  30-syringeGelParticles.html
+  ===========================
+  Syringe gel-particle simulation demo.
+
+  Physics:
+    - XPBD tetrahedral soft bodies (edge + volume constraints) — pattern from
+      earlier soft-body demos (10-softBodies / 12-softBodySkinning)
+    - Spatial-hash broadphase for particle–particle contacts — pattern from 11-hashing
+    - Analytic syringe container (barrel cylinder + linear taper + needle cylinder)
+    - Moving piston collider
+
+  To run: serve the V3 folder via a local HTTP server, then open this file.
+          Example:
+            - from repo root:  python -m http.server --directory V3 8000
+            - then open:       http://localhost:8000/syringeGelParticles.html
+          Direct file:// may block JSON loading.
+
+  Custom particle:
+    1. Run:  python V3/preprocess_particle.py MyParticle.obj my_particle.json
+    2. Click "Load particle JSON" and select my_particle.json.
+    3. Click "Restart" to populate the syringe with the new shape.
+
+  MIT License — based on Matthias Müller "Ten Minute Physics" code patterns.
+-->
+<html lang="en">
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Syringe Gel-Particle Simulation</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#ffffff;color:#dde;font-family:verdana,sans-serif;font-size:13px;
+     display:flex;flex-direction:column;height:100vh;overflow:hidden}
+#topBar{background:#1a1e2e;border-bottom:1px solid #333;padding:6px 12px;
+        display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+#topBar h1{font-size:15px;color:#8cf;margin-right:6px;white-space:nowrap}
+.btn{background:#2e5c9e;border:none;color:#eef;padding:5px 14px;font-size:13px;
+     border-radius:4px;cursor:pointer;transition:background .2s}
+.btn:hover{background:#3d74c4}
+.btn.danger{background:#6b2020}.btn.danger:hover{background:#9b3030}
+.btn.green{background:#226b44}.btn.green:hover{background:#2e8f5a}
+select,input[type=number]{background:#232840;border:1px solid #445;color:#dde;
+        padding:3px 6px;border-radius:3px;font-size:12px;width:72px}
+label{color:#aac;white-space:nowrap}
+#main{display:flex;flex:1;overflow:hidden}
+#sidebar{width:260px;min-width:220px;background:#141824;border-right:1px solid #2a2a3a;
+         overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:6px}
+#canvasWrap{flex:1;position:relative}
+canvas{display:block}
+.section{background:#1a1e2e;border-radius:5px;padding:8px;margin-bottom:2px}
+.section h3{color:#8cf;font-size:12px;letter-spacing:.05em;margin-bottom:6px;
+             text-transform:uppercase}
+.row{display:flex;justify-content:space-between;align-items:center;margin:3px 0;gap:4px}
+.row label{flex:0 0 auto}
+.row input[type=range]{flex:1;accent-color:#4a8fd4;min-width:60px}
+.statVal{color:#ffd080;font-weight:bold;min-width:60px;text-align:right;font-size:12px}
+#infoBox{position:absolute;bottom:10px;left:10px;background:rgba(10,15,30,.75);
+         padding:6px 10px;border-radius:5px;font-size:11px;color:#aab;
+         pointer-events:none;line-height:1.6}
+</style>
+</head>
+<body>
+
+<!-- ── Top toolbar ── -->
+<div id="topBar">
+  <h1>Syringe Gel-Particle Sim</h1>
+  <button class="btn green" id="btnRun"    onclick="onRun()">Run</button>
+  <button class="btn"        onclick="onRestart()">Restart</button>
+  <button class="btn"        onclick="exportOBJ()">Export OBJ</button>
+  <button class="btn"        onclick="exportContactCSV()">Export Contacts CSV</button>
+  <label>Library:
+    <select id="particleLibrary" onchange="onSelectLibrary(this.value)" style="width:auto">
+      <option value="__default__">Default sphere</option>
+      <option value="assets/Cyl600M_preprocessed.json">Cyl600M</option>
+      <option value="assets/Hex600M_preprocessed.json">Hex600M</option>
+      <option value="assets/Square600M_preprocessed.json">Square600M</option>
+      <option value="assets/Star600M_preprocessed.json">Star600M</option>
+      <option value="assets/Tri600M_preprocessed.json">Tri600M</option>
+    </select>
+  </label>
+  <label>Particle JSON: <input type="file" id="particleFile" accept=".json"
+         onchange="loadParticleJSON(event)" style="width:auto;font-size:11px"></label>
+</div>
+
+<div id="main">
+<!-- ── Sidebar ── -->
+<div id="sidebar">
+
+  <div class="section">
+    <h3>Syringe (mm)</h3>
+    <div class="row"><label>Barrel ⌀</label>
+      <input type="number" id="pBarrelDiam" value="8.5" min="1" max="30" step="0.1"></div>
+    <div class="row"><label>Barrel L</label>
+      <input type="number" id="pBarrelLen"  value="40"  min="5" max="100" step="1"></div>
+    <div class="row"><label>Needle ⌀</label>
+      <input type="number" id="pNeedleDiam" value="1.2" min="0.2" max="8" step="0.05"></div>
+    <div class="row"><label>Needle L</label>
+      <input type="number" id="pNeedleLen"  value="15"  min="2" max="60" step="1"></div>
+    <div class="row"><label>Taper H</label>
+      <input type="number" id="pTaperH"     value="2"   min="0.5" max="10" step="0.1"></div>
+  </div>
+
+  <div class="section">
+    <h3>Particles</h3>
+    <div class="row"><label>Count</label>
+      <input type="number" id="pCount"  value="300" min="10" max="1000" step="10"></div>
+    <div class="row"><label>Radius (mm)</label>
+      <span id="lblNomRadius" class="statVal">0.30</span></div>
+    <div class="row"><label>Edge compliance</label>
+      <input type="range"  id="sEdgeC" min="0" max="100" value="5"
+             oninput="onEdgeCChange(this.value)"></div>
+    <div class="row"><label></label><span id="lblEdgeC" class="statVal">5</span></div>
+    <div class="row"><label>Vol compliance</label>
+      <input type="range"  id="sVolC"  min="0" max="50" value="0"
+             oninput="onVolCChange(this.value)"></div>
+    <div class="row"><label></label><span id="lblVolC" class="statVal">0</span></div>
+    <div class="row"><label>Show tets</label>
+      <input type="checkbox" id="chkTets" onchange="onToggleTets(this.checked)"></div>
+  </div>
+
+  <div class="section">
+    <h3>Piston &amp; Physics</h3>
+    <div class="row"><label>Piston speed (mm/s)</label>
+      <input type="number" id="pPistonSpd" value="1.0" min="0" max="20" step="0.1"></div>
+    <div class="row"><label>Gravity (mm/s²)</label>
+      <input type="number" id="pGravity"   value="10"  min="0" max="200" step="1"></div>
+    <div class="row"><label>Substeps</label>
+      <input type="number" id="pSubsteps"  value="10"  min="1" max="30" step="1"></div>
+    <div class="row"><label>Piston Y</label>
+      <span id="lblPistonY" class="statVal">—</span></div>
+  </div>
+
+  <div class="section">
+    <h3>Contact Statistics</h3>
+    <div class="row"><label>Contacts / frame</label>
+      <span id="statContacts" class="statVal">0</span></div>
+    <div class="row"><label>Max penetration (mm)</label>
+      <span id="statMaxPen"   class="statVal">0.000</span></div>
+    <div class="row"><label>Avg per particle</label>
+      <span id="statAvgC"     class="statVal">0.00</span></div>
+    <div class="row"><label>Dispensed</label>
+      <span id="statDisp"     class="statVal">0</span></div>
+    <div class="row"><label>Sim time (s)</label>
+      <span id="statTime"     class="statVal">0.000</span></div>
+    <div class="row"><label>Frame ms</label>
+      <span id="statMs"       class="statVal">0.0</span></div>
+  </div>
+
+  <div class="section">
+    <h3>Legend</h3>
+    <div style="line-height:1.8;font-size:11px;color:#99b">
+      <span style="color:#f78a1d">■</span> Free particle<br>
+      <span style="color:#ffee44">■</span> Particle–particle contact<br>
+      <span style="color:#44aaff">■</span> Wall contact<br>
+      <span style="color:#aa44ff">■</span> Both contacts
+    </div>
+  </div>
+
+</div><!-- end sidebar -->
+
+<div id="canvasWrap">
+  <div id="infoBox">Drag to orbit · Scroll to zoom · Load particle JSON for custom shapes</div>
+</div>
+</div><!-- end main -->
+
+<script src="https://unpkg.com/three@0.139.2/build/three.min.js"></script>
+<script src="https://unpkg.com/three@0.139.2/examples/js/controls/OrbitControls.js"></script>
+<script>
+"use strict";
+// ═══════════════════════════════════════════════════════════════
+// 1.  VECTOR / MATRIX MATH  (pattern from existing demos)
+// ═══════════════════════════════════════════════════════════════
+
+function vecSetZero(a,an){an*=3;a[an]=a[an+1]=a[an+2]=0}
+function vecScale(a,an,s){an*=3;a[an]*=s;a[an+1]*=s;a[an+2]*=s}
+function vecCopy(a,an,b,bn){an*=3;bn*=3;a[an]=b[bn];a[an+1]=b[bn+1];a[an+2]=b[bn+2]}
+function vecAdd(a,an,b,bn,s=1){an*=3;bn*=3;a[an]+=b[bn]*s;a[an+1]+=b[bn+1]*s;a[an+2]+=b[bn+2]*s}
+function vecSetDiff(d,dn,a,an,b,bn,s=1){
+  dn*=3;an*=3;bn*=3;
+  d[dn]=(a[an]-b[bn])*s;d[dn+1]=(a[an+1]-b[bn+1])*s;d[dn+2]=(a[an+2]-b[bn+2])*s}
+function vecLenSq(a,an){an*=3;return a[an]*a[an]+a[an+1]*a[an+1]+a[an+2]*a[an+2]}
+function vecDistSq(a,an,b,bn){
+  an*=3;bn*=3;
+  const dx=a[an]-b[bn],dy=a[an+1]-b[bn+1],dz=a[an+2]-b[bn+2];
+  return dx*dx+dy*dy+dz*dz}
+function vecDot(a,an,b,bn){an*=3;bn*=3;return a[an]*b[bn]+a[an+1]*b[bn+1]+a[an+2]*b[bn+2]}
+function vecSetCross(a,an,b,bn,c,cn){
+  an*=3;bn*=3;cn*=3;
+  a[an]  =b[bn+1]*c[cn+2]-b[bn+2]*c[cn+1];
+  a[an+1]=b[bn+2]*c[cn+0]-b[bn+0]*c[cn+2];
+  a[an+2]=b[bn+0]*c[cn+1]-b[bn+1]*c[cn+0]}
+
+// 3×3 matrix ops (needed for skinning)
+function matGetDet(A){
+  return A[0]*(A[4]*A[8]-A[7]*A[5])
+       - A[3]*(A[1]*A[8]-A[7]*A[2])
+       + A[6]*(A[1]*A[5]-A[4]*A[2])}
+function matSetMult(A,a,an,b,bn){
+  bn*=3;const bx=b[bn],by=b[bn+1],bz=b[bn+2];
+  vecSetZero(a,an);vecAdd(a,an,A,0,bx);vecAdd(a,an,A,1,by);vecAdd(a,an,A,2,bz)}
+function matSetInverse(A){
+  const d=matGetDet(A); if(d===0){A.fill(0);return}
+  const inv=1/d;
+  const a11=A[0],a12=A[3],a13=A[6],a21=A[1],a22=A[4],a23=A[7],a31=A[2],a32=A[5],a33=A[8];
+  A[0]= (a22*a33-a23*a32)*inv; A[3]=-(a12*a33-a13*a32)*inv; A[6]= (a12*a23-a13*a22)*inv;
+  A[1]=-(a21*a33-a23*a31)*inv; A[4]= (a11*a33-a13*a31)*inv; A[7]=-(a11*a23-a13*a21)*inv;
+  A[2]= (a21*a32-a22*a31)*inv; A[5]=-(a11*a32-a12*a31)*inv; A[8]= (a11*a22-a12*a21)*inv}
+
+// ═══════════════════════════════════════════════════════════════
+// 2.  SPATIAL HASH  (pattern from 11-hashing demo)
+// ═══════════════════════════════════════════════════════════════
+class Hash {
+  constructor(spacing, maxObjects){
+    this.spacing=spacing;
+    this.tableSize=2*maxObjects;
+    this.cellStart=new Int32Array(this.tableSize+1);
+    this.cellEntries=new Int32Array(maxObjects);
+    this.queryIds=new Int32Array(maxObjects);
+    this.querySize=0}
+  hashCoords(xi,yi,zi){
+    const h=(xi*92837111)^(yi*689287499)^(zi*283923481);
+    return Math.abs(h)%this.tableSize}
+  intCoord(c){return Math.floor(c/this.spacing)}
+  hashPos(pos,nr){
+    return this.hashCoords(this.intCoord(pos[3*nr]),
+                           this.intCoord(pos[3*nr+1]),
+                           this.intCoord(pos[3*nr+2]))}
+  create(pos){
+    const n=Math.min(pos.length/3,this.cellEntries.length);
+    this.cellStart.fill(0);this.cellEntries.fill(0);
+    for(let i=0;i<n;i++)this.cellStart[this.hashPos(pos,i)]++;
+    let s=0;
+    for(let i=0;i<this.tableSize;i++){s+=this.cellStart[i];this.cellStart[i]=s}
+    this.cellStart[this.tableSize]=s;
+    for(let i=0;i<n;i++){const h=this.hashPos(pos,i);this.cellStart[h]--;this.cellEntries[this.cellStart[h]]=i}}
+  query(pos,nr,maxDist){
+    const x0=this.intCoord(pos[3*nr]-maxDist),   y0=this.intCoord(pos[3*nr+1]-maxDist),   z0=this.intCoord(pos[3*nr+2]-maxDist);
+    const x1=this.intCoord(pos[3*nr]+maxDist),   y1=this.intCoord(pos[3*nr+1]+maxDist),   z1=this.intCoord(pos[3*nr+2]+maxDist);
+    this.querySize=0;
+    for(let xi=x0;xi<=x1;xi++)for(let yi=y0;yi<=y1;yi++)for(let zi=z0;zi<=z1;zi++){
+      const h=this.hashCoords(xi,yi,zi);
+      const st=this.cellStart[h],en=this.cellStart[h+1];
+      for(let i=st;i<en;i++){this.queryIds[this.querySize]=this.cellEntries[i];this.querySize++}}}}
+
+// ═══════════════════════════════════════════════════════════════
+// 3.  DEFAULT SPHERE TET MESH (icosahedron + centre vertex)
+// ═══════════════════════════════════════════════════════════════
+function buildSphereTetTemplate(radius){
+  const phi=(1+Math.sqrt(5))*.5, nm=Math.sqrt(1+phi*phi), r=radius;
+  const n1=1/nm, ph=phi/nm;
+  // 12 outer vertices (indices 0-11) + centre (index 12)
+  const verts=[
+     0, r*n1, r*ph,   0,-r*n1, r*ph,   0, r*n1,-r*ph,   0,-r*n1,-r*ph,
+     r*n1, r*ph,0,  -r*n1, r*ph,0,   r*n1,-r*ph,0,  -r*n1,-r*ph,0,
+     r*ph,0, r*n1,  -r*ph,0, r*n1,   r*ph,0,-r*n1,  -r*ph,0,-r*n1,
+     0,0,0];
+  const icof=[
+    [0,8,4],[0,4,5],[0,5,9],[0,9,1],[0,1,8],
+    [3,11,2],[3,2,10],[3,10,6],[3,6,7],[3,7,11],
+    [1,9,7],[9,11,7],[9,5,11],[5,2,11],[5,4,2],
+    [4,10,2],[4,8,10],[8,6,10],[8,1,6],[1,7,6]];
+  const tetIds=[],surfTriIds=[];
+  for(const [a,b,c] of icof){
+    // check orientation: volume of [center, a, b, c]
+    const bx=verts[3*b]-0, by=verts[3*b+1], bz=verts[3*b+2];
+    const cx2=verts[3*c]-0, cy2=verts[3*c+1], cz2=verts[3*c+2];
+    const ax=verts[3*a],    ay=verts[3*a+1],  az=verts[3*a+2];
+    const vol=ax*(by*cz2-bz*cy2)+ay*(bz*cx2-bx*cz2)+az*(bx*cy2-by*cx2);
+    if(vol>0)tetIds.push(12,a,b,c); else tetIds.push(12,a,c,b);
+    surfTriIds.push(a,b,c)}
+  // unique edges
+  const eSet=new Set();
+  for(let t=0;t<tetIds.length;t+=4){
+    const ids=[tetIds[t],tetIds[t+1],tetIds[t+2],tetIds[t+3]];
+    for(let i=0;i<4;i++)for(let j=i+1;j<4;j++){
+      const a=ids[i],b=ids[j];
+      eSet.add(a<b?a*10000+b:b*10000+a)}}
+  const edgeIds=[];
+  for(const k of eSet){edgeIds.push(Math.floor(k/10000),k%10000)}
+  return{
+    verts:new Float32Array(verts),
+    tetIds:new Int32Array(tetIds),
+    edgeIds:new Int32Array(edgeIds),
+    surfTriIds:new Int32Array(surfTriIds),
+    numVerts:13,numTets:20,numEdges:edgeIds.length/2,numSurfTris:20,
+    hasSkinning:false,nominalRadius:radius}}
+
+// ═══════════════════════════════════════════════════════════════
+// 4.  GEL PARTICLE  (XPBD soft-body, pattern from demo 10 & 12)
+// ═══════════════════════════════════════════════════════════════
+const volIdOrder=[[1,3,2],[0,2,3],[0,3,1],[0,1,2]];
+
+class GelParticle {
+  constructor(tmpl,cx,cy,cz,particleIdx){
+    this.idx=particleIdx;
+    // topology (shared pointers – do NOT mutate)
+    this.tetIds    =tmpl.tetIds;
+    this.edgeIds   =tmpl.edgeIds;
+    this.surfTriIds=tmpl.surfTriIds;
+    this.numTetVerts=tmpl.numVerts;
+    this.numTets   =tmpl.numTets;
+    this.numEdges  =tmpl.numEdges;
+    // skinning
+    this.hasSkinning=tmpl.hasSkinning||false;
+    if(this.hasSkinning){
+      this.numVisVerts =tmpl.visVerts.length/3;
+      this.visTriIds   =tmpl.visTriIds;
+      this.skinningInfo=new Float32Array(tmpl.skinning)}
+    else{
+      this.numVisVerts =tmpl.numVerts;
+      this.visTriIds   =tmpl.surfTriIds}
+    // physics arrays (absolute world coords)
+    this.pos    =new Float32Array(tmpl.numVerts*3);
+    this.prevPos=new Float32Array(tmpl.numVerts*3);
+    this.vel    =new Float32Array(tmpl.numVerts*3);
+    this.invMass=new Float32Array(tmpl.numVerts);
+    this.restVol=new Float32Array(tmpl.numTets);
+    this.edgeLens=new Float32Array(tmpl.numEdges);
+    this.temp  =new Float32Array(12);
+    this.grads =new Float32Array(12);
+    // compliance (set by simulator)
+    this.edgeCompliance=5.0;
+    this.volCompliance =0.0;
+    // state
+    this.center=new Float32Array(3);
+    this.boundingRadius=0;
+    this.nominalRadius=tmpl.nominalRadius||0.3;
+    this.inParticleContact=false;
+    this.inWallContact    =false;
+    this.contactCount     =0;
+    this.visVertOffset    =0;  // assigned by SyringeSimulator
+    this.active           =true;
+    // init positions
+    for(let i=0;i<tmpl.numVerts;i++){
+      this.pos[3*i]  =tmpl.verts[3*i]  +cx;
+      this.pos[3*i+1]=tmpl.verts[3*i+1]+cy;
+      this.pos[3*i+2]=tmpl.verts[3*i+2]+cz;
+      this.prevPos[3*i]=this.pos[3*i];
+      this.prevPos[3*i+1]=this.pos[3*i+1];
+      this.prevPos[3*i+2]=this.pos[3*i+2]}
+    this._initPhysics()}
+
+  _initPhysics(){
+    this.invMass.fill(0);
+    for(let i=0;i<this.numTets;i++){
+      const vol=this._tetVol(i);
+      this.restVol[i]=vol;
+      const pm=vol>0?1/(vol/4):0;
+      for(let j=0;j<4;j++)this.invMass[this.tetIds[4*i+j]]+=pm}
+    for(let i=0;i<this.numEdges;i++){
+      const a=this.edgeIds[2*i],b=this.edgeIds[2*i+1];
+      this.edgeLens[i]=Math.sqrt(vecDistSq(this.pos,a,this.pos,b))}
+    this.updateCenter()}
+
+  _tetVol(nr){
+    const i0=this.tetIds[4*nr],i1=this.tetIds[4*nr+1],
+          i2=this.tetIds[4*nr+2],i3=this.tetIds[4*nr+3];
+    vecSetDiff(this.temp,0,this.pos,i1,this.pos,i0);
+    vecSetDiff(this.temp,1,this.pos,i2,this.pos,i0);
+    vecSetDiff(this.temp,2,this.pos,i3,this.pos,i0);
+    vecSetCross(this.temp,3,this.temp,0,this.temp,1);
+    return vecDot(this.temp,3,this.temp,2)/6}
+
+  updateCenter(){
+    let cx=0,cy=0,cz=0;
+    const n=this.numTetVerts;
+    for(let i=0;i<n;i++){cx+=this.pos[3*i];cy+=this.pos[3*i+1];cz+=this.pos[3*i+2]}
+    this.center[0]=cx/n;this.center[1]=cy/n;this.center[2]=cz/n;
+    let rMax=0;
+    const ccx=this.center[0],ccy=this.center[1],ccz=this.center[2];
+    for(let i=0;i<n;i++){
+      const dx=this.pos[3*i]-ccx,dy=this.pos[3*i+1]-ccy,dz=this.pos[3*i+2]-ccz;
+      rMax=Math.max(rMax,Math.sqrt(dx*dx+dy*dy+dz*dz))}
+    this.boundingRadius=rMax}
+
+  // ── preSolve: integrate + container collision ─────────────────
+  preSolve(dt,gravity,syringe,velDampingPerSec){
+    const gx=gravity[0],gy=gravity[1],gz=gravity[2];
+    this.inWallContact=false;
+    const damp=Math.exp(-Math.max(0,velDampingPerSec||0)*dt);
+    for(let i=0;i<this.numTetVerts;i++){
+      if(this.invMass[i]===0)continue;
+      // simple viscoelastic damping (helps gel-like behavior)
+      this.vel[3*i]  *=damp;
+      this.vel[3*i+1]*=damp;
+      this.vel[3*i+2]*=damp;
+      this.vel[3*i]  +=gx*dt;
+      this.vel[3*i+1]+=gy*dt;
+      this.vel[3*i+2]+=gz*dt;
+      this.prevPos[3*i]  =this.pos[3*i];
+      this.prevPos[3*i+1]=this.pos[3*i+1];
+      this.prevPos[3*i+2]=this.pos[3*i+2];
+      this.pos[3*i]  +=this.vel[3*i]*dt;
+      this.pos[3*i+1]+=this.vel[3*i+1]*dt;
+      this.pos[3*i+2]+=this.vel[3*i+2]*dt;
+      if(syringe.constrainVertex(this.pos,i))this.inWallContact=true}}
+
+  // ── XPBD edge constraint ──────────────────────────────────────
+  solveEdges(dt){
+    const alpha=this.edgeCompliance/(dt*dt);
+    for(let i=0;i<this.numEdges;i++){
+      const a=this.edgeIds[2*i],b=this.edgeIds[2*i+1];
+      const wa=this.invMass[a],wb=this.invMass[b],w=wa+wb;
+      if(w===0)continue;
+      vecSetDiff(this.grads,0,this.pos,a,this.pos,b);
+      const len=Math.sqrt(vecLenSq(this.grads,0));
+      if(len===0)continue;
+      vecScale(this.grads,0,1/len);
+      const C=len-this.edgeLens[i];
+      const s=-C/(w+alpha);
+      vecAdd(this.pos,a,this.grads,0, s*wa);
+      vecAdd(this.pos,b,this.grads,0,-s*wb)}}
+
+  // ── XPBD volume constraint ────────────────────────────────────
+  solveVolumes(dt){
+    const alpha=this.volCompliance/(dt*dt);
+    for(let i=0;i<this.numTets;i++){
+      let w=0;
+      for(let j=0;j<4;j++){
+        const a=this.tetIds[4*i+volIdOrder[j][0]];
+        const b=this.tetIds[4*i+volIdOrder[j][1]];
+        const c=this.tetIds[4*i+volIdOrder[j][2]];
+        vecSetDiff(this.temp,0,this.pos,b,this.pos,a);
+        vecSetDiff(this.temp,1,this.pos,c,this.pos,a);
+        vecSetCross(this.grads,j,this.temp,0,this.temp,1);
+        vecScale(this.grads,j,1/6);
+        w+=this.invMass[this.tetIds[4*i+j]]*vecLenSq(this.grads,j)}
+      if(w===0)continue;
+      const vol=this._tetVol(i);
+      const C=vol-this.restVol[i];
+      const s=-C/(w+alpha);
+      for(let j=0;j<4;j++){
+        const id=this.tetIds[4*i+j];
+        vecAdd(this.pos,id,this.grads,j,s*this.invMass[id])}}}
+
+  // ── postSolve: velocity update ────────────────────────────────
+  postSolve(dt){
+    for(let i=0;i<this.numTetVerts;i++){
+      if(this.invMass[i]===0)continue;
+      this.vel[3*i]  =(this.pos[3*i]  -this.prevPos[3*i])/dt;
+      this.vel[3*i+1]=(this.pos[3*i+1]-this.prevPos[3*i+1])/dt;
+      this.vel[3*i+2]=(this.pos[3*i+2]-this.prevPos[3*i+2])/dt}
+    this.updateCenter()}
+
+  // ── Write deformed positions into the merged flat buffer ──────
+  updateVisMesh(allPos){
+    if(this.hasSkinning){
+      let nr=0;
+      for(let i=0;i<this.numVisVerts;i++){
+        const tNr=this.skinningInfo[nr++]*4;
+        if(tNr<0){nr+=3;continue}
+        const b0=this.skinningInfo[nr++];
+        const b1=this.skinningInfo[nr++];
+        const b2=this.skinningInfo[nr++];
+        const b3=1-b0-b1-b2;
+        const id0=this.tetIds[tNr],id1=this.tetIds[tNr+1];
+        const id2=this.tetIds[tNr+2],id3=this.tetIds[tNr+3];
+        const base=(this.visVertOffset+i)*3;
+        allPos[base]  =this.pos[3*id0]*b0+this.pos[3*id1]*b1+this.pos[3*id2]*b2+this.pos[3*id3]*b3;
+        allPos[base+1]=this.pos[3*id0+1]*b0+this.pos[3*id1+1]*b1+this.pos[3*id2+1]*b2+this.pos[3*id3+1]*b3;
+        allPos[base+2]=this.pos[3*id0+2]*b0+this.pos[3*id1+2]*b1+this.pos[3*id2+2]*b2+this.pos[3*id3+2]*b3}}
+    else{
+      for(let i=0;i<this.numTetVerts;i++){
+        const base=(this.visVertOffset+i)*3;
+        allPos[base]  =this.pos[3*i];
+        allPos[base+1]=this.pos[3*i+1];
+        allPos[base+2]=this.pos[3*i+2]}}}
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 5.  SYRINGE CONTAINER  (parametric geometry + analytic collider)
+// ═══════════════════════════════════════════════════════════════
+class Syringe {
+  /**
+   * Coordinate system  (all in mm):
+   *   Y = 0              : needle tip (exit)
+   *   Y = needleLen      : needle/taper junction
+   *   Y = needleLen+tapH : taper/barrel junction
+   *   Y = needleLen+tapH+barrelLen : top of barrel (piston starts here)
+   * Syringe axis = +Y, gravity = -Y
+   */
+  constructor(p){
+    this.barrelInR = p.barrelDiam/2;
+    this.barrelOutR= p.barrelDiam/2 + 0.38;
+    this.barrelLen = p.barrelLen;
+    this.needleInR = p.needleDiam/2;
+    this.needleOutR= p.needleDiam/2 + 0.15;
+    this.needleLen = p.needleLen;
+    this.taperH    = p.taperH;
+    this.pistonY   = p.needleLen + p.taperH + p.barrelLen;
+    this.pistonSpd = p.pistonSpeed||1.0;
+    this.pistonActive=true;
+    this.seg       = 32;
+    this._barrelTop= this.needleLen+this.taperH+this.barrelLen;
+    this._taperEnd = this.needleLen+this.taperH;
+    this.meshes    = [];   // [{name, mesh}] for export
+  }
+
+  getRadiusAtY(y){
+    if(y<=0)                 return this.needleInR;
+    if(y<=this.needleLen)    return this.needleInR;
+    if(y<=this._taperEnd){
+      const t=(y-this.needleLen)/this.taperH;
+      return this.needleInR+t*(this.barrelInR-this.needleInR)}
+    if(y<=this._barrelTop)   return this.barrelInR;
+    return this.barrelInR}
+
+  /** Returns true if the vertex was constrained (wall contact). */
+  constrainVertex(pos,i){
+    const px=pos[3*i],py=pos[3*i+1],pz=pos[3*i+2];
+    let hit=false;
+    // piston (from above)
+    if(py>this.pistonY){pos[3*i+1]=this.pistonY;hit=true}
+    // radial wall (skip particles below needle tip – they've exited)
+    if(py>0){
+      const r=Math.sqrt(px*px+pz*pz);
+      const rMax=this.getRadiusAtY(pos[3*i+1]);
+      if(r>rMax&&r>1e-10){
+        const sc=rMax/r;
+        pos[3*i]=px*sc;pos[3*i+2]=pz*sc;hit=true}}
+    return hit}
+
+  advancePiston(dt){
+    if(!this.pistonActive)return;
+    this.pistonY-=this.pistonSpd*dt;
+    const minPiston=this.needleLen+this.taperH+0.01;
+    if(this.pistonY<minPiston){this.pistonY=minPiston;this.pistonActive=false}}
+
+  /** Build Three.js meshes for rendering. Returns array of {name, mesh}. */
+  buildMeshes(scene){
+    this.meshes=[];
+    const barrelMat=new THREE.MeshPhongMaterial(
+      {color:0x9bbfd4,transparent:true,opacity:0.25,side:THREE.DoubleSide,depthWrite:false});
+    const needleMat=new THREE.MeshPhongMaterial(
+      {color:0xaad4f5,transparent:true,opacity:0.30,side:THREE.DoubleSide,depthWrite:false});
+    const pistonMat=new THREE.MeshPhongMaterial({color:0xcc8844,flatShading:true});
+    const wallMat =new THREE.MeshPhongMaterial({color:0x6699bb,transparent:true,opacity:0.15,side:THREE.BackSide});
+
+    const seg=this.seg, nl=this.needleLen, tp=this.taperH,
+          bl=this.barrelLen, bir=this.barrelInR, bor=this.barrelOutR,
+          nir=this.needleInR, nor=this.needleOutR;
+    const tEnd=nl+tp, bTop=tEnd+bl;
+
+    // --- needle outer cylinder (Y = 0..nl) ---
+    const needleGeo=new THREE.CylinderGeometry(nor,nor,nl,seg,1,true);
+    needleGeo.translate(0,nl/2,0);
+    const needleMesh=new THREE.Mesh(needleGeo,needleMat);
+    scene.add(needleMesh);
+    this.meshes.push({name:'needle',mesh:needleMesh});
+
+    // --- needle inner (show inner surface for wall viz) ---
+    const niGeo=new THREE.CylinderGeometry(nir,nir,nl,seg,1,true);
+    niGeo.translate(0,nl/2,0);
+    const niMesh=new THREE.Mesh(niGeo,wallMat);
+    scene.add(niMesh);
+    this.meshes.push({name:'needle_inner',mesh:niMesh});
+
+    // --- taper (frustum) ---
+    const taperGeo=new THREE.CylinderGeometry(bir,nir,tp,seg,1,true);
+    taperGeo.translate(0,nl+tp/2,0);
+    const taperMesh=new THREE.Mesh(taperGeo,barrelMat);
+    scene.add(taperMesh);
+    this.meshes.push({name:'taper',mesh:taperMesh});
+
+    // --- barrel outer cylinder ---
+    const barrelGeo=new THREE.CylinderGeometry(bor,bor,bl,seg,1,true);
+    barrelGeo.translate(0,tEnd+bl/2,0);
+    const barrelMesh=new THREE.Mesh(barrelGeo,barrelMat);
+    scene.add(barrelMesh);
+    this.meshes.push({name:'barrel',mesh:barrelMesh});
+
+    // --- barrel inner wall ---
+    const biGeo=new THREE.CylinderGeometry(bir,bir,bl,seg,1,true);
+    biGeo.translate(0,tEnd+bl/2,0);
+    const biMesh=new THREE.Mesh(biGeo,wallMat);
+    scene.add(biMesh);
+    this.meshes.push({name:'barrel_inner',mesh:biMesh});
+
+    // --- piston disk ---
+    const pistonR=bir*0.97;
+    const pistonGeo=new THREE.CylinderGeometry(pistonR,pistonR,0.5,seg);
+    const pistonMesh=new THREE.Mesh(pistonGeo,pistonMat);
+    pistonMesh.castShadow=true;
+    scene.add(pistonMesh);
+    this.pistonMesh=pistonMesh;
+    this.meshes.push({name:'piston',mesh:pistonMesh});
+
+    this.updatePistonMesh()}
+
+  updatePistonMesh(){
+    if(this.pistonMesh)this.pistonMesh.position.set(0,this.pistonY,0)}
+
+  /** Dispose all Three.js meshes (called on restart). */
+  dispose(scene){
+    for(const {mesh} of this.meshes){
+      scene.remove(mesh);
+      mesh.geometry.dispose();
+      mesh.material.dispose()}
+    this.meshes=[];this.pistonMesh=null}
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 6.  SYRINGE SIMULATOR
+// ═══════════════════════════════════════════════════════════════
+class SyringeSimulator {
+  constructor(particleTemplate, syringeParams, targetCount, scene){
+    this.tmpl    = particleTemplate;
+    this.scene   = scene;
+    this.gravity = [0,-10,0];
+    this.simTime = 0;
+    this.numSubsteps=10;
+    this.particles =[];
+    this.dispensed =0;
+    // gel-like tuning (defaults)
+    this.velDampingPerSec=4.0;     // higher = more “gel”, less liquid slosh
+    this.contactCompliance=2e-4;   // too stiff here destabilizes centroid contact
+    this.contactIterations=3;      // contact/internal solver passes per substep
+    this.maxContactCorrFrac=0.6;   // clamp per-iteration correction (fraction of minD)
+    // contact stats
+    this.contactPairs    =0;
+    this.maxPenetration  =0;
+    // build syringe
+    this.syringe=new Syringe(syringeParams);
+    this.syringe.buildMeshes(scene);
+    // spawn particles
+    this._spawnParticles(targetCount);
+    // build centroid hash for contact broadphase
+    // (keep broadphase radius consistent with the narrowphase minD we use)
+    this.maxNR       = particleTemplate.nominalRadius||0.3;
+    this.centroidHash= new Hash(2.2*this.maxNR, Math.max(targetCount+10,64));
+    this.centroids   = new Float32Array(targetCount*3);
+    // merged geometry
+    this._buildMergedGeo();
+    // tet edge debug geometry
+    this.tetLinesMesh=null;
+    this._buildTetLines();}
+
+  _spawnParticles(count){
+    const sp = this.syringe;
+    const r  = this.tmpl.nominalRadius||0.3;
+    const spacing = r*2.1;
+    const barrelBottom = sp.needleLen + sp.taperH;
+    const barrelTop    = sp.pistonY - r;
+    const gridR        = sp.barrelInR - r;
+
+    const positions=[];
+    const nx=Math.max(1,Math.floor(2*gridR/spacing));
+    const nz=Math.max(1,Math.floor(2*gridR/spacing));
+    const ny=Math.max(1,Math.floor((barrelTop-barrelBottom)/spacing));
+
+    outer:
+    for(let iy=0;iy<ny;iy++)for(let ix=0;ix<nx;ix++)for(let iz=0;iz<nz;iz++){
+      const cx2=(-gridR+(ix+.5)*2*gridR/nx);
+      const cz2=(-gridR+(iz+.5)*2*gridR/nz);
+      if(Math.sqrt(cx2*cx2+cz2*cz2)>gridR)continue;
+      const cy=barrelBottom+r+(iy+.5)*spacing;
+      if(cy>barrelTop)continue;
+      // small jitter
+      const jx=(Math.random()-.5)*r*0.3;
+      const jy=(Math.random()-.5)*r*0.3;
+      const jz=(Math.random()-.5)*r*0.3;
+      positions.push([cx2+jx,cy+jy,cz2+jz]);
+      if(positions.length>=count)break outer}
+
+    console.log(`Spawning ${positions.length} particles…`);
+    for(let pi=0;pi<positions.length;pi++){
+      const [cx,cy,cz]=positions[pi];
+      const p=new GelParticle(this.tmpl,cx,cy,cz,pi);
+      p.edgeCompliance=5;p.volCompliance=0;
+      this.particles.push(p)}}
+
+  _buildMergedGeo(){
+    let totalVV=0,totalTri=0;
+    for(const p of this.particles){
+      p.visVertOffset=totalVV;
+      totalVV+=p.numVisVerts;
+      totalTri+=p.visTriIds.length/3}
+    this.totalVisVerts=totalVV;
+    this.allPositions=new Float32Array(totalVV*3);
+    this.allColors   =new Float32Array(totalVV*3);
+    const allIdx=new Uint32Array(totalTri*3);
+    let off=0;
+    for(const p of this.particles){
+      const ids=p.visTriIds;
+      for(let i=0;i<ids.length;i++)allIdx[off+i]=ids[i]+p.visVertOffset;
+      off+=ids.length}
+    const geo=new THREE.BufferGeometry();
+    geo.setAttribute('position',new THREE.BufferAttribute(this.allPositions,3));
+    geo.setAttribute('color',   new THREE.BufferAttribute(this.allColors,3));
+    geo.setIndex(new THREE.BufferAttribute(allIdx,1));
+    const mat=new THREE.MeshPhongMaterial(
+      {vertexColors:true,flatShading:false,shininess:60});
+    this.particleMesh=new THREE.Mesh(geo,mat);
+    this.particleMesh.castShadow=true;
+    this.scene.add(this.particleMesh);
+    // initial positions + colors
+    for(const p of this.particles)p.updateVisMesh(this.allPositions);
+    this._updateColors();
+    geo.computeVertexNormals();
+    geo.attributes.position.needsUpdate=true;
+    geo.attributes.color.needsUpdate=true;}
+
+  _buildTetLines(){
+    // Build a single LineSegments showing all tet edges (for debug)
+    const totalEdgeVerts=this.particles.reduce((s,p)=>s+p.numTetVerts,0);
+    const totalEdges    =this.particles.reduce((s,p)=>s+p.numEdges,0);
+    this.tetPositions=new Float32Array(totalEdgeVerts*3);
+    const tetIdx=new Uint32Array(totalEdges*2);
+    let vOff=0,eOff=0;
+    this.tetVertOffsets=[];
+    for(const p of this.particles){
+      this.tetVertOffsets.push(vOff);
+      for(let i=0;i<p.numTetVerts;i++){
+        this.tetPositions[(vOff+i)*3]  =p.pos[3*i];
+        this.tetPositions[(vOff+i)*3+1]=p.pos[3*i+1];
+        this.tetPositions[(vOff+i)*3+2]=p.pos[3*i+2]}
+      for(let i=0;i<p.numEdges;i++){
+        tetIdx[eOff+2*i]  =p.edgeIds[2*i]+vOff;
+        tetIdx[eOff+2*i+1]=p.edgeIds[2*i+1]+vOff}
+      vOff+=p.numTetVerts;eOff+=p.numEdges*2}
+    const geo=new THREE.BufferGeometry();
+    geo.setAttribute('position',new THREE.BufferAttribute(this.tetPositions,3));
+    geo.setIndex(new THREE.BufferAttribute(tetIdx,1));
+    const mat=new THREE.LineBasicMaterial({color:0x88aaff,transparent:true,opacity:0.4});
+    this.tetLinesMesh=new THREE.LineSegments(geo,mat);
+    this.tetLinesMesh.visible=false;
+    this.scene.add(this.tetLinesMesh);}
+
+  _updateTetLines(){
+    for(let pi=0;pi<this.particles.length;pi++){
+      const p=this.particles[pi];
+      const vOff=this.tetVertOffsets[pi];
+      for(let i=0;i<p.numTetVerts;i++){
+        this.tetPositions[(vOff+i)*3]  =p.pos[3*i];
+        this.tetPositions[(vOff+i)*3+1]=p.pos[3*i+1];
+        this.tetPositions[(vOff+i)*3+2]=p.pos[3*i+2]}}
+    this.tetLinesMesh.geometry.attributes.position.needsUpdate=true;}
+
+  _updateColors(){
+    for(const p of this.particles){
+      let r,g,b;
+      if(!p.active){r=0.3;g=0.3;b=0.3}
+      else if(p.inParticleContact&&p.inWallContact){r=0.67;g=0.27;b=1.0}  // purple
+      else if(p.inParticleContact){r=1.0;g=0.93;b=0.27}                   // yellow
+      else if(p.inWallContact)    {r=0.27;g=0.67;b=1.0}                   // blue
+      else                        {r=0.95;g=0.55;b=0.15}                  // orange
+      for(let i=0;i<p.numVisVerts;i++){
+        const b2=(p.visVertOffset+i)*3;
+        this.allColors[b2]=r;this.allColors[b2+1]=g;this.allColors[b2+2]=b}}}
+
+  // ── Main simulate step ─────────────────────────────────────────
+  simulate(dt){
+    const sdt=dt/this.numSubsteps;
+    this.contactPairs=0;
+    this.maxPenetration=0;
+    // reset contact flags
+    for(const p of this.particles){
+      p.inParticleContact=false;p.contactCount=0}
+    // XPBD substep loop
+    for(let step=0;step<this.numSubsteps;step++){
+      this.syringe.advancePiston(sdt);
+      for(const p of this.particles){
+        if(!p.active)continue;
+        p.preSolve(sdt,this.gravity,this.syringe,this.velDampingPerSec)}
+      // Interleave particle contacts with internal constraints.
+      // (Contacts-after-internal tends to fight the rest-shape projection and can pop.)
+      const iters=Math.max(1,this.contactIterations|0);
+      for(let it=0;it<iters;it++){
+        this._solveContacts(sdt);
+        for(const p of this.particles){
+          if(!p.active)continue;
+          p.solveEdges(sdt);
+          p.solveVolumes(sdt)}}
+      for(const p of this.particles){
+        if(!p.active)continue;
+        p.postSolve(sdt)}}
+    // deactivate dispensed particles (below needle tip)
+    let disp=0;
+    for(const p of this.particles){
+      if(!p.active)continue;
+      if(p.center[1]<-this.tmpl.nominalRadius*2){p.active=false;disp++}}
+    this.dispensed+=disp;
+    // update visuals
+    for(const p of this.particles)p.updateVisMesh(this.allPositions);
+    this._updateColors();
+    const geo=this.particleMesh.geometry;
+    geo.computeVertexNormals();
+    geo.attributes.position.needsUpdate=true;
+    geo.attributes.color.needsUpdate=true;
+    if(this.tetLinesMesh.visible)this._updateTetLines();
+    this.syringe.updatePistonMesh();
+    this.simTime+=dt;}
+
+  // ── Particle–particle contact (centroid-level XPBD) ───────────
+  _solveContacts(sdt){
+    const ps=this.particles;
+    const n=ps.length;
+    if(n<2)return;
+    // fill centroid buffer (only active particles)
+    for(let i=0;i<n;i++){
+      this.centroids[3*i]  =ps[i].active?ps[i].center[0]:1e9;
+      this.centroids[3*i+1]=ps[i].active?ps[i].center[1]:1e9;
+      this.centroids[3*i+2]=ps[i].active?ps[i].center[2]:1e9}
+    this.centroidHash.create(this.centroids);
+    const alpha=Math.max(0,this.contactCompliance)/(sdt*sdt);
+    const corrClampFrac=Math.max(0,Math.min(1,this.maxContactCorrFrac||0));
+    for(let i=0;i<n;i++){
+      if(!ps[i].active)continue;
+      const A=ps[i];
+      this.centroidHash.query(this.centroids,i,2.2*this.maxNR);
+      for(let nr=0;nr<this.centroidHash.querySize;nr++){
+        const j=this.centroidHash.queryIds[nr];
+        if(j<=i||!ps[j].active)continue;
+        const B=ps[j];
+        const dx=A.center[0]-B.center[0];
+        const dy=A.center[1]-B.center[1];
+        const dz=A.center[2]-B.center[2];
+        const d2=dx*dx+dy*dy+dz*dz;
+        // Use nominal radius (broadphase + narrowphase consistent).
+        // boundingRadius can be very conservative for spiky templates and triggers early contacts.
+        const minD=A.nominalRadius+B.nominalRadius;
+        if(d2>=minD*minD||d2<1e-14)continue;
+        const d=Math.sqrt(d2);
+        const nx=dx/d,ny=dy/d,nz=dz/d;
+        const overlap=minD-d; // only repel (no attraction) for stability
+        this.contactPairs++;
+        if(overlap>this.maxPenetration)this.maxPenetration=overlap;
+        A.inParticleContact=true;B.inParticleContact=true;
+        A.contactCount++;B.contactCount++;
+        // XPBD centroid correction (repulsion only).
+        // Clamp correction to avoid pops with centroid-only contact.
+        const wA=1,wB=1;
+        let corr=overlap/(wA+wB+alpha);
+        const corrMax=minD*corrClampFrac;
+        if(corr> corrMax)corr= corrMax;
+        // Apply contact correction only to the contact-facing hemisphere verts,
+        // letting internal constraints propagate deformation inward.
+        const Ax=A.center[0],Ay=A.center[1],Az=A.center[2];
+        const Bx=B.center[0],By=B.center[1],Bz=B.center[2];
+        let movedA=0,movedB=0;
+        for(let k=0;k<A.numTetVerts;k++){
+          const vx=A.pos[3*k]-Ax,vy=A.pos[3*k+1]-Ay,vz=A.pos[3*k+2]-Az;
+          if(vx*nx+vy*ny+vz*nz<=0)continue;
+          A.pos[3*k]  +=corr*wA*nx;
+          A.pos[3*k+1]+=corr*wA*ny;
+          A.pos[3*k+2]+=corr*wA*nz;
+          movedA++;
+          if(this.syringe.constrainVertex(A.pos,k))A.inWallContact=true}
+        for(let k=0;k<B.numTetVerts;k++){
+          const vx=B.pos[3*k]-Bx,vy=B.pos[3*k+1]-By,vz=B.pos[3*k+2]-Bz;
+          // B is moved along -n, so "facing" verts satisfy (v · -n) > 0  <=> (v · n) < 0
+          if(vx*nx+vy*ny+vz*nz>=0)continue;
+          B.pos[3*k]  -=corr*wB*nx;
+          B.pos[3*k+1]-=corr*wB*ny;
+          B.pos[3*k+2]-=corr*wB*nz;
+          movedB++;
+          if(this.syringe.constrainVertex(B.pos,k))B.inWallContact=true}
+        // Keep centroids roughly consistent during the interleaved solve loop.
+        // (We only move a subset of verts, so scale the center shift by that fraction.)
+        if(movedA>0){
+          const fA=movedA/A.numTetVerts;
+          A.center[0]+=corr*wA*nx*fA;A.center[1]+=corr*wA*ny*fA;A.center[2]+=corr*wA*nz*fA;}
+        if(movedB>0){
+          const fB=movedB/B.numTetVerts;
+          B.center[0]-=corr*wB*nx*fB;B.center[1]-=corr*wB*ny*fB;B.center[2]-=corr*wB*nz*fB;}
+      }}}
+
+  getContactStats(){
+    const n=this.particles.filter(p=>p.active).length;
+    return{
+      totalContacts:this.contactPairs,
+      maxPenetration:this.maxPenetration,
+      avgContacts: n>0?(this.contactPairs*2/n):0,
+      dispensed:this.dispensed}}
+
+  /** OBJ export: returns the full scene as an OBJ string. */
+  exportToOBJ(){
+    let s=`# Syringe Gel-Particle Simulation\n`;
+    s+=`# t=${this.simTime.toFixed(3)} s   particles=${this.particles.length}\n\n`;
+    let vOff=1;
+    // syringe meshes
+    for(const {name,mesh} of this.syringe.meshes){
+      const geo=mesh.geometry;
+      const pos=geo.attributes.position.array;
+      const idx=geo.index?geo.index.array:null;
+      if(!pos||pos.length<3)continue;
+      // ensure matrixWorld is current (important for the moving piston)
+      mesh.updateWorldMatrix(true,false);
+      const wm=mesh.matrixWorld;
+      s+=`o ${name}\n`;
+      for(let i=0;i<pos.length;i+=3){
+        const v=new THREE.Vector3(pos[i],pos[i+1],pos[i+2]).applyMatrix4(wm);
+        s+=`v ${v.x.toFixed(4)} ${v.y.toFixed(4)} ${v.z.toFixed(4)}\n`}
+      if(idx){for(let i=0;i<idx.length;i+=3)
+        s+=`f ${idx[i]+vOff} ${idx[i+1]+vOff} ${idx[i+2]+vOff}\n`}
+      vOff+=pos.length/3;s+='\n'}
+    // particles
+    for(let pi=0;pi<this.particles.length;pi++){
+      const p=this.particles[pi];
+      s+=`o particle_${String(pi+1).padStart(4,'0')}\n`;
+      for(let i=0;i<p.numVisVerts;i++){
+        const b=(p.visVertOffset+i)*3;
+        s+=`v ${this.allPositions[b].toFixed(4)} ${this.allPositions[b+1].toFixed(4)} ${this.allPositions[b+2].toFixed(4)}\n`}
+      const ids=p.visTriIds;
+      for(let i=0;i<ids.length;i+=3)
+        s+=`f ${ids[i]+vOff} ${ids[i+1]+vOff} ${ids[i+2]+vOff}\n`;
+      vOff+=p.numVisVerts;s+='\n'}
+    return s}
+
+  /** Contact statistics as CSV rows (one row per frame, call at each frame). */
+  pushContactRow(frameIdx,dt){
+    if(!this._csvRows)this._csvRows=
+      ['frame,time_s,contact_pairs,max_penetration_mm,avg_contacts_per_particle,dispensed'];
+    const st=this.getContactStats();
+    this._csvRows.push(
+      `${frameIdx},${this.simTime.toFixed(4)},${st.totalContacts},`+
+      `${st.maxPenetration.toFixed(5)},${st.avgContacts.toFixed(3)},${st.dispensed}`);}
+
+  getContactCSV(){return(this._csvRows||[]).join('\n')}
+
+  dispose(){
+    if(this.particleMesh){
+      this.scene.remove(this.particleMesh);
+      this.particleMesh.geometry.dispose();
+      this.particleMesh.material.dispose()}
+    if(this.tetLinesMesh){
+      this.scene.remove(this.tetLinesMesh);
+      this.tetLinesMesh.geometry.dispose();
+      this.tetLinesMesh.material.dispose()}
+    this.syringe.dispose(this.scene);}
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 7.  THREE.JS SCENE + RENDER LOOP
+// ═══════════════════════════════════════════════════════════════
+let gRenderer, gScene, gCamera, gCamCtrl, gSimulator, gParticleTemplate;
+let gPaused=true, gFrameIdx=0;
+
+function initThreeScene(){
+  gScene=new THREE.Scene();
+  gScene.background=new THREE.Color(0xffffff);
+  gScene.fog=new THREE.Fog(0xffffff,60,250);
+
+  // Lights
+  gScene.add(new THREE.AmbientLight(0x404060,0.8));
+  const dir=new THREE.DirectionalLight(0xffffff,0.9);
+  dir.position.set(5,20,10);dir.castShadow=true;
+  dir.shadow.camera.near=1;dir.shadow.camera.far=200;
+  dir.shadow.camera.left=dir.shadow.camera.bottom=-40;
+  dir.shadow.camera.right=dir.shadow.camera.top=40;
+  dir.shadow.mapSize.width=dir.shadow.mapSize.height=2048;
+  gScene.add(dir);
+  gScene.add(new THREE.HemisphereLight(0x3a4060,0x101830,0.5));
+
+  // Renderer
+  const wrap=document.getElementById('canvasWrap');
+  gRenderer=new THREE.WebGLRenderer({antialias:true});
+  gRenderer.shadowMap.enabled=true;
+  gRenderer.shadowMap.type=THREE.PCFSoftShadowMap;
+  gRenderer.setPixelRatio(window.devicePixelRatio);
+  gRenderer.setSize(wrap.clientWidth,wrap.clientHeight);
+  wrap.appendChild(gRenderer.domElement);
+
+  // Camera
+  gCamera=new THREE.PerspectiveCamera(55,wrap.clientWidth/wrap.clientHeight,0.1,500);
+  gCamera.position.set(25,40,55);
+  gScene.add(gCamera);
+
+  gCamCtrl=new THREE.OrbitControls(gCamera,gRenderer.domElement);
+  gCamCtrl.target.set(0,30,0);
+  gCamCtrl.zoomSpeed=1.5;gCamCtrl.panSpeed=0.5;
+  gCamCtrl.update();
+
+  window.addEventListener('resize',onResize,false);}
+
+function onResize(){
+  const wrap=document.getElementById('canvasWrap');
+  gCamera.aspect=wrap.clientWidth/wrap.clientHeight;
+  gCamera.updateProjectionMatrix();
+  gRenderer.setSize(wrap.clientWidth,wrap.clientHeight);}
+
+// ═══════════════════════════════════════════════════════════════
+// 8.  INITIALISE / RESTART
+// ═══════════════════════════════════════════════════════════════
+function readSyringeParams(){
+  return{
+    barrelDiam  :+document.getElementById('pBarrelDiam').value,
+    barrelLen   :+document.getElementById('pBarrelLen').value,
+    needleDiam  :+document.getElementById('pNeedleDiam').value,
+    needleLen   :+document.getElementById('pNeedleLen').value,
+    taperH      :+document.getElementById('pTaperH').value,
+    pistonSpeed :+document.getElementById('pPistonSpd').value}}
+
+function initSimulation(){
+  if(gSimulator){gSimulator.dispose();gSimulator=null}
+  // Default particle if none loaded
+  if(!gParticleTemplate){
+    gParticleTemplate=buildSphereTetTemplate(0.3);}
+  const sp=readSyringeParams();
+  const count=Math.min(+document.getElementById('pCount').value,1000);
+  document.getElementById('pGravity').value
+    && (gSimulator && (gSimulator.gravity[1]=-Math.abs(+document.getElementById('pGravity').value)));
+  gSimulator=new SyringeSimulator(gParticleTemplate,sp,count,gScene);
+  gSimulator.gravity=[0,-Math.abs(+document.getElementById('pGravity').value),0];
+  gSimulator.numSubsteps=Math.max(1,+document.getElementById('pSubsteps').value);
+  document.getElementById('lblNomRadius').textContent=
+    gParticleTemplate.nominalRadius.toFixed(3);}
+
+// ═══════════════════════════════════════════════════════════════
+// 9.  UI HANDLERS
+// ═══════════════════════════════════════════════════════════════
+function onRun(){
+  gPaused=!gPaused;
+  document.getElementById('btnRun').textContent=gPaused?'Run':'Stop';}
+function onRestart(){
+  gPaused=true;
+  document.getElementById('btnRun').textContent='Run';
+  gFrameIdx=0;
+  initSimulation();}
+function onEdgeCChange(v){
+  document.getElementById('lblEdgeC').textContent=v;
+  if(gSimulator)for(const p of gSimulator.particles)p.edgeCompliance=+v;}
+function onVolCChange(v){
+  document.getElementById('lblVolC').textContent=v;
+  if(gSimulator)for(const p of gSimulator.particles)p.volCompliance=+v;}
+function onToggleTets(on){
+  if(gSimulator&&gSimulator.tetLinesMesh)gSimulator.tetLinesMesh.visible=on;}
+
+function loadParticleJSON(evt){
+  const file=evt.target.files[0];if(!file)return;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    try{
+      const data=JSON.parse(e.target.result);
+      applyParticleTemplateFromJSON(data, file.name);
+    }catch(err){alert('JSON parse error: '+err);}};
+  reader.readAsText(file);}
+
+function applyParticleTemplateFromJSON(data, sourceLabel){
+  // validate
+  if(!data||!data.tet||!data.vis){alert('Invalid particle JSON.');return}
+  const t=data.tet, v=data.vis, m=data.meta||{};
+  gParticleTemplate={
+    verts       :new Float32Array(t.verts),
+    tetIds      :new Int32Array(t.tetIds),
+    edgeIds     :new Int32Array(t.edgeIds),
+    surfTriIds  :new Int32Array(t.surfTriIds),
+    numVerts    :t.verts.length/3,
+    numTets     :t.tetIds.length/4,
+    numEdges    :t.edgeIds.length/2,
+    numSurfTris :t.surfTriIds.length/3,
+    hasSkinning :true,
+    visVerts    :new Float32Array(v.verts),
+    visTriIds   :new Int32Array(v.triIds),
+    skinning    :v.skinning,
+    nominalRadius:m.nominalRadius||0.3};
+  console.log(`Loaded particle: ${(m.source||sourceLabel||'unknown')}  `
+    +`${gParticleTemplate.numTets} tets, ${gParticleTemplate.numVerts} tet-verts`);
+  document.getElementById('lblNomRadius').textContent=
+    gParticleTemplate.nominalRadius.toFixed(3);
+  // auto-restart
+  onRestart();
+}
+
+async function onSelectLibrary(value){
+  if(value==="__default__"){
+    gParticleTemplate=null;
+    onRestart();
+    return;
+  }
+  try{
+    // Paths are relative to this HTML file (V3/…)
+    const res=await fetch(value, {cache:'no-cache'});
+    if(!res.ok)throw new Error(`HTTP ${res.status}`);
+    const data=await res.json();
+    applyParticleTemplateFromJSON(data, value);
+  }catch(err){
+    alert('Failed to load library particle JSON. Make sure you are serving via a local HTTP server.\n\n'+err);
+  }
+}
+
+function exportOBJ(){
+  if(!gSimulator)return;
+  const s=gSimulator.exportToOBJ();
+  _download(s,`syringe_sim_${Date.now()}.obj`,'text/plain');}
+
+function exportContactCSV(){
+  if(!gSimulator)return;
+  const s=gSimulator.getContactCSV();
+  if(!s){alert('No contact data yet – run the simulation first.');return}
+  _download(s,`contacts_${Date.now()}.csv`,'text/csv');}
+
+function _download(content,filename,type){
+  const blob=new Blob([content],{type});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;a.download=filename;
+  document.body.appendChild(a);a.click();
+  document.body.removeChild(a);URL.revokeObjectURL(url);}
+
+// ═══════════════════════════════════════════════════════════════
+// 10.  MAIN LOOP
+// ═══════════════════════════════════════════════════════════════
+const DT=1/60;
+let _lastMs=0;
+function update(){
+  requestAnimationFrame(update);
+  const t0=performance.now();
+  if(!gPaused&&gSimulator){
+    gSimulator.simulate(DT);
+    gSimulator.pushContactRow(gFrameIdx,DT);
+    gFrameIdx++;}
+  gCamCtrl.update();
+  gRenderer.render(gScene,gCamera);
+  const ms=performance.now()-t0;
+  _lastMs=_lastMs*.85+ms*.15;
+  // update stats
+  if(gSimulator){
+    const st=gSimulator.getContactStats();
+    document.getElementById('statContacts').textContent=st.totalContacts;
+    document.getElementById('statMaxPen').textContent=st.maxPenetration.toFixed(4);
+    document.getElementById('statAvgC').textContent=st.avgContacts.toFixed(2);
+    document.getElementById('statDisp').textContent=gSimulator.dispensed;
+    document.getElementById('statTime').textContent=gSimulator.simTime.toFixed(3);
+    document.getElementById('statMs').textContent=_lastMs.toFixed(1);
+    document.getElementById('lblPistonY').textContent=
+      gSimulator.syringe.pistonY.toFixed(2)+' mm';}}
+
+// ── Boot ──────────────────────────────────────────────────────
+initThreeScene();
+initSimulation();
+onResize();
+update();
+</script>
+</body>
+</html>
