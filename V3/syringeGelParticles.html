@@ -66,17 +66,13 @@ canvas{display:block}
 <div id="topBar">
   <h1>Syringe Gel-Particle Sim</h1>
   <button class="btn green" id="btnRun"    onclick="onRun()">Run</button>
+  <button class="btn"        id="btnPause" onclick="onPauseToggle()" title="Freeze simulation without restarting">Pause</button>
   <button class="btn"        onclick="onRestart()">Restart</button>
   <button class="btn"        onclick="exportOBJ()">Export OBJ</button>
   <button class="btn"        onclick="exportContactCSV()">Export Contacts CSV</button>
   <label>Library:
     <select id="particleLibrary" onchange="onSelectLibrary(this.value)" style="width:auto">
       <option value="__default__">Default sphere</option>
-      <option value="assets/Cyl600M_preprocessed.json">Cyl600M</option>
-      <option value="assets/Hex600M_preprocessed.json">Hex600M</option>
-      <option value="assets/Square600M_preprocessed.json">Square600M</option>
-      <option value="assets/Star600M_preprocessed.json">Star600M</option>
-      <option value="assets/Tri600M_preprocessed.json">Tri600M</option>
     </select>
   </label>
   <label>Particle JSON: <input type="file" id="particleFile" accept=".json"
@@ -126,7 +122,9 @@ canvas{display:block}
     <div class="row"><label>Gravity (mm/s²)</label>
       <input type="number" id="pGravity"   value="10"  min="0" max="200" step="1"></div>
     <div class="row"><label>Substeps</label>
-      <input type="number" id="pSubsteps"  value="10"  min="1" max="30" step="1"></div>
+      <input type="number" id="pSubsteps"  value="15"  min="1" max="30" step="1"></div>
+    <div class="row"><label>End cap (hold at tip)</label>
+      <input type="checkbox" id="chkCap" checked onchange="onToggleCap(this.checked)"></div>
     <div class="row"><label>Piston Y</label>
       <span id="lblPistonY" class="statVal">—</span></div>
   </div>
@@ -446,14 +444,17 @@ class GelParticle {
   // ── Write deformed positions into the merged flat buffer ──────
   updateVisMesh(allPos){
     if(this.hasSkinning){
+      // Support both legacy 4-float stride ([tetIndex,w0,w1,w2], w3 implied)
+      // and preprocess.py 5-float stride ([tetIndex,w0,w1,w2,w3]).
+      const stride=(this.skinningInfo.length===this.numVisVerts*5)?5:4;
       let nr=0;
       for(let i=0;i<this.numVisVerts;i++){
         const tNr=this.skinningInfo[nr++]*4;
-        if(tNr<0){nr+=3;continue}
+        if(tNr<0){nr+=stride-1;continue}
         const b0=this.skinningInfo[nr++];
         const b1=this.skinningInfo[nr++];
         const b2=this.skinningInfo[nr++];
-        const b3=1-b0-b1-b2;
+        const b3=(stride===5)?this.skinningInfo[nr++]:(1-b0-b1-b2);
         const id0=this.tetIds[tNr],id1=this.tetIds[tNr+1];
         const id2=this.tetIds[tNr+2],id3=this.tetIds[tNr+3];
         const base=(this.visVertOffset+i)*3;
@@ -491,6 +492,7 @@ class Syringe {
     this.pistonY   = p.needleLen + p.taperH + p.barrelLen;
     this.pistonSpd = p.pistonSpeed||1.0;
     this.pistonActive=true;
+    this.capActive = (p.capActive!==undefined) ? !!p.capActive : true;
     this.seg       = 32;
     this._barrelTop= this.needleLen+this.taperH+this.barrelLen;
     this._taperEnd = this.needleLen+this.taperH;
@@ -508,12 +510,14 @@ class Syringe {
 
   /** Returns true if the vertex was constrained (wall contact). */
   constrainVertex(pos,i){
-    const px=pos[3*i],py=pos[3*i+1],pz=pos[3*i+2];
+    let px=pos[3*i],py=pos[3*i+1],pz=pos[3*i+2];
     let hit=false;
     // piston (from above)
     if(py>this.pistonY){pos[3*i+1]=this.pistonY;hit=true}
+    // end cap at needle exit (Y=0): keep material inside until cap is released
+    if(this.capActive && py<0){pos[3*i+1]=0;py=0;hit=true}
     // radial wall (skip particles below needle tip – they've exited)
-    if(py>0){
+    if(py>=0){
       const r=Math.sqrt(px*px+pz*pz);
       const rMax=this.getRadiusAtY(pos[3*i+1]);
       if(r>rMax&&r>1e-10){
@@ -613,10 +617,10 @@ class SyringeSimulator {
     this.particles =[];
     this.dispensed =0;
     // gel-like tuning (defaults)
-    this.velDampingPerSec=4.0;     // higher = more “gel”, less liquid slosh
-    this.contactCompliance=2e-4;   // too stiff here destabilizes centroid contact
+    this.velDampingPerSec=18.0;    // higher = more “gel”, less liquid slosh
+    this.contactCompliance=1e-2;   // softer contacts reduce popcorn-like popping
     this.contactIterations=3;      // contact/internal solver passes per substep
-    this.maxContactCorrFrac=0.6;   // clamp per-iteration correction (fraction of minD)
+    this.maxContactCorrFrac=0.1;   // clamp per-iteration correction (fraction of minD)
     // contact stats
     this.contactPairs    =0;
     this.maxPenetration  =0;
@@ -630,6 +634,8 @@ class SyringeSimulator {
     this.maxNR       = particleTemplate.nominalRadius||0.3;
     this.centroidHash= new Hash(2.2*this.maxNR, Math.max(targetCount+10,64));
     this.centroids   = new Float32Array(targetCount*3);
+    // visuals
+    this._normalFrameCounter=0;    // throttle expensive normal recompute
     // merged geometry
     this._buildMergedGeo();
     // tet edge debug geometry
@@ -689,8 +695,10 @@ class SyringeSimulator {
     geo.setAttribute('position',new THREE.BufferAttribute(this.allPositions,3));
     geo.setAttribute('color',   new THREE.BufferAttribute(this.allColors,3));
     geo.setIndex(new THREE.BufferAttribute(allIdx,1));
+    // Flat shading is much cheaper to keep looking crisp,
+    // and avoids needing perfectly updated vertex normals every substep.
     const mat=new THREE.MeshPhongMaterial(
-      {vertexColors:true,flatShading:false,shininess:60});
+      {vertexColors:true,flatShading:true,shininess:40});
     this.particleMesh=new THREE.Mesh(geo,mat);
     this.particleMesh.castShadow=true;
     this.scene.add(this.particleMesh);
@@ -785,7 +793,11 @@ class SyringeSimulator {
     for(const p of this.particles)p.updateVisMesh(this.allPositions);
     this._updateColors();
     const geo=this.particleMesh.geometry;
-    geo.computeVertexNormals();
+    // Normals recompute is expensive on large meshes; throttle it.
+    // Flat shading still looks good even if normals lag slightly.
+    if(((this._normalFrameCounter++)%12)===0){
+      geo.computeVertexNormals();
+    }
     geo.attributes.position.needsUpdate=true;
     geo.attributes.color.needsUpdate=true;
     if(this.tetLinesMesh.visible)this._updateTetLines();
@@ -817,9 +829,11 @@ class SyringeSimulator {
         const dy=A.center[1]-B.center[1];
         const dz=A.center[2]-B.center[2];
         const d2=dx*dx+dy*dy+dz*dz;
-        // Use nominal radius (broadphase + narrowphase consistent).
-        // boundingRadius can be very conservative for spiky templates and triggers early contacts.
-        const minD=A.nominalRadius+B.nominalRadius;
+        // Use current deformed bounding radius for separation so particles cannot "merge".
+        // Fall back to nominal radius if boundingRadius is missing/degenerate.
+        const rA=Math.max(1e-6, A.boundingRadius||0, A.nominalRadius||0);
+        const rB=Math.max(1e-6, B.boundingRadius||0, B.nominalRadius||0);
+        const minD=rA+rB;
         if(d2>=minD*minD||d2<1e-14)continue;
         const d=Math.sqrt(d2);
         const nx=dx/d,ny=dy/d,nz=dz/d;
@@ -834,36 +848,20 @@ class SyringeSimulator {
         let corr=overlap/(wA+wB+alpha);
         const corrMax=minD*corrClampFrac;
         if(corr> corrMax)corr= corrMax;
-        // Apply contact correction only to the contact-facing hemisphere verts,
-        // letting internal constraints propagate deformation inward.
-        const Ax=A.center[0],Ay=A.center[1],Az=A.center[2];
-        const Bx=B.center[0],By=B.center[1],Bz=B.center[2];
-        let movedA=0,movedB=0;
+        // Apply correction to ALL tet verts to guarantee separation (no interpenetration/merging).
         for(let k=0;k<A.numTetVerts;k++){
-          const vx=A.pos[3*k]-Ax,vy=A.pos[3*k+1]-Ay,vz=A.pos[3*k+2]-Az;
-          if(vx*nx+vy*ny+vz*nz<=0)continue;
           A.pos[3*k]  +=corr*wA*nx;
           A.pos[3*k+1]+=corr*wA*ny;
           A.pos[3*k+2]+=corr*wA*nz;
-          movedA++;
           if(this.syringe.constrainVertex(A.pos,k))A.inWallContact=true}
         for(let k=0;k<B.numTetVerts;k++){
-          const vx=B.pos[3*k]-Bx,vy=B.pos[3*k+1]-By,vz=B.pos[3*k+2]-Bz;
-          // B is moved along -n, so "facing" verts satisfy (v · -n) > 0  <=> (v · n) < 0
-          if(vx*nx+vy*ny+vz*nz>=0)continue;
           B.pos[3*k]  -=corr*wB*nx;
           B.pos[3*k+1]-=corr*wB*ny;
           B.pos[3*k+2]-=corr*wB*nz;
-          movedB++;
           if(this.syringe.constrainVertex(B.pos,k))B.inWallContact=true}
-        // Keep centroids roughly consistent during the interleaved solve loop.
-        // (We only move a subset of verts, so scale the center shift by that fraction.)
-        if(movedA>0){
-          const fA=movedA/A.numTetVerts;
-          A.center[0]+=corr*wA*nx*fA;A.center[1]+=corr*wA*ny*fA;A.center[2]+=corr*wA*nz*fA;}
-        if(movedB>0){
-          const fB=movedB/B.numTetVerts;
-          B.center[0]-=corr*wB*nx*fB;B.center[1]-=corr*wB*ny*fB;B.center[2]-=corr*wB*nz*fB;}
+        // Keep centroids consistent during the interleaved solve loop.
+        A.center[0]+=corr*wA*nx;A.center[1]+=corr*wA*ny;A.center[2]+=corr*wA*nz;
+        B.center[0]-=corr*wB*nx;B.center[1]-=corr*wB*ny;B.center[2]-=corr*wB*nz;
       }}}
 
   getContactStats(){
@@ -937,6 +935,52 @@ class SyringeSimulator {
 let gRenderer, gScene, gCamera, gCamCtrl, gSimulator, gParticleTemplate;
 let gPaused=true, gFrameIdx=0;
 
+// ═══════════════════════════════════════════════════════════════
+// 7b.  ASSET LIBRARY POPULATION (assets/*.json + default sphere)
+// ═══════════════════════════════════════════════════════════════
+async function populateAssetLibrary(){
+  const sel=document.getElementById('particleLibrary');
+  if(!sel)return;
+
+  // Keep whatever is already there (Default sphere), remove any others.
+  for(let i=sel.options.length-1;i>=0;i--){
+    if(sel.options[i].value!=="__default__")sel.remove(i);
+  }
+
+  // With `python -m http.server`, `assets/` returns an HTML directory listing.
+  // We parse it to discover *.json files without maintaining a manual list.
+  try{
+    const res=await fetch('assets/', {cache:'no-cache'});
+    if(!res.ok)throw new Error(`HTTP ${res.status}`);
+    const html=await res.text();
+
+    const re=/href="([^"]+?\.json)"/ig;
+    const seen=new Set();
+    const assets=[];
+    for(;;){
+      const m=re.exec(html);
+      if(!m)break;
+      let href=m[1]||"";
+      href=href.split('#')[0].split('?')[0];
+      // Keep only direct filenames (avoid "../", nested paths, etc.)
+      if(href.includes('/')||href.includes('\\'))continue;
+      if(seen.has(href))continue;
+      seen.add(href);
+      assets.push(href);
+    }
+
+    assets.sort((a,b)=>a.localeCompare(b, undefined, {numeric:true,sensitivity:'base'}));
+    for(const fname of assets){
+      const opt=document.createElement('option');
+      opt.value=`assets/${fname}`;
+      opt.textContent=fname.replace(/\.json$/i,'');
+      sel.appendChild(opt);
+    }
+  }catch(err){
+    console.warn('Asset library listing unavailable; showing only Default sphere.', err);
+  }
+}
+
 function initThreeScene(){
   gScene=new THREE.Scene();
   gScene.background=new THREE.Color(0xffffff);
@@ -990,7 +1034,8 @@ function readSyringeParams(){
     needleDiam  :+document.getElementById('pNeedleDiam').value,
     needleLen   :+document.getElementById('pNeedleLen').value,
     taperH      :+document.getElementById('pTaperH').value,
-    pistonSpeed :+document.getElementById('pPistonSpd').value}}
+    pistonSpeed :+document.getElementById('pPistonSpd').value,
+    capActive   :document.getElementById('chkCap')?.checked ?? true}}
 
 function initSimulation(){
   if(gSimulator){gSimulator.dispose();gSimulator=null}
@@ -1012,10 +1057,22 @@ function initSimulation(){
 // ═══════════════════════════════════════════════════════════════
 function onRun(){
   gPaused=!gPaused;
-  document.getElementById('btnRun').textContent=gPaused?'Run':'Stop';}
+  document.getElementById('btnRun').textContent=gPaused?'Run':'Stop';
+  const pb=document.getElementById('btnPause');
+  if(pb)pb.textContent=gPaused?'Resume':'Pause';}
+
+function onPauseToggle(){
+  gPaused=!gPaused;
+  const rb=document.getElementById('btnRun');
+  if(rb)rb.textContent=gPaused?'Run':'Stop';
+  const pb=document.getElementById('btnPause');
+  if(pb)pb.textContent=gPaused?'Resume':'Pause';
+}
 function onRestart(){
   gPaused=true;
   document.getElementById('btnRun').textContent='Run';
+  const pb=document.getElementById('btnPause');
+  if(pb)pb.textContent='Resume';
   gFrameIdx=0;
   initSimulation();}
 function onEdgeCChange(v){
@@ -1026,6 +1083,9 @@ function onVolCChange(v){
   if(gSimulator)for(const p of gSimulator.particles)p.volCompliance=+v;}
 function onToggleTets(on){
   if(gSimulator&&gSimulator.tetLinesMesh)gSimulator.tetLinesMesh.visible=on;}
+
+function onToggleCap(on){
+  if(gSimulator&&gSimulator.syringe)gSimulator.syringe.capActive=!!on;}
 
 function loadParticleJSON(evt){
   const file=evt.target.files[0];if(!file)return;
@@ -1041,6 +1101,7 @@ function applyParticleTemplateFromJSON(data, sourceLabel){
   // validate
   if(!data||!data.tet||!data.vis){alert('Invalid particle JSON.');return}
   const t=data.tet, v=data.vis, m=data.meta||{};
+  const hasSkinning=Array.isArray(v.skinning) && v.skinning.length>0;
   gParticleTemplate={
     verts       :new Float32Array(t.verts),
     tetIds      :new Int32Array(t.tetIds),
@@ -1050,10 +1111,10 @@ function applyParticleTemplateFromJSON(data, sourceLabel){
     numTets     :t.tetIds.length/4,
     numEdges    :t.edgeIds.length/2,
     numSurfTris :t.surfTriIds.length/3,
-    hasSkinning :true,
+    hasSkinning :hasSkinning,
     visVerts    :new Float32Array(v.verts),
     visTriIds   :new Int32Array(v.triIds),
-    skinning    :v.skinning,
+    skinning    :hasSkinning ? v.skinning : null,
     nominalRadius:m.nominalRadius||0.3};
   console.log(`Loaded particle: ${(m.source||sourceLabel||'unknown')}  `
     +`${gParticleTemplate.numTets} tets, ${gParticleTemplate.numVerts} tet-verts`);
@@ -1129,6 +1190,7 @@ function update(){
 
 // ── Boot ──────────────────────────────────────────────────────
 initThreeScene();
+populateAssetLibrary();
 initSimulation();
 onResize();
 update();
