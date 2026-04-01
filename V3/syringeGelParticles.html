@@ -139,6 +139,10 @@ canvas{display:block}
       <input type="number" id="pGravity"   value="10"  min="0" max="200" step="1"></div>
     <div class="row"><label>Substeps</label>
       <input type="number" id="pSubsteps"  value="20"  min="1" max="30" step="1"></div>
+    <div class="row"><label>Wall friction</label>
+      <input type="range" id="sWallMu" min="0" max="100" value="65"
+             oninput="onWallMuChange(this.value)" title="0 = perfectly slippery walls, 100 = very sticky walls"></div>
+    <div class="row"><label></label><span id="lblWallMu" class="statVal">0.65</span></div>
     <div class="row"><label>End cap (hold at tip)</label>
       <input type="checkbox" id="chkCap" checked onchange="onToggleCap(this.checked)"></div>
     <div class="row"><label>Piston Y</label>
@@ -159,6 +163,25 @@ canvas{display:block}
       <span id="statTime"     class="statVal">0.000</span></div>
     <div class="row"><label>Frame ms</label>
       <span id="statMs"       class="statVal">0.0</span></div>
+  </div>
+
+  <div class="section">
+    <h3>Inspector</h3>
+    <div class="row"><label>Pick particle</label>
+      <span class="statVal">Click a particle</span></div>
+    <div class="row"><label>Dims (mm)</label>
+      <span id="statDims" class="statVal">—</span></div>
+    <div class="row"><label>Max radius (mm)</label>
+      <span id="statRmax" class="statVal">—</span></div>
+    <div class="row"><label>Color mode</label>
+      <select id="selColorMode" onchange="onColorModeChange(this.value)">
+        <option value="contact" selected>Contacts</option>
+        <option value="stress">Stress / strain</option>
+      </select></div>
+    <div class="row"><label>Stress gain</label>
+      <input type="range" id="sStressGain" min="10" max="400" value="120"
+             oninput="onStressGainChange(this.value)" title="Higher = more contrast in stress heatmap"></div>
+    <div class="row"><label></label><span id="lblStressGain" class="statVal">1.20</span></div>
   </div>
 
   <div class="section">
@@ -349,6 +372,9 @@ class GelParticle {
     this.contactCount     =0;
     this.visVertOffset    =0;  // assigned by SyringeSimulator
     this.active           =true;
+    // stress/strain visualization (computed on-demand)
+    this._stressTet       =new Float32Array(this.numTetVerts);
+    this._stressMax       =0;
     // init positions
     for(let i=0;i<tmpl.numVerts;i++){
       this.pos[3*i]  =tmpl.verts[3*i]  +cx;
@@ -393,7 +419,7 @@ class GelParticle {
     this.boundingRadius=rMax}
 
   // ── preSolve: integrate + container collision ─────────────────
-  preSolve(dt,gravity,syringe,velDampingPerSec){
+  preSolve(dt,gravity,syringe,velDampingPerSec,wallFriction){
     const gx=gravity[0],gy=gravity[1],gz=gravity[2];
     this.inWallContact=false;
     const damp=Math.exp(-Math.max(0,velDampingPerSec||0)*dt);
@@ -412,7 +438,7 @@ class GelParticle {
       this.pos[3*i]  +=this.vel[3*i]*dt;
       this.pos[3*i+1]+=this.vel[3*i+1]*dt;
       this.pos[3*i+2]+=this.vel[3*i+2]*dt;
-      if(syringe.constrainVertex(this.pos,i))this.inWallContact=true}}
+      if(syringe.constrainVertex(this.pos,this.prevPos,i,wallFriction))this.inWallContact=true}}
 
   // ── XPBD edge constraint ──────────────────────────────────────
   solveEdges(dt){
@@ -442,6 +468,25 @@ class GelParticle {
       if(strain>mx)mx=strain;
     }
     if(mx>this.maxEdgeStrainEver)this.maxEdgeStrainEver=mx;
+    return mx;
+  }
+
+  computeStressProxy(){
+    // Proxy for "where stress is": accumulate positive edge strain onto endpoints.
+    // This highlights corners/edges under deformation without needing full FEM stress tensors.
+    this._stressTet.fill(0);
+    for(let e=0;e<this.numEdges;e++){
+      const a=this.edgeIds[2*e],b=this.edgeIds[2*e+1];
+      const rest=this.edgeLens[e];
+      if(rest<=1e-12)continue;
+      const cur=Math.sqrt(vecDistSq(this.pos,a,this.pos,b));
+      const s=Math.max(0,cur/rest-1);
+      this._stressTet[a]+=s;
+      this._stressTet[b]+=s;
+    }
+    let mx=0;
+    for(let i=0;i<this.numTetVerts;i++)if(this._stressTet[i]>mx)mx=this._stressTet[i];
+    this._stressMax=mx;
     return mx;
   }
 
@@ -545,20 +590,36 @@ class Syringe {
     return this.barrelInR}
 
   /** Returns true if the vertex was constrained (wall contact). */
-  constrainVertex(pos,i){
+  constrainVertex(pos,prevPos,i,mu){
     let px=pos[3*i],py=pos[3*i+1],pz=pos[3*i+2];
     let hit=false;
+    mu=Math.max(0,Math.min(1,(mu===undefined?0:mu)));
+    let nx=0,ny=0,nz=0;
     // piston (from above)
-    if(this.pistonEnabled && py>this.pistonY){pos[3*i+1]=this.pistonY;hit=true}
+    if(this.pistonEnabled && py>this.pistonY){pos[3*i+1]=this.pistonY;hit=true;nx=0;ny=-1;nz=0}
     // end cap at needle exit (Y=0): keep material inside until cap is released
-    if(this.capActive && py<0){pos[3*i+1]=0;py=0;hit=true}
+    if(this.capActive && py<0){pos[3*i+1]=0;py=0;hit=true;nx=0;ny=1;nz=0}
     // radial wall (skip particles below needle tip – they've exited)
     if(py>=0){
       const r=Math.sqrt(px*px+pz*pz);
       const rMax=this.getRadiusAtY(pos[3*i+1]);
       if(r>rMax&&r>1e-10){
         const sc=rMax/r;
-        pos[3*i]=px*sc;pos[3*i+2]=pz*sc;hit=true}}
+        pos[3*i]=px*sc;pos[3*i+2]=pz*sc;hit=true;
+        nx=px/r;ny=0;nz=pz/r;}}
+
+    if(hit && prevPos && mu>0){
+      // Reduce tangential displacement relative to the wall normal (Coulomb-ish friction).
+      const vx=pos[3*i]  -prevPos[3*i];
+      const vy=pos[3*i+1]-prevPos[3*i+1];
+      const vz=pos[3*i+2]-prevPos[3*i+2];
+      const vn=vx*nx+vy*ny+vz*nz;
+      const tx=vx-vn*nx, ty=vy-vn*ny, tz=vz-vn*nz;
+      // v' = v_n + (1-mu)*v_t  -> prevPos += mu * v_t
+      prevPos[3*i]  +=tx*mu;
+      prevPos[3*i+1]+=ty*mu;
+      prevPos[3*i+2]+=tz*mu;
+    }
     return hit}
 
   advancePiston(dt){
@@ -658,6 +719,9 @@ class SyringeSimulator {
     this.hardFactor=0.15;     // compliance multiplier after hardening
     // gel-like tuning (defaults)
     this.velDampingPerSec=18.0;    // higher = more “gel”, less liquid slosh
+    this.wallFriction=0.65;        // 0..1; tangential damping when touching syringe walls/cap/piston
+    this.colorMode='contact';      // 'contact' | 'stress'
+    this.stressGain=1.20;          // heatmap contrast
     // Tighter centroid-contacts help prevent "taffy-like" stretching,
     // especially in the barrel→taper→needle transition where compression is high.
     this.contactCompliance=5e-3;   // lower = stiffer repulsion
@@ -686,6 +750,33 @@ class SyringeSimulator {
     // tet edge debug geometry
     this.tetLinesMesh=null;
     this._buildTetLines();}
+
+  getParticleIndexFromVisVert(visVertIdx){
+    // Linear scan is fine for <=1000 particles.
+    for(let i=0;i<this.particles.length;i++){
+      const p=this.particles[i];
+      const a=p.visVertOffset, b=a+p.numVisVerts;
+      if(visVertIdx>=a && visVertIdx<b) return i;
+    }
+    return -1;
+  }
+
+  updateInspector(pi){
+    const p=this.particles[pi];
+    if(!p)return;
+    let minX=Infinity,minY=Infinity,minZ=Infinity;
+    let maxX=-Infinity,maxY=-Infinity,maxZ=-Infinity;
+    for(let i=0;i<p.numTetVerts;i++){
+      const x=p.pos[3*i],y=p.pos[3*i+1],z=p.pos[3*i+2];
+      if(x<minX)minX=x;if(y<minY)minY=y;if(z<minZ)minZ=z;
+      if(x>maxX)maxX=x;if(y>maxY)maxY=y;if(z>maxZ)maxZ=z;
+    }
+    const dx=maxX-minX,dy=maxY-minY,dz=maxZ-minZ;
+    const elD=document.getElementById('statDims');
+    const elR=document.getElementById('statRmax');
+    if(elD)elD.textContent=`${dx.toFixed(3)} × ${dy.toFixed(3)} × ${dz.toFixed(3)}`;
+    if(elR)elR.textContent=p.boundingRadius.toFixed(3);
+  }
 
   _buildSpawnSlots(capacity){
     const sp = this.syringe;
@@ -839,6 +930,48 @@ class SyringeSimulator {
     this.tetLinesMesh.geometry.attributes.position.needsUpdate=true;}
 
   _updateColors(){
+    if(this.colorMode==='stress'){
+      for(const p of this.particles){
+        if(!p.active){
+          for(let i=0;i<p.numVisVerts;i++){
+            const b2=(p.visVertOffset+i)*3;
+            this.allColors[b2]=0.3;this.allColors[b2+1]=0.3;this.allColors[b2+2]=0.3;
+          }
+          continue;
+        }
+        const mx=Math.max(1e-9,p.computeStressProxy());
+        const gain=Math.max(0.01,this.stressGain||1);
+        if(p.hasSkinning){
+          const stride=(p.skinningInfo.length===p.numVisVerts*5)?5:4;
+          let nr=0;
+          for(let i=0;i<p.numVisVerts;i++){
+            const tNr=p.skinningInfo[nr++]*4;
+            if(tNr<0){nr+=stride-1;continue}
+            const b0=p.skinningInfo[nr++],b1=p.skinningInfo[nr++],b2w=p.skinningInfo[nr++];
+            const b3=(stride===5)?p.skinningInfo[nr++]:(1-b0-b1-b2w);
+            const id0=p.tetIds[tNr],id1=p.tetIds[tNr+1],id2=p.tetIds[tNr+2],id3=p.tetIds[tNr+3];
+            const s=p._stressTet[id0]*b0+p._stressTet[id1]*b1+p._stressTet[id2]*b2w+p._stressTet[id3]*b3;
+            const t=Math.max(0,Math.min(1,(s/mx)*gain));
+            const base=(p.visVertOffset+i)*3;
+            // blue -> red heatmap
+            this.allColors[base]  =t;
+            this.allColors[base+1]=0.12*(1-t);
+            this.allColors[base+2]=1-t;
+          }
+        }else{
+          for(let i=0;i<p.numVisVerts;i++){
+            const s=p._stressTet[i];
+            const t=Math.max(0,Math.min(1,(s/mx)*gain));
+            const base=(p.visVertOffset+i)*3;
+            this.allColors[base]  =t;
+            this.allColors[base+1]=0.12*(1-t);
+            this.allColors[base+2]=1-t;
+          }
+        }
+      }
+      return;
+    }
+
     for(const p of this.particles){
       let r,g,b;
       if(!p.active){r=0.3;g=0.3;b=0.3}
@@ -863,7 +996,7 @@ class SyringeSimulator {
       this.syringe.advancePiston(sdt);
       for(const p of this.particles){
         if(!p.active)continue;
-        p.preSolve(sdt,this.gravity,this.syringe,this.velDampingPerSec)}
+        p.preSolve(sdt,this.gravity,this.syringe,this.velDampingPerSec,this.wallFriction)}
       // Interleave particle contacts with internal constraints.
       // (Contacts-after-internal tends to fight the rest-shape projection and can pop.)
       const iters=Math.max(1,this.contactIterations|0);
@@ -957,12 +1090,12 @@ class SyringeSimulator {
           A.pos[3*k]  +=corr*wA*nx;
           A.pos[3*k+1]+=corr*wA*ny;
           A.pos[3*k+2]+=corr*wA*nz;
-          if(this.syringe.constrainVertex(A.pos,k))A.inWallContact=true}
+          if(this.syringe.constrainVertex(A.pos,A.prevPos,k,this.wallFriction))A.inWallContact=true}
         for(let k=0;k<B.numTetVerts;k++){
           B.pos[3*k]  -=corr*wB*nx;
           B.pos[3*k+1]-=corr*wB*ny;
           B.pos[3*k+2]-=corr*wB*nz;
-          if(this.syringe.constrainVertex(B.pos,k))B.inWallContact=true}
+          if(this.syringe.constrainVertex(B.pos,B.prevPos,k,this.wallFriction))B.inWallContact=true}
         // Keep centroids consistent during the interleaved solve loop.
         A.center[0]+=corr*wA*nx;A.center[1]+=corr*wA*ny;A.center[2]+=corr*wA*nz;
         B.center[0]-=corr*wB*nx;B.center[1]-=corr*wB*ny;B.center[2]-=corr*wB*nz;
@@ -1038,6 +1171,7 @@ class SyringeSimulator {
 // ═══════════════════════════════════════════════════════════════
 let gRenderer, gScene, gCamera, gCamCtrl, gSimulator, gParticleTemplate;
 let gPaused=true, gFrameIdx=0;
+let gRaycaster=null,gPointer=null,gPickedParticle=-1;
 
 // ═══════════════════════════════════════════════════════════════
 // 7b.  ASSET LIBRARY POPULATION (assets/*.json + default sphere)
@@ -1109,10 +1243,13 @@ function initThreeScene(){
   gRenderer.setPixelRatio(window.devicePixelRatio);
   gRenderer.setSize(wrap.clientWidth,wrap.clientHeight);
   wrap.appendChild(gRenderer.domElement);
+  gRaycaster=new THREE.Raycaster();
+  gPointer=new THREE.Vector2();
+  gRenderer.domElement.addEventListener('pointerdown',onPickParticle,false);
 
   // Camera
   // Use conservative clip planes; OrbitControls can dolly very close/far.
-  gCamera=new THREE.PerspectiveCamera(55,wrap.clientWidth/wrap.clientHeight,0.02,2000);
+  gCamera=new THREE.PerspectiveCamera(55,wrap.clientWidth/wrap.clientHeight,0.002,2000);
   gCamera.position.set(25,40,55);
   gScene.add(gCamera);
 
@@ -1122,16 +1259,69 @@ function initThreeScene(){
   // Prevent "zoom until distance == 0" which can produce NaNs and a blank frame.
   gCamCtrl.minDistance=2.0;
   gCamCtrl.maxDistance=900.0;
+
+  function _updateCameraClipFromZoom(){
+    // Keep clip planes sane across huge dolly ranges; avoids the "scene disappears"
+    // effect when near/far become inappropriate for the current distance.
+    const d=gCamera.position.distanceTo(gCamCtrl.target);
+    if(!Number.isFinite(d) || d<=0) return;
+    const near=Math.max(0.0005, d/2000);   // ~0.05% of distance
+    const far =Math.max(50,     d*2000);   // plenty of headroom for far geometry
+    if(Math.abs(gCamera.near-near)>1e-6 || Math.abs(gCamera.far-far)>1e-3){
+      gCamera.near=near;
+      gCamera.far=far;
+      gCamera.updateProjectionMatrix();
+    }
+    if(gScene?.fog){
+      // Keep fog roughly stable relative to what you're looking at.
+      gScene.fog.near=Math.max(near*10, d*1.5);
+      gScene.fog.far =Math.max(gScene.fog.near+10, d*8);
+    }
+  }
   gCamCtrl.addEventListener('change', ()=>{
     const p=gCamera.position;
     if(!Number.isFinite(p.x)||!Number.isFinite(p.y)||!Number.isFinite(p.z)){
       gCamera.position.set(25,40,55);
       gCamCtrl.target.set(0,30,0);
     }
+    _updateCameraClipFromZoom();
   });
   gCamCtrl.update();
+  _updateCameraClipFromZoom();
 
   window.addEventListener('resize',onResize,false);}
+
+function onPickParticle(ev){
+  if(!gSimulator||!gSimulator.particleMesh)return;
+  const rect=gRenderer.domElement.getBoundingClientRect();
+  const x=((ev.clientX-rect.left)/rect.width)*2-1;
+  const y=-(((ev.clientY-rect.top)/rect.height)*2-1);
+  gPointer.set(x,y);
+  gRaycaster.setFromCamera(gPointer,gCamera);
+  const hits=gRaycaster.intersectObject(gSimulator.particleMesh,false);
+  if(!hits||hits.length===0)return;
+  const h=hits[0];
+  let visVertIdx=-1;
+  // Prefer face vertex index when available
+  if(h.face && h.face.a!==undefined){
+    visVertIdx=h.face.a;
+  }else if(h.faceIndex!==undefined && h.faceIndex!==null){
+    // faceIndex refers to triangle number in the indexed buffer
+    const geo=gSimulator.particleMesh.geometry;
+    const idxAttr=geo?.index;
+    if(idxAttr && idxAttr.array){
+      const base=h.faceIndex*3;
+      if(base>=0 && base<idxAttr.array.length) visVertIdx=idxAttr.array[base];
+    }
+  }else if(h.index!==undefined && h.index!==null){
+    visVertIdx=h.index;
+  }
+  if(visVertIdx<0)return;
+  const pi=gSimulator.getParticleIndexFromVisVert(visVertIdx);
+  if(pi<0)return;
+  gPickedParticle=pi;
+  gSimulator.updateInspector(pi);
+}
 
 function onResize(){
   const wrap=document.getElementById('canvasWrap');
@@ -1171,6 +1361,9 @@ function initSimulation(){
   onVolCChange(document.getElementById('sVolC').value);
   onHardStrainChange(document.getElementById('sHardStrain').value);
   onHardFactorChange(document.getElementById('sHardFactor').value);
+  onWallMuChange(document.getElementById('sWallMu')?.value ?? 65);
+  onStressGainChange(document.getElementById('sStressGain')?.value ?? 120);
+  onColorModeChange(document.getElementById('selColorMode')?.value ?? 'contact');
   document.getElementById('lblNomRadius').textContent=
     gParticleTemplate.nominalRadius.toFixed(3);}
 
@@ -1219,6 +1412,36 @@ function onHardFactorChange(v){
   const pct=Math.max(0,Math.min(100,+v));
   document.getElementById('lblHardFactor').textContent=pct.toFixed(0)+'%';
   if(gSimulator)gSimulator.hardFactor=pct/100;
+}
+
+function onWallMuChange(v){
+  const pct=Math.max(0,Math.min(100,+v));
+  const mu=pct/100;
+  const el=document.getElementById('lblWallMu');
+  if(el)el.textContent=mu.toFixed(2);
+  if(gSimulator)gSimulator.wallFriction=mu;
+}
+function onColorModeChange(v){
+  if(gSimulator){
+    gSimulator.colorMode=(v==='stress')?'stress':'contact';
+    gSimulator._updateColors();
+    const geo=gSimulator.particleMesh?.geometry;
+    if(geo?.attributes?.color)geo.attributes.color.needsUpdate=true;
+  }
+}
+function onStressGainChange(v){
+  const pct=Math.max(10,Math.min(400,+v));
+  const gain=pct/100;
+  const el=document.getElementById('lblStressGain');
+  if(el)el.textContent=gain.toFixed(2);
+  if(gSimulator){
+    gSimulator.stressGain=gain;
+    if(gSimulator.colorMode==='stress'){
+      gSimulator._updateColors();
+      const geo=gSimulator.particleMesh?.geometry;
+      if(geo?.attributes?.color)geo.attributes.color.needsUpdate=true;
+    }
+  }
 }
 function onToggleTets(on){
   if(gSimulator&&gSimulator.tetLinesMesh)gSimulator.tetLinesMesh.visible=on;}
@@ -1329,6 +1552,9 @@ function update(){
     gSimulator.simulate(DT);
     gSimulator.pushContactRow(gFrameIdx,DT);
     gFrameIdx++;}
+  if(gSimulator && gPickedParticle>=0 && gPickedParticle<gSimulator.particles.length){
+    gSimulator.updateInspector(gPickedParticle);
+  }
   gCamCtrl.update();
   gRenderer.render(gScene,gCamera);
   const ms=performance.now()-t0;
