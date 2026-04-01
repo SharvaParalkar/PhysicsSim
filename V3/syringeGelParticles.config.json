@@ -11,10 +11,10 @@
     "initialDrop": 10,
     "dropMore": 10,
     "radiusMm": 0.3,
-    "edgeCompliance": 0.9,
-    "volCompliance": 0,
-    "hardenAfterStrainPct": 22,
-    "hardenFactorPct": 20
+    "edgeCompliance": 14.0,
+    "volCompliance": 0.03,
+    "hardenAfterStrainPct": 999,
+    "hardenFactorPct": 100
   },
   "physics": {
     "enablePiston": false,
@@ -23,6 +23,7 @@
     "gravity": 15,
     "substeps": 20,
     "wallFriction": 0.75,
+    "wallAllowPenetrationMm": 0.08,
 
     "contactRestDistFactor": 0.94,
     "contactCompliance": 0.008,
@@ -32,7 +33,10 @@
   },
   "viz": {
     "colorMode": "stress",
-    "stressGain": 2
+    "stressGain": 0.72,
+    "stressPercentile": 0.9,
+    "stressSampleEveryNFrames": 4,
+    "normalSampleEveryNFrames": 24
   }
 }
 
