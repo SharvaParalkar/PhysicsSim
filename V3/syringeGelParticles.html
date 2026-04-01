@@ -99,8 +99,14 @@ canvas{display:block}
 
   <div class="section">
     <h3>Particles</h3>
-    <div class="row"><label>Count</label>
-      <input type="number" id="pCount"  value="300" min="10" max="1000" step="10"></div>
+    <div class="row"><label>Capacity</label>
+      <input type="number" id="pCount"  value="300" min="10" max="1000" step="10" title="Total particle capacity (allocated at restart)"></div>
+    <div class="row"><label>Initial drop</label>
+      <input type="number" id="pInitCount" value="120" min="0" max="1000" step="10" title="Spawn this many particles at restart"></div>
+    <div class="row"><label>Drop more</label>
+      <input type="number" id="pDropCount" value="25" min="1" max="200" step="5" title="How many to add when pressing Drop"></div>
+    <div class="row"><label></label>
+      <button class="btn" id="btnDropMore" onclick="onDropMore()" title="Activate more particles without rebuilding the sim">Drop</button></div>
     <div class="row"><label>Radius (mm)</label>
       <span id="lblNomRadius" class="statVal">0.30</span></div>
     <div class="row"><label>Edge compliance</label>
@@ -111,18 +117,28 @@ canvas{display:block}
       <input type="range"  id="sVolC"  min="0" max="50" value="0"
              oninput="onVolCChange(this.value)"></div>
     <div class="row"><label></label><span id="lblVolC" class="statVal">0</span></div>
+    <div class="row"><label>Harden after strain</label>
+      <input type="range" id="sHardStrain" min="0" max="60" value="18"
+             oninput="onHardStrainChange(this.value)" title="Max edge strain (%) before particle becomes more rigid"></div>
+    <div class="row"><label></label><span id="lblHardStrain" class="statVal">18%</span></div>
+    <div class="row"><label>Harden factor</label>
+      <input type="range" id="sHardFactor" min="0" max="100" value="15"
+             oninput="onHardFactorChange(this.value)" title="0% = infinitely stiff (edge compliance -> 0), 100% = no change"></div>
+    <div class="row"><label></label><span id="lblHardFactor" class="statVal">15%</span></div>
     <div class="row"><label>Show tets</label>
       <input type="checkbox" id="chkTets" onchange="onToggleTets(this.checked)"></div>
   </div>
 
   <div class="section">
     <h3>Piston &amp; Physics</h3>
+    <div class="row"><label>Enable piston</label>
+      <input type="checkbox" id="chkPiston" checked onchange="onTogglePiston(this.checked)" title="Disable to remove piston collider and motion"></div>
     <div class="row"><label>Piston speed (mm/s)</label>
       <input type="number" id="pPistonSpd" value="1.0" min="0" max="20" step="0.1"></div>
     <div class="row"><label>Gravity (mm/s²)</label>
       <input type="number" id="pGravity"   value="10"  min="0" max="200" step="1"></div>
     <div class="row"><label>Substeps</label>
-      <input type="number" id="pSubsteps"  value="15"  min="1" max="30" step="1"></div>
+      <input type="number" id="pSubsteps"  value="20"  min="1" max="30" step="1"></div>
     <div class="row"><label>End cap (hold at tip)</label>
       <input type="checkbox" id="chkCap" checked onchange="onToggleCap(this.checked)"></div>
     <div class="row"><label>Piston Y</label>
@@ -320,6 +336,10 @@ class GelParticle {
     // compliance (set by simulator)
     this.edgeCompliance=5.0;
     this.volCompliance =0.0;
+    this.baseEdgeCompliance=5.0;
+    this.baseVolCompliance =0.0;
+    this.hardened=false;
+    this.maxEdgeStrainEver=0;
     // state
     this.center=new Float32Array(3);
     this.boundingRadius=0;
@@ -410,6 +430,21 @@ class GelParticle {
       vecAdd(this.pos,a,this.grads,0, s*wa);
       vecAdd(this.pos,b,this.grads,0,-s*wb)}}
 
+  computeMaxEdgeStrain(){
+    // strain ~= (currentLen/restLen - 1). Track max across edges.
+    let mx=0;
+    for(let i=0;i<this.numEdges;i++){
+      const a=this.edgeIds[2*i],b=this.edgeIds[2*i+1];
+      const rest=this.edgeLens[i];
+      if(rest<=1e-12)continue;
+      const cur=Math.sqrt(vecDistSq(this.pos,a,this.pos,b));
+      const strain=cur/rest-1;
+      if(strain>mx)mx=strain;
+    }
+    if(mx>this.maxEdgeStrainEver)this.maxEdgeStrainEver=mx;
+    return mx;
+  }
+
   // ── XPBD volume constraint ────────────────────────────────────
   solveVolumes(dt){
     const alpha=this.volCompliance/(dt*dt);
@@ -491,7 +526,8 @@ class Syringe {
     this.taperH    = p.taperH;
     this.pistonY   = p.needleLen + p.taperH + p.barrelLen;
     this.pistonSpd = p.pistonSpeed||1.0;
-    this.pistonActive=true;
+    this.pistonActive=true;   // whether piston is still moving
+    this.pistonEnabled = (p.pistonEnabled!==undefined) ? !!p.pistonEnabled : true; // whether piston collider/motion exists
     this.capActive = (p.capActive!==undefined) ? !!p.capActive : true;
     this.seg       = 32;
     this._barrelTop= this.needleLen+this.taperH+this.barrelLen;
@@ -513,7 +549,7 @@ class Syringe {
     let px=pos[3*i],py=pos[3*i+1],pz=pos[3*i+2];
     let hit=false;
     // piston (from above)
-    if(py>this.pistonY){pos[3*i+1]=this.pistonY;hit=true}
+    if(this.pistonEnabled && py>this.pistonY){pos[3*i+1]=this.pistonY;hit=true}
     // end cap at needle exit (Y=0): keep material inside until cap is released
     if(this.capActive && py<0){pos[3*i+1]=0;py=0;hit=true}
     // radial wall (skip particles below needle tip – they've exited)
@@ -526,6 +562,7 @@ class Syringe {
     return hit}
 
   advancePiston(dt){
+    if(!this.pistonEnabled)return;
     if(!this.pistonActive)return;
     this.pistonY-=this.pistonSpd*dt;
     const minPiston=this.needleLen+this.taperH+0.01;
@@ -608,7 +645,7 @@ class Syringe {
 // 6.  SYRINGE SIMULATOR
 // ═══════════════════════════════════════════════════════════════
 class SyringeSimulator {
-  constructor(particleTemplate, syringeParams, targetCount, scene){
+  constructor(particleTemplate, syringeParams, capacityCount, initialCount, scene){
     this.tmpl    = particleTemplate;
     this.scene   = scene;
     this.gravity = [0,-10,0];
@@ -616,24 +653,32 @@ class SyringeSimulator {
     this.numSubsteps=10;
     this.particles =[];
     this.dispensed =0;
+    // strain hardening controls (UI-adjustable, live)
+    this.hardStrain=0.18;     // 18% strain threshold
+    this.hardFactor=0.15;     // compliance multiplier after hardening
     // gel-like tuning (defaults)
     this.velDampingPerSec=18.0;    // higher = more “gel”, less liquid slosh
-    this.contactCompliance=1e-2;   // softer contacts reduce popcorn-like popping
-    this.contactIterations=3;      // contact/internal solver passes per substep
-    this.maxContactCorrFrac=0.1;   // clamp per-iteration correction (fraction of minD)
+    // Tighter centroid-contacts help prevent "taffy-like" stretching,
+    // especially in the barrel→taper→needle transition where compression is high.
+    this.contactCompliance=5e-3;   // lower = stiffer repulsion
+    this.contactIterations=6;      // more passes per substep improves packing
+    this.maxContactCorrFrac=0.25;  // allow larger per-iter separation in tight regions
     // contact stats
     this.contactPairs    =0;
     this.maxPenetration  =0;
     // build syringe
     this.syringe=new Syringe(syringeParams);
     this.syringe.buildMeshes(scene);
-    // spawn particles
-    this._spawnParticles(targetCount);
+    // spawn particles (capacity allocated; only initialCount active)
+    this.capacityCount=Math.max(0,capacityCount|0);
+    this.initialCount=Math.max(0,Math.min(this.capacityCount, initialCount|0));
+    this._buildSpawnSlots(this.capacityCount);
+    this._spawnParticles(this.capacityCount, this.initialCount);
     // build centroid hash for contact broadphase
     // (keep broadphase radius consistent with the narrowphase minD we use)
     this.maxNR       = particleTemplate.nominalRadius||0.3;
-    this.centroidHash= new Hash(2.2*this.maxNR, Math.max(targetCount+10,64));
-    this.centroids   = new Float32Array(targetCount*3);
+    this.centroidHash= new Hash(2.2*this.maxNR, Math.max(this.capacityCount+10,64));
+    this.centroids   = new Float32Array(this.capacityCount*3);
     // visuals
     this._normalFrameCounter=0;    // throttle expensive normal recompute
     // merged geometry
@@ -642,19 +687,17 @@ class SyringeSimulator {
     this.tetLinesMesh=null;
     this._buildTetLines();}
 
-  _spawnParticles(count){
+  _buildSpawnSlots(capacity){
     const sp = this.syringe;
     const r  = this.tmpl.nominalRadius||0.3;
     const spacing = r*2.1;
     const barrelBottom = sp.needleLen + sp.taperH;
     const barrelTop    = sp.pistonY - r;
     const gridR        = sp.barrelInR - r;
-
-    const positions=[];
     const nx=Math.max(1,Math.floor(2*gridR/spacing));
     const nz=Math.max(1,Math.floor(2*gridR/spacing));
     const ny=Math.max(1,Math.floor((barrelTop-barrelBottom)/spacing));
-
+    const slots=[];
     outer:
     for(let iy=0;iy<ny;iy++)for(let ix=0;ix<nx;ix++)for(let iz=0;iz<nz;iz++){
       const cx2=(-gridR+(ix+.5)*2*gridR/nx);
@@ -662,19 +705,69 @@ class SyringeSimulator {
       if(Math.sqrt(cx2*cx2+cz2*cz2)>gridR)continue;
       const cy=barrelBottom+r+(iy+.5)*spacing;
       if(cy>barrelTop)continue;
-      // small jitter
-      const jx=(Math.random()-.5)*r*0.3;
-      const jy=(Math.random()-.5)*r*0.3;
-      const jz=(Math.random()-.5)*r*0.3;
-      positions.push([cx2+jx,cy+jy,cz2+jz]);
-      if(positions.length>=count)break outer}
+      slots.push([cx2,cy,cz2]);
+      if(slots.length>=capacity)break outer;
+    }
+    // Prefer filling from the top down to reduce initial pressure at the needle/taper.
+    slots.sort((a,b)=>b[1]-a[1]);
+    this.spawnSlots=slots;
+    this.spawnCursor=0;
+  }
 
-    console.log(`Spawning ${positions.length} particles…`);
-    for(let pi=0;pi<positions.length;pi++){
-      const [cx,cy,cz]=positions[pi];
-      const p=new GelParticle(this.tmpl,cx,cy,cz,pi);
-      p.edgeCompliance=5;p.volCompliance=0;
-      this.particles.push(p)}}
+  _resetParticleToSlot(p, slot){
+    const [cx,cy,cz]=slot;
+    const r=this.tmpl.nominalRadius||0.3;
+    const jx=(Math.random()-.5)*r*0.3;
+    const jy=(Math.random()-.5)*r*0.3;
+    const jz=(Math.random()-.5)*r*0.3;
+    // reinit positions in-place to avoid rebuilding arrays
+    for(let i=0;i<p.numTetVerts;i++){
+      const ox=this.tmpl.verts[3*i],oy=this.tmpl.verts[3*i+1],oz=this.tmpl.verts[3*i+2];
+      p.pos[3*i]  =ox+cx+jx;
+      p.pos[3*i+1]=oy+cy+jy;
+      p.pos[3*i+2]=oz+cz+jz;
+      p.prevPos[3*i]=p.pos[3*i];
+      p.prevPos[3*i+1]=p.pos[3*i+1];
+      p.prevPos[3*i+2]=p.pos[3*i+2];
+      p.vel[3*i]=p.vel[3*i+1]=p.vel[3*i+2]=0;
+    }
+    p.hardened=false;
+    p.maxEdgeStrainEver=0;
+    p.active=true;
+    p.updateCenter();
+  }
+
+  _spawnParticles(capacity, initialActive){
+    const cap=Math.max(0, capacity|0);
+    const init=Math.max(0, Math.min(cap, initialActive|0));
+    console.log(`Allocating ${cap} particles (initial active: ${init})…`);
+    for(let pi=0;pi<cap;pi++){
+      const slot=this.spawnSlots[pi] || [0, this.syringe.pistonY-(this.tmpl.nominalRadius||0.3), 0];
+      const p=new GelParticle(this.tmpl,slot[0],slot[1],slot[2],pi);
+      p.baseEdgeCompliance=5; p.baseVolCompliance=0;
+      p.edgeCompliance=p.baseEdgeCompliance;
+      p.volCompliance=p.baseVolCompliance;
+      p.active = (pi<init);
+      this.particles.push(p);
+    }
+    this.spawnCursor=init;
+  }
+
+  dropMore(n){
+    const add=Math.max(0,n|0);
+    if(add<=0)return 0;
+    let spawned=0;
+    for(let k=0;k<add;k++){
+      if(this.spawnCursor>=this.particles.length)break;
+      const p=this.particles[this.spawnCursor];
+      const slot=this.spawnSlots[this.spawnCursor] || this.spawnSlots[this.spawnSlots.length-1];
+      if(slot)this._resetParticleToSlot(p, slot);
+      else p.active=true;
+      this.spawnCursor++;
+      spawned++;
+    }
+    return spawned;
+  }
 
   _buildMergedGeo(){
     let totalVV=0,totalTri=0;
@@ -789,6 +882,17 @@ class SyringeSimulator {
       if(!p.active)continue;
       if(p.center[1]<-this.tmpl.nominalRadius*2){p.active=false;disp++}}
     this.dispensed+=disp;
+    // strain-hardening pass (per-frame, cheap for small tet meshes)
+    const thr=this.hardStrain;
+    const factor=this.hardFactor;
+    for(const p of this.particles){
+      if(!p.active)continue;
+      const cur=p.computeMaxEdgeStrain();
+      if(cur>thr)p.hardened=true;
+      const mul=p.hardened ? factor : 1.0;
+      p.edgeCompliance=p.baseEdgeCompliance*mul;
+      p.volCompliance =p.baseVolCompliance*mul;
+    }
     // update visuals
     for(const p of this.particles)p.updateVisMesh(this.allPositions);
     this._updateColors();
@@ -1007,13 +1111,24 @@ function initThreeScene(){
   wrap.appendChild(gRenderer.domElement);
 
   // Camera
-  gCamera=new THREE.PerspectiveCamera(55,wrap.clientWidth/wrap.clientHeight,0.1,500);
+  // Use conservative clip planes; OrbitControls can dolly very close/far.
+  gCamera=new THREE.PerspectiveCamera(55,wrap.clientWidth/wrap.clientHeight,0.02,2000);
   gCamera.position.set(25,40,55);
   gScene.add(gCamera);
 
   gCamCtrl=new THREE.OrbitControls(gCamera,gRenderer.domElement);
   gCamCtrl.target.set(0,30,0);
   gCamCtrl.zoomSpeed=1.5;gCamCtrl.panSpeed=0.5;
+  // Prevent "zoom until distance == 0" which can produce NaNs and a blank frame.
+  gCamCtrl.minDistance=2.0;
+  gCamCtrl.maxDistance=900.0;
+  gCamCtrl.addEventListener('change', ()=>{
+    const p=gCamera.position;
+    if(!Number.isFinite(p.x)||!Number.isFinite(p.y)||!Number.isFinite(p.z)){
+      gCamera.position.set(25,40,55);
+      gCamCtrl.target.set(0,30,0);
+    }
+  });
   gCamCtrl.update();
 
   window.addEventListener('resize',onResize,false);}
@@ -1035,7 +1150,8 @@ function readSyringeParams(){
     needleLen   :+document.getElementById('pNeedleLen').value,
     taperH      :+document.getElementById('pTaperH').value,
     pistonSpeed :+document.getElementById('pPistonSpd').value,
-    capActive   :document.getElementById('chkCap')?.checked ?? true}}
+    capActive   :document.getElementById('chkCap')?.checked ?? true,
+    pistonEnabled:document.getElementById('chkPiston')?.checked ?? true}}
 
 function initSimulation(){
   if(gSimulator){gSimulator.dispose();gSimulator=null}
@@ -1043,12 +1159,18 @@ function initSimulation(){
   if(!gParticleTemplate){
     gParticleTemplate=buildSphereTetTemplate(0.3);}
   const sp=readSyringeParams();
-  const count=Math.min(+document.getElementById('pCount').value,1000);
+  const capacity=Math.min(+document.getElementById('pCount').value,1000);
+  const initial=Math.min(+document.getElementById('pInitCount').value,capacity);
   document.getElementById('pGravity').value
     && (gSimulator && (gSimulator.gravity[1]=-Math.abs(+document.getElementById('pGravity').value)));
-  gSimulator=new SyringeSimulator(gParticleTemplate,sp,count,gScene);
+  gSimulator=new SyringeSimulator(gParticleTemplate,sp,capacity,initial,gScene);
   gSimulator.gravity=[0,-Math.abs(+document.getElementById('pGravity').value),0];
   gSimulator.numSubsteps=Math.max(1,+document.getElementById('pSubsteps').value);
+  // apply current UI-controlled material params
+  onEdgeCChange(document.getElementById('sEdgeC').value);
+  onVolCChange(document.getElementById('sVolC').value);
+  onHardStrainChange(document.getElementById('sHardStrain').value);
+  onHardFactorChange(document.getElementById('sHardFactor').value);
   document.getElementById('lblNomRadius').textContent=
     gParticleTemplate.nominalRadius.toFixed(3);}
 
@@ -1077,15 +1199,50 @@ function onRestart(){
   initSimulation();}
 function onEdgeCChange(v){
   document.getElementById('lblEdgeC').textContent=v;
-  if(gSimulator)for(const p of gSimulator.particles)p.edgeCompliance=+v;}
+  if(gSimulator)for(const p of gSimulator.particles){
+    p.baseEdgeCompliance=+v;
+    p.edgeCompliance=+v;
+  }}
 function onVolCChange(v){
   document.getElementById('lblVolC').textContent=v;
-  if(gSimulator)for(const p of gSimulator.particles)p.volCompliance=+v;}
+  if(gSimulator)for(const p of gSimulator.particles){
+    p.baseVolCompliance=+v;
+    p.volCompliance=+v;
+  }}
+
+function onHardStrainChange(v){
+  const pct=Math.max(0,+v);
+  document.getElementById('lblHardStrain').textContent=pct.toFixed(0)+'%';
+  if(gSimulator)gSimulator.hardStrain=pct/100;
+}
+function onHardFactorChange(v){
+  const pct=Math.max(0,Math.min(100,+v));
+  document.getElementById('lblHardFactor').textContent=pct.toFixed(0)+'%';
+  if(gSimulator)gSimulator.hardFactor=pct/100;
+}
 function onToggleTets(on){
   if(gSimulator&&gSimulator.tetLinesMesh)gSimulator.tetLinesMesh.visible=on;}
 
 function onToggleCap(on){
   if(gSimulator&&gSimulator.syringe)gSimulator.syringe.capActive=!!on;}
+
+function onTogglePiston(on){
+  if(gSimulator&&gSimulator.syringe){
+    gSimulator.syringe.pistonEnabled=!!on;
+    if(!on)gSimulator.syringe.pistonActive=false;
+  }
+}
+
+function onDropMore(){
+  if(!gSimulator)return;
+  const n=Math.max(1,+document.getElementById('pDropCount').value|0);
+  const added=gSimulator.dropMore(n);
+  if(added<=0){
+    console.log('No remaining capacity to drop.');
+  }else{
+    console.log(`Dropped ${added} more particles.`);
+  }
+}
 
 function loadParticleJSON(evt){
   const file=evt.target.files[0];if(!file)return;
