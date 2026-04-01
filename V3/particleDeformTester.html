@@ -1,0 +1,1198 @@
+<!DOCTYPE html>
+<!--
+  particleDeformTester.html
+  =========================
+  A focused “deformation sandbox” for XPBD gel particles.
+  - Load particle JSON assets (same format as syringeGelParticles.html)
+  - Spawn a pile of particles in a container
+  - Spawn 1 “probe” particle that you can drag around to test deformation/contact
+  - Live tune edge/volume compliance (softness) and contact stiffness
+  - Export tuned parameters as config-friendly JSON
+
+  Run it the same way as other V3 demos:
+    python -m http.server --directory V3 8000
+    open: http://localhost:8000/particleDeformTester.html
+-->
+<html lang="en">
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Particle Deformation Tester</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#ffffff;color:#dde;font-family:verdana,sans-serif;font-size:13px;
+         display:flex;flex-direction:column;height:100vh;overflow:hidden}
+    #topBar{background:#1a1e2e;border-bottom:1px solid #333;padding:6px 12px;
+            display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    #topBar h1{font-size:15px;color:#8cf;margin-right:6px;white-space:nowrap}
+    .btn{background:#2e5c9e;border:none;color:#eef;padding:5px 14px;font-size:13px;
+         border-radius:4px;cursor:pointer;transition:background .2s}
+    .btn:hover{background:#3d74c4}
+    .btn.green{background:#226b44}.btn.green:hover{background:#2e8f5a}
+    .btn.danger{background:#6b2020}.btn.danger:hover{background:#9b3030}
+    select,input[type=number]{background:#232840;border:1px solid #445;color:#dde;
+            padding:3px 6px;border-radius:3px;font-size:12px;width:84px}
+    label{color:#aac;white-space:nowrap}
+    #main{display:flex;flex:1;overflow:hidden}
+    #sidebar{width:320px;min-width:260px;background:#141824;border-right:1px solid #2a2a3a;
+             overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:8px}
+    #canvasWrap{flex:1;position:relative}
+    canvas{display:block}
+    .section{background:#1a1e2e;border-radius:5px;padding:8px;margin-bottom:2px}
+    .section h3{color:#8cf;font-size:12px;letter-spacing:.05em;margin-bottom:6px;text-transform:uppercase}
+    .row{display:flex;justify-content:space-between;align-items:center;margin:3px 0;gap:8px}
+    .row label{flex:0 0 auto}
+    .row input[type=range]{flex:1;accent-color:#4a8fd4;min-width:80px}
+    .statVal{color:#ffd080;font-weight:bold;min-width:70px;text-align:right;font-size:12px}
+    #infoBox{position:absolute;bottom:10px;left:10px;background:rgba(10,15,30,.75);
+             padding:6px 10px;border-radius:5px;font-size:11px;color:#aab;
+             pointer-events:none;line-height:1.6}
+    #exportBox{width:100%;height:110px;background:#0f1320;border:1px solid #2a2f45;
+               color:#d7e3ff;border-radius:4px;padding:6px;font-family:consolas,monospace;font-size:11px}
+    .hint{font-size:11px;color:#9ab;line-height:1.5}
+  </style>
+</head>
+<body>
+  <div id="topBar">
+    <h1>Particle Deformation Tester</h1>
+    <button class="btn green" id="btnRun" onclick="onRun()">Run</button>
+    <button class="btn" id="btnPause" onclick="onPauseToggle()" title="Freeze simulation without rebuilding">Pause</button>
+    <button class="btn" onclick="onReset()">Reset</button>
+    <button class="btn danger" onclick="clearPile()">Clear pile</button>
+    <button class="btn" onclick="copyExport()">Copy tuned JSON</button>
+  </div>
+
+  <div id="main">
+    <div id="sidebar">
+      <div class="section">
+        <h3>Particle selection</h3>
+        <div class="row">
+          <label>Pile shape</label>
+          <select id="selPile" onchange="onSelectTemplate('pile', this.value)" style="width:auto">
+            <option value="__default__">Default sphere</option>
+          </select>
+        </div>
+        <div class="row">
+          <label>Pile JSON</label>
+          <input type="file" id="pileFile" accept=".json" onchange="loadParticleJSON(event,'pile')" style="width:auto;font-size:11px">
+        </div>
+        <div class="row">
+          <label>Pile count</label>
+          <input type="number" id="pPileCount" value="8" min="0" max="400" step="1">
+        </div>
+        <div class="row">
+          <label>Nominal radius (mm)</label>
+          <input type="range" id="sRadius" min="0.05" max="3.00" step="0.01" value="0.30" oninput="onRadiusChange(this.value)">
+        </div>
+        <div class="row"><label></label><span id="lblNomRadius" class="statVal">0.300</span></div>
+        <div class="hint">
+          Use the <b>Piston</b> controls to squish the pile vertically.<br>
+          Tip: set <b>Pause</b> and move the piston slowly for “quasi-static” deformation.
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>Material tuning (pile)</h3>
+        <div class="row">
+          <label>Edge compliance</label>
+          <input type="range" id="sEdgeC" min="0" max="2" value="0.41" step="0.001" oninput="onPileEdgeC(this.value)">
+        </div>
+        <div class="row"><label></label><span id="lblEdgeC" class="statVal">0.410</span></div>
+        <div class="row">
+          <label>Vol compliance</label>
+          <input type="range" id="sVolC" min="0" max="50" value="0" step="0.01" oninput="onPileVolC(this.value)">
+        </div>
+        <div class="row"><label></label><span id="lblVolC" class="statVal">0</span></div>
+        <div class="row">
+          <label>Contact compliance</label>
+          <input type="range" id="sContactC" min="0" max="0.05" value="0.005" step="0.0001" oninput="onContactC(this.value)" title="Lower = stiffer separation / less overlap">
+        </div>
+        <div class="row"><label></label><span id="lblContactC" class="statVal">0.0050</span></div>
+        <div class="row">
+          <label>Substeps</label>
+          <input type="number" id="pSubsteps" value="20" min="1" max="40" step="1" onchange="onSubstepsChange(this.value)">
+        </div>
+        <div class="row">
+          <label>Gravity (mm/s²)</label>
+          <input type="number" id="pGravity" value="15" min="0" max="300" step="1" onchange="onGravityChange(this.value)">
+        </div>
+        <div class="row">
+          <label>Damping (1/s)</label>
+          <input type="number" id="pDamp" value="18" min="0" max="80" step="1" onchange="onDampChange(this.value)" title="Higher = more gel-like, less oscillation">
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>Piston</h3>
+        <div class="row">
+          <label>Enable piston</label>
+          <input type="checkbox" id="chkPiston" checked onchange="onPistonEnable(this.checked)">
+        </div>
+        <div class="row">
+          <label>Piston Y (mm)</label>
+          <input type="range" id="sPistonY" min="0" max="10" value="6" step="0.01" oninput="onPistonY(this.value)">
+        </div>
+        <div class="row"><label></label><span id="lblPistonY" class="statVal">6.00</span></div>
+      </div>
+
+      <div class="section">
+        <h3>Container</h3>
+        <div class="row">
+          <label>Half-width (mm)</label>
+          <input type="number" id="pBoxR" value="3.2" min="1" max="80" step="0.1" onchange="onReset()">
+        </div>
+        <div class="row">
+          <label>Height (mm)</label>
+          <input type="number" id="pBoxH" value="7.5" min="1" max="200" step="0.1" onchange="onReset()">
+        </div>
+        <div class="row">
+          <label>Wall friction</label>
+          <input type="range" id="sWallMu" min="0" max="100" value="20" oninput="onWallMuChange(this.value)">
+        </div>
+        <div class="row"><label></label><span id="lblWallMu" class="statVal">0.20</span></div>
+      </div>
+
+      <div class="section">
+        <h3>Stats</h3>
+        <div class="row"><label>Contacts / frame</label><span id="statContacts" class="statVal">0</span></div>
+        <div class="row"><label>Max penetration</label><span id="statMaxPen" class="statVal">0.000</span></div>
+        <div class="row"><label>Max strain (pile)</label><span id="statStrain" class="statVal">0.0%</span></div>
+        <div class="row"><label>Sim time</label><span id="statTime" class="statVal">0.000</span></div>
+      </div>
+
+      <div class="section">
+        <h3>Tuned JSON (copy/paste)</h3>
+        <textarea id="exportBox" readonly></textarea>
+        <div class="hint">
+          These values are intended to drop into your config under something like:
+          <code>{"particles":{"edgeCompliance":...,"volCompliance":...},"physics":{"substeps":...}}</code>
+        </div>
+      </div>
+    </div>
+
+    <div id="canvasWrap">
+      <div id="infoBox">Orbit: drag empty space · Zoom: wheel · Squish: move piston slider</div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/three@0.139.2/build/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.139.2/examples/js/controls/OrbitControls.js"></script>
+  <script>
+  "use strict";
+
+  // ─────────────────────────────────────────────────────────────
+  // Vector helpers (same style as other demos)
+  // ─────────────────────────────────────────────────────────────
+  function vecSetZero(a,an){an*=3;a[an]=a[an+1]=a[an+2]=0}
+  function vecScale(a,an,s){an*=3;a[an]*=s;a[an+1]*=s;a[an+2]*=s}
+  function vecCopy(a,an,b,bn){an*=3;bn*=3;a[an]=b[bn];a[an+1]=b[bn+1];a[an+2]=b[bn+2]}
+  function vecAdd(a,an,b,bn,s=1){an*=3;bn*=3;a[an]+=b[bn]*s;a[an+1]+=b[bn+1]*s;a[an+2]+=b[bn+2]*s}
+  function vecSetDiff(d,dn,a,an,b,bn,s=1){dn*=3;an*=3;bn*=3;d[dn]=(a[an]-b[bn])*s;d[dn+1]=(a[an+1]-b[bn+1])*s;d[dn+2]=(a[an+2]-b[bn+2])*s}
+  function vecLenSq(a,an){an*=3;return a[an]*a[an]+a[an+1]*a[an+1]+a[an+2]*a[an+2]}
+  function vecDistSq(a,an,b,bn){an*=3;bn*=3;const dx=a[an]-b[bn],dy=a[an+1]-b[bn+1],dz=a[an+2]-b[bn+2];return dx*dx+dy*dy+dz*dz}
+  function vecDot(a,an,b,bn){an*=3;bn*=3;return a[an]*b[bn]+a[an+1]*b[bn+1]+a[an+2]*b[bn+2]}
+  function vecSetCross(a,an,b,bn,c,cn){an*=3;bn*=3;cn*=3;a[an]=b[bn+1]*c[cn+2]-b[bn+2]*c[cn+1];a[an+1]=b[bn+2]*c[cn+0]-b[bn+0]*c[cn+2];a[an+2]=b[bn+0]*c[cn+1]-b[bn+1]*c[cn+0]}
+
+  function matGetDet(A){return A[0]*(A[4]*A[8]-A[7]*A[5]) - A[3]*(A[1]*A[8]-A[7]*A[2]) + A[6]*(A[1]*A[5]-A[4]*A[2])}
+  function matSetInverse(A){
+    const d=matGetDet(A); if(d===0){A.fill(0);return}
+    const inv=1/d;
+    const a11=A[0],a12=A[3],a13=A[6],a21=A[1],a22=A[4],a23=A[7],a31=A[2],a32=A[5],a33=A[8];
+    A[0]= (a22*a33-a23*a32)*inv; A[3]=-(a12*a33-a13*a32)*inv; A[6]= (a12*a23-a13*a22)*inv;
+    A[1]=-(a21*a33-a23*a31)*inv; A[4]= (a11*a33-a13*a31)*inv; A[7]=-(a11*a23-a13*a21)*inv;
+    A[2]= (a21*a32-a22*a31)*inv; A[5]=-(a11*a32-a12*a31)*inv; A[8]= (a11*a22-a12*a21)*inv;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Spatial hash (broadphase)
+  // ─────────────────────────────────────────────────────────────
+  class Hash{
+    constructor(spacing,maxObjects){
+      this.spacing=spacing;
+      this.tableSize=2*maxObjects;
+      this.cellStart=new Int32Array(this.tableSize+1);
+      this.cellEntries=new Int32Array(maxObjects);
+      this.queryIds=new Int32Array(maxObjects);
+      this.querySize=0;
+    }
+    hashCoords(xi,yi,zi){
+      const h=(xi*92837111)^(yi*689287499)^(zi*283923481);
+      return Math.abs(h)%this.tableSize;
+    }
+    intCoord(c){return Math.floor(c/this.spacing)}
+    hashPos(pos,nr){
+      return this.hashCoords(this.intCoord(pos[3*nr]),this.intCoord(pos[3*nr+1]),this.intCoord(pos[3*nr+2]));
+    }
+    create(pos){
+      const n=Math.min(pos.length/3,this.cellEntries.length);
+      this.cellStart.fill(0);
+      for(let i=0;i<n;i++) this.cellStart[this.hashPos(pos,i)]++;
+      let s=0;
+      for(let i=0;i<this.tableSize;i++){s+=this.cellStart[i];this.cellStart[i]=s}
+      this.cellStart[this.tableSize]=s;
+      for(let i=0;i<n;i++){
+        const h=this.hashPos(pos,i);
+        this.cellStart[h]--;
+        this.cellEntries[this.cellStart[h]]=i;
+      }
+    }
+    query(pos,nr,maxDist){
+      const x0=this.intCoord(pos[3*nr]-maxDist),y0=this.intCoord(pos[3*nr+1]-maxDist),z0=this.intCoord(pos[3*nr+2]-maxDist);
+      const x1=this.intCoord(pos[3*nr]+maxDist),y1=this.intCoord(pos[3*nr+1]+maxDist),z1=this.intCoord(pos[3*nr+2]+maxDist);
+      this.querySize=0;
+      for(let xi=x0;xi<=x1;xi++)for(let yi=y0;yi<=y1;yi++)for(let zi=z0;zi<=z1;zi++){
+        const h=this.hashCoords(xi,yi,zi);
+        const st=this.cellStart[h],en=this.cellStart[h+1];
+        for(let i=st;i<en;i++){this.queryIds[this.querySize++]=this.cellEntries[i]}
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Default sphere template (same as syringe demo)
+  // ─────────────────────────────────────────────────────────────
+  function buildSphereTetTemplate(radius){
+    const phi=(1+Math.sqrt(5))*.5, nm=Math.sqrt(1+phi*phi), r=radius;
+    const n1=1/nm, ph=phi/nm;
+    const verts=[
+      0, r*n1, r*ph,   0,-r*n1, r*ph,   0, r*n1,-r*ph,   0,-r*n1,-r*ph,
+      r*n1, r*ph,0,  -r*n1, r*ph,0,   r*n1,-r*ph,0,  -r*n1,-r*ph,0,
+      r*ph,0, r*n1,  -r*ph,0, r*n1,   r*ph,0,-r*n1,  -r*ph,0,-r*n1,
+      0,0,0
+    ];
+    const icof=[
+      [0,8,4],[0,4,5],[0,5,9],[0,9,1],[0,1,8],
+      [3,11,2],[3,2,10],[3,10,6],[3,6,7],[3,7,11],
+      [1,9,7],[9,11,7],[9,5,11],[5,2,11],[5,4,2],
+      [4,10,2],[4,8,10],[8,6,10],[8,1,6],[1,7,6]
+    ];
+    const tetIds=[],surfTriIds=[];
+    for(const [a,b,c] of icof){
+      const bx=verts[3*b],by=verts[3*b+1],bz=verts[3*b+2];
+      const cx=verts[3*c],cy=verts[3*c+1],cz=verts[3*c+2];
+      const ax=verts[3*a],ay=verts[3*a+1],az=verts[3*a+2];
+      const vol=ax*(by*cz-bz*cy)+ay*(bz*cx-bx*cz)+az*(bx*cy-by*cx);
+      if(vol>0) tetIds.push(12,a,b,c); else tetIds.push(12,a,c,b);
+      surfTriIds.push(a,b,c);
+    }
+    const eSet=new Set();
+    for(let t=0;t<tetIds.length;t+=4){
+      const ids=[tetIds[t],tetIds[t+1],tetIds[t+2],tetIds[t+3]];
+      for(let i=0;i<4;i++)for(let j=i+1;j<4;j++){
+        const a=ids[i],b=ids[j];
+        eSet.add(a<b?a*10000+b:b*10000+a);
+      }
+    }
+    const edgeIds=[];
+    for(const k of eSet) edgeIds.push(Math.floor(k/10000),k%10000);
+    return{
+      verts:new Float32Array(verts),
+      tetIds:new Int32Array(tetIds),
+      edgeIds:new Int32Array(edgeIds),
+      surfTriIds:new Int32Array(surfTriIds),
+      numVerts:13,numTets:20,numEdges:edgeIds.length/2,numSurfTris:20,
+      hasSkinning:false,nominalRadius:radius
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // GelParticle: XPBD tet soft body (copied pattern from syringe demo)
+  // ─────────────────────────────────────────────────────────────
+  const volIdOrder=[[1,3,2],[0,2,3],[0,3,1],[0,1,2]];
+  class GelParticle{
+    constructor(tmpl,cx,cy,cz,particleIdx){
+      this.idx=particleIdx;
+      this.tetIds=tmpl.tetIds;
+      this.edgeIds=tmpl.edgeIds;
+      this.surfTriIds=tmpl.surfTriIds;
+      this.numTetVerts=tmpl.numVerts;
+      this.numTets=tmpl.numTets;
+      this.numEdges=tmpl.numEdges;
+      this.hasSkinning=tmpl.hasSkinning||false;
+      if(this.hasSkinning){
+        this.numVisVerts=tmpl.visVerts.length/3;
+        this.visTriIds=tmpl.visTriIds;
+        this.skinningInfo=new Float32Array(tmpl.skinning);
+      }else{
+        this.numVisVerts=tmpl.numVerts;
+        this.visTriIds=tmpl.surfTriIds;
+      }
+      this.pos=new Float32Array(tmpl.numVerts*3);
+      this.prevPos=new Float32Array(tmpl.numVerts*3);
+      this.vel=new Float32Array(tmpl.numVerts*3);
+      this.invMass=new Float32Array(tmpl.numVerts);
+      this.restVol=new Float32Array(tmpl.numTets);
+      this.edgeLens=new Float32Array(tmpl.numEdges);
+      this.temp=new Float32Array(12);
+      this.grads=new Float32Array(12);
+      this.edgeCompliance=0.41;
+      this.volCompliance=0.0;
+      this.baseEdgeCompliance=0.41;
+      this.baseVolCompliance=0.0;
+      this.center=new Float32Array(3);
+      this.boundingRadius=0;
+      this.nominalRadius=tmpl.nominalRadius||0.3;
+      this.visVertOffset=0;
+      this.active=true;
+      this.isProbe=false;
+      this._stressTet=new Float32Array(this.numTetVerts);
+      this._stressMax=0;
+      this.maxEdgeStrainEver=0;
+      // grab state (cursor constraint)
+      this.grabId=-1;
+      this.grabInvMass=0;
+      for(let i=0;i<tmpl.numVerts;i++){
+        this.pos[3*i]=tmpl.verts[3*i]+cx;
+        this.pos[3*i+1]=tmpl.verts[3*i+1]+cy;
+        this.pos[3*i+2]=tmpl.verts[3*i+2]+cz;
+        this.prevPos[3*i]=this.pos[3*i];
+        this.prevPos[3*i+1]=this.pos[3*i+1];
+        this.prevPos[3*i+2]=this.pos[3*i+2];
+      }
+      this._initPhysics();
+    }
+    startGrab(worldPos){
+      // Lock the closest tet vertex to the cursor by setting invMass=0 while held.
+      this.grabId=-1;
+      let best=1e30, bestId=-1;
+      const px=worldPos.x,py=worldPos.y,pz=worldPos.z;
+      for(let i=0;i<this.numTetVerts;i++){
+        const dx=this.pos[3*i]-px, dy=this.pos[3*i+1]-py, dz=this.pos[3*i+2]-pz;
+        const d=dx*dx+dy*dy+dz*dz;
+        if(d<best){best=d;bestId=i;}
+      }
+      if(bestId>=0){
+        this.grabId=bestId;
+        this.grabInvMass=this.invMass[bestId];
+        this.invMass[bestId]=0;
+        // snap grabbed vertex to cursor
+        this.pos[3*bestId]=px; this.pos[3*bestId+1]=py; this.pos[3*bestId+2]=pz;
+        this.prevPos[3*bestId]=px; this.prevPos[3*bestId+1]=py; this.prevPos[3*bestId+2]=pz;
+        this.vel[3*bestId]=0; this.vel[3*bestId+1]=0; this.vel[3*bestId+2]=0;
+        this.updateCenter();
+      }
+    }
+    moveGrabbed(worldPos){
+      if(this.grabId<0) return;
+      const i=this.grabId;
+      const px=worldPos.x,py=worldPos.y,pz=worldPos.z;
+      // set position directly; velocity will be updated in postSolve
+      this.pos[3*i]=px; this.pos[3*i+1]=py; this.pos[3*i+2]=pz;
+      this.prevPos[3*i]=px; this.prevPos[3*i+1]=py; this.prevPos[3*i+2]=pz;
+      this.vel[3*i]=0; this.vel[3*i+1]=0; this.vel[3*i+2]=0;
+      this.updateCenter();
+    }
+    endGrab(){
+      if(this.grabId<0) return;
+      this.invMass[this.grabId]=this.grabInvMass;
+      this.grabId=-1;
+      this.grabInvMass=0;
+    }
+    _tetVol(nr){
+      const i0=this.tetIds[4*nr],i1=this.tetIds[4*nr+1],i2=this.tetIds[4*nr+2],i3=this.tetIds[4*nr+3];
+      vecSetDiff(this.temp,0,this.pos,i1,this.pos,i0);
+      vecSetDiff(this.temp,1,this.pos,i2,this.pos,i0);
+      vecSetDiff(this.temp,2,this.pos,i3,this.pos,i0);
+      vecSetCross(this.temp,3,this.temp,0,this.temp,1);
+      return vecDot(this.temp,3,this.temp,2)/6;
+    }
+    _initPhysics(){
+      this.invMass.fill(0);
+      for(let i=0;i<this.numTets;i++){
+        const vol=this._tetVol(i);
+        this.restVol[i]=vol;
+        const pm=vol>0?1/(vol/4):0;
+        for(let j=0;j<4;j++) this.invMass[this.tetIds[4*i+j]]+=pm;
+      }
+      for(let i=0;i<this.numEdges;i++){
+        const a=this.edgeIds[2*i],b=this.edgeIds[2*i+1];
+        this.edgeLens[i]=Math.sqrt(vecDistSq(this.pos,a,this.pos,b));
+      }
+      this.updateCenter();
+    }
+    updateCenter(){
+      let cx=0,cy=0,cz=0;
+      const n=this.numTetVerts;
+      for(let i=0;i<n;i++){cx+=this.pos[3*i];cy+=this.pos[3*i+1];cz+=this.pos[3*i+2]}
+      this.center[0]=cx/n;this.center[1]=cy/n;this.center[2]=cz/n;
+      let rMax=0;
+      const ccx=this.center[0],ccy=this.center[1],ccz=this.center[2];
+      for(let i=0;i<n;i++){
+        const dx=this.pos[3*i]-ccx,dy=this.pos[3*i+1]-ccy,dz=this.pos[3*i+2]-ccz;
+        rMax=Math.max(rMax,Math.sqrt(dx*dx+dy*dy+dz*dz));
+      }
+      this.boundingRadius=rMax;
+    }
+    preSolve(dt,gravity,container,velDampingPerSec,wallFriction){
+      const gx=gravity[0],gy=gravity[1],gz=gravity[2];
+      const damp=Math.exp(-Math.max(0,velDampingPerSec||0)*dt);
+      for(let i=0;i<this.numTetVerts;i++){
+        if(this.invMass[i]===0)continue;
+        this.vel[3*i]*=damp; this.vel[3*i+1]*=damp; this.vel[3*i+2]*=damp;
+        this.vel[3*i]+=gx*dt; this.vel[3*i+1]+=gy*dt; this.vel[3*i+2]+=gz*dt;
+        this.prevPos[3*i]=this.pos[3*i]; this.prevPos[3*i+1]=this.pos[3*i+1]; this.prevPos[3*i+2]=this.pos[3*i+2];
+        this.pos[3*i]+=this.vel[3*i]*dt; this.pos[3*i+1]+=this.vel[3*i+1]*dt; this.pos[3*i+2]+=this.vel[3*i+2]*dt;
+        container.constrainVertex(this.pos,this.prevPos,i,wallFriction);
+      }
+    }
+    solveEdges(dt){
+      const alpha=this.edgeCompliance/(dt*dt);
+      for(let i=0;i<this.numEdges;i++){
+        const a=this.edgeIds[2*i],b=this.edgeIds[2*i+1];
+        const wa=this.invMass[a],wb=this.invMass[b],w=wa+wb;
+        if(w===0)continue;
+        vecSetDiff(this.grads,0,this.pos,a,this.pos,b);
+        const len=Math.sqrt(vecLenSq(this.grads,0));
+        if(len===0)continue;
+        vecScale(this.grads,0,1/len);
+        const C=len-this.edgeLens[i];
+        const s=-C/(w+alpha);
+        vecAdd(this.pos,a,this.grads,0, s*wa);
+        vecAdd(this.pos,b,this.grads,0,-s*wb);
+      }
+    }
+    solveVolumes(dt){
+      const alpha=this.volCompliance/(dt*dt);
+      for(let i=0;i<this.numTets;i++){
+        let w=0;
+        for(let j=0;j<4;j++){
+          const a=this.tetIds[4*i+volIdOrder[j][0]];
+          const b=this.tetIds[4*i+volIdOrder[j][1]];
+          const c=this.tetIds[4*i+volIdOrder[j][2]];
+          vecSetDiff(this.temp,0,this.pos,b,this.pos,a);
+          vecSetDiff(this.temp,1,this.pos,c,this.pos,a);
+          vecSetCross(this.grads,j,this.temp,0,this.temp,1);
+          vecScale(this.grads,j,1/6);
+          w+=this.invMass[this.tetIds[4*i+j]]*vecLenSq(this.grads,j);
+        }
+        if(w===0)continue;
+        const vol=this._tetVol(i);
+        const C=vol-this.restVol[i];
+        const s=-C/(w+alpha);
+        for(let j=0;j<4;j++){
+          const id=this.tetIds[4*i+j];
+          vecAdd(this.pos,id,this.grads,j,s*this.invMass[id]);
+        }
+      }
+    }
+    postSolve(dt){
+      for(let i=0;i<this.numTetVerts;i++){
+        if(this.invMass[i]===0)continue;
+        this.vel[3*i]=(this.pos[3*i]-this.prevPos[3*i])/dt;
+        this.vel[3*i+1]=(this.pos[3*i+1]-this.prevPos[3*i+1])/dt;
+        this.vel[3*i+2]=(this.pos[3*i+2]-this.prevPos[3*i+2])/dt;
+      }
+      this.updateCenter();
+    }
+    computeMaxEdgeStrain(){
+      let mx=0;
+      for(let i=0;i<this.numEdges;i++){
+        const a=this.edgeIds[2*i],b=this.edgeIds[2*i+1];
+        const rest=this.edgeLens[i];
+        if(rest<=1e-12)continue;
+        const cur=Math.sqrt(vecDistSq(this.pos,a,this.pos,b));
+        const strain=cur/rest-1;
+        if(strain>mx)mx=strain;
+      }
+      if(mx>this.maxEdgeStrainEver) this.maxEdgeStrainEver=mx;
+      return mx;
+    }
+    updateVisMesh(allPos){
+      if(this.hasSkinning){
+        const stride=(this.skinningInfo.length===this.numVisVerts*5)?5:4;
+        let nr=0;
+        for(let i=0;i<this.numVisVerts;i++){
+          const tNr=this.skinningInfo[nr++]*4;
+          if(tNr<0){nr+=stride-1;continue}
+          const b0=this.skinningInfo[nr++],b1=this.skinningInfo[nr++],b2=this.skinningInfo[nr++];
+          const b3=(stride===5)?this.skinningInfo[nr++]:(1-b0-b1-b2);
+          const id0=this.tetIds[tNr],id1=this.tetIds[tNr+1],id2=this.tetIds[tNr+2],id3=this.tetIds[tNr+3];
+          const base=(this.visVertOffset+i)*3;
+          allPos[base]=this.pos[3*id0]*b0+this.pos[3*id1]*b1+this.pos[3*id2]*b2+this.pos[3*id3]*b3;
+          allPos[base+1]=this.pos[3*id0+1]*b0+this.pos[3*id1+1]*b1+this.pos[3*id2+1]*b2+this.pos[3*id3+1]*b3;
+          allPos[base+2]=this.pos[3*id0+2]*b0+this.pos[3*id1+2]*b1+this.pos[3*id2+2]*b2+this.pos[3*id3+2]*b3;
+        }
+      }else{
+        for(let i=0;i<this.numTetVerts;i++){
+          const base=(this.visVertOffset+i)*3;
+          allPos[base]=this.pos[3*i];
+          allPos[base+1]=this.pos[3*i+1];
+          allPos[base+2]=this.pos[3*i+2];
+        }
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Simple box container collider (mm units)
+  // ─────────────────────────────────────────────────────────────
+  class BoxContainer{
+    constructor(halfR,height){
+      this.halfR=halfR;
+      this.height=height;
+      this.meshes=[];
+      // piston (rigid plate)
+      this.pistonEnabled=true;
+      this.pistonY=Math.max(0.01,height-0.25);
+      this.pistonT=0.35; // thickness (mm, visual/collision)
+      this.pistonMesh=null;
+    }
+    constrainVertex(pos,prevPos,i,mu){
+      let x=pos[3*i],y=pos[3*i+1],z=pos[3*i+2];
+      let hit=false, nx=0,ny=0,nz=0;
+      const r=this.halfR, h=this.height;
+      // floor / ceiling
+      if(y<0){pos[3*i+1]=0; y=0; hit=true; nx=0;ny=1;nz=0;}
+      // The ceiling is provided by the piston if enabled; otherwise clamp to height.
+      if(this.pistonEnabled){
+        const py=this.pistonY;
+        if(y>py){pos[3*i+1]=py; y=py; hit=true; nx=0;ny=-1;nz=0;}
+      }else{
+        if(y>h){pos[3*i+1]=h; y=h; hit=true; nx=0;ny=-1;nz=0;}
+      }
+      // walls
+      if(x<-r){pos[3*i]=-r; hit=true; nx=1;ny=0;nz=0;}
+      if(x> r){pos[3*i]= r; hit=true; nx=-1;ny=0;nz=0;}
+      if(z<-r){pos[3*i+2]=-r; hit=true; nx=0;ny=0;nz=1;}
+      if(z> r){pos[3*i+2]= r; hit=true; nx=0;ny=0;nz=-1;}
+
+      mu=Math.max(0,Math.min(1,(mu===undefined?0:mu)));
+      if(hit && prevPos && mu>0){
+        const vx=pos[3*i]-prevPos[3*i];
+        const vy=pos[3*i+1]-prevPos[3*i+1];
+        const vz=pos[3*i+2]-prevPos[3*i+2];
+        const vn=vx*nx+vy*ny+vz*nz;
+        const tx=vx-vn*nx, ty=vy-vn*ny, tz=vz-vn*nz;
+        prevPos[3*i]+=tx*mu;
+        prevPos[3*i+1]+=ty*mu;
+        prevPos[3*i+2]+=tz*mu;
+      }
+      return hit;
+    }
+    buildMeshes(scene){
+      this.dispose(scene);
+      const r=this.halfR, h=this.height;
+      const matWall=new THREE.MeshPhongMaterial({color:0x88a6c8,transparent:true,opacity:0.12,side:THREE.BackSide});
+      const geo=new THREE.BoxGeometry(2*r,h,2*r,1,1,1);
+      geo.translate(0,h/2,0);
+      const box=new THREE.Mesh(geo,matWall);
+      scene.add(box);
+      this.meshes.push(box);
+
+      const matP=new THREE.MeshPhongMaterial({color:0xcc8844,flatShading:true});
+      const pGeo=new THREE.BoxGeometry(2*r*0.96,this.pistonT,2*r*0.96,1,1,1);
+      const piston=new THREE.Mesh(pGeo,matP);
+      piston.castShadow=true;
+      scene.add(piston);
+      this.pistonMesh=piston;
+      this.meshes.push(piston);
+      this.updatePistonMesh();
+    }
+    updatePistonMesh(){
+      if(!this.pistonMesh) return;
+      this.pistonMesh.visible=!!this.pistonEnabled;
+      this.pistonMesh.position.set(0,this.pistonY,0);
+    }
+    dispose(scene){
+      for(const m of this.meshes){
+        scene.remove(m);
+        m.geometry.dispose();
+        m.material.dispose();
+      }
+      this.meshes=[];
+      this.pistonMesh=null;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Simulator: multiple particles, centroid contacts
+  // ─────────────────────────────────────────────────────────────
+  class TesterSimulator{
+    constructor(pileTemplate,container,scene){
+      this.scene=scene;
+      this.container=container;
+      this.gravity=[0,-15,0];
+      this.numSubsteps=20;
+      this.velDampingPerSec=18;
+      this.wallFriction=0.2;
+      this.contactCompliance=0.005;
+      this.contactIterations=6;
+      this.maxContactCorrFrac=0.25;
+      this.simTime=0;
+      this.contactPairs=0;
+      this.maxPenetration=0;
+
+      this.particles=[];
+      const pileCount=Math.max(0,+document.getElementById('pPileCount').value|0);
+      this._spawnPile(pileTemplate,pileCount);
+
+      this.maxNR=Math.max(pileTemplate.nominalRadius||0.3, 0.3);
+      this.centroids=new Float32Array(this.particles.length*3);
+      this.centroidHash=new Hash(2.2*this.maxNR, Math.max(this.particles.length+10,64));
+
+      this._buildMergedGeo();
+    }
+
+    _spawnPile(tmpl,count){
+      const r=tmpl.nominalRadius||0.3;
+      const spacing=r*2.15;
+      const R=this.container.halfR-r*1.05;
+      const y0=r*1.2;
+      const nx=Math.max(1,Math.floor((2*R)/spacing));
+      const nz=Math.max(1,Math.floor((2*R)/spacing));
+      const ny=Math.max(1,Math.floor((this.container.height-y0-r)/spacing));
+      const slots=[];
+      outer:
+      for(let iy=0;iy<ny;iy++)for(let ix=0;ix<nx;ix++)for(let iz=0;iz<nz;iz++){
+        const cx=(-R+(ix+.5)*2*R/nx);
+        const cz=(-R+(iz+.5)*2*R/nz);
+        const cy=y0+(iy+.5)*spacing;
+        slots.push([cx,cy,cz]);
+        if(slots.length>=count)break outer;
+      }
+      // shuffle for less grid-looking piles
+      for(let i=slots.length-1;i>0;i--){
+        const j=(Math.random()*(i+1))|0;
+        const tmp=slots[i];slots[i]=slots[j];slots[j]=tmp;
+      }
+      for(let i=0;i<slots.length;i++){
+        const s=slots[i];
+        const jx=(Math.random()-.5)*r*0.2, jy=(Math.random()-.5)*r*0.2, jz=(Math.random()-.5)*r*0.2;
+        const p=new GelParticle(tmpl,s[0]+jx,s[1]+jy,s[2]+jz,this.particles.length);
+        // pile material is UI-controlled
+        p.baseEdgeCompliance=+document.getElementById('sEdgeC').value;
+        p.baseVolCompliance=+document.getElementById('sVolC').value;
+        p.edgeCompliance=p.baseEdgeCompliance;
+        p.volCompliance=p.baseVolCompliance;
+        this.particles.push(p);
+      }
+    }
+
+    getParticleIndexFromVisVert(visVertIdx){
+      for(let i=0;i<this.particles.length;i++){
+        const p=this.particles[i];
+        const a=p.visVertOffset,b=a+p.numVisVerts;
+        if(visVertIdx>=a && visVertIdx<b) return i;
+      }
+      return -1;
+    }
+
+    _buildMergedGeo(){
+      let totalVV=0,totalTri=0;
+      for(const p of this.particles){
+        p.visVertOffset=totalVV;
+        totalVV+=p.numVisVerts;
+        totalTri+=p.visTriIds.length/3;
+      }
+      this.totalVisVerts=totalVV;
+      this.allPositions=new Float32Array(totalVV*3);
+      this.allColors=new Float32Array(totalVV*3);
+      const allIdx=new Uint32Array(totalTri*3);
+      let off=0;
+      for(const p of this.particles){
+        const ids=p.visTriIds;
+        for(let i=0;i<ids.length;i++) allIdx[off+i]=ids[i]+p.visVertOffset;
+        off+=ids.length;
+      }
+      const geo=new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(this.allPositions,3));
+      geo.setAttribute('color',    new THREE.BufferAttribute(this.allColors,3));
+      geo.setIndex(new THREE.BufferAttribute(allIdx,1));
+      const mat=new THREE.MeshPhongMaterial({vertexColors:true,flatShading:true,shininess:40});
+      this.mesh=new THREE.Mesh(geo,mat);
+      this.mesh.castShadow=true;
+      this.scene.add(this.mesh);
+      for(const p of this.particles) p.updateVisMesh(this.allPositions);
+      this._updateColors();
+      geo.computeVertexNormals();
+      geo.attributes.position.needsUpdate=true;
+      geo.attributes.color.needsUpdate=true;
+    }
+
+    _updateColors(){
+      for(const p of this.particles){
+        const r=0.95,g=0.55,b=0.15;
+        for(let i=0;i<p.numVisVerts;i++){
+          const base=(p.visVertOffset+i)*3;
+          this.allColors[base]=r;
+          this.allColors[base+1]=g;
+          this.allColors[base+2]=b;
+        }
+      }
+    }
+
+    dispose(){
+      if(this.mesh){
+        this.scene.remove(this.mesh);
+        this.mesh.geometry.dispose();
+        this.mesh.material.dispose();
+      }
+      this.mesh=null;
+    }
+
+    simulate(dt){
+      const sdt=dt/this.numSubsteps;
+      this.contactPairs=0;
+      this.maxPenetration=0;
+      for(let step=0;step<this.numSubsteps;step++){
+        for(const p of this.particles){
+          p.preSolve(sdt,this.gravity,this.container,this.velDampingPerSec,this.wallFriction);
+        }
+        const iters=Math.max(1,this.contactIterations|0);
+        for(let it=0;it<iters;it++){
+          this._solveContacts(sdt);
+          for(const p of this.particles){p.solveEdges(sdt);p.solveVolumes(sdt);}
+        }
+        for(const p of this.particles){p.postSolve(sdt);}
+      }
+      for(const p of this.particles) p.updateVisMesh(this.allPositions);
+      const geo=this.mesh.geometry;
+      if(((gNormalFrameCounter++)%12)===0) geo.computeVertexNormals();
+      geo.attributes.position.needsUpdate=true;
+      geo.attributes.color.needsUpdate=true;
+      this.simTime+=dt;
+    }
+
+    setPileMaterial(edgeC, volC){
+      const e=+edgeC, v=+volC;
+      for(const p of this.particles){
+        p.baseEdgeCompliance=e; p.edgeCompliance=e;
+        p.baseVolCompliance=v; p.volCompliance=v;
+      }
+    }
+
+    getMaxStrain(){
+      let mx=0;
+      for(const p of this.particles){
+        const s=p.computeMaxEdgeStrain();
+        if(s>mx) mx=s;
+      }
+      return mx;
+    }
+
+    _solveContacts(sdt){
+      const ps=this.particles;
+      const n=ps.length;
+      if(n<2) return;
+      for(let i=0;i<n;i++){
+        this.centroids[3*i]=ps[i].center[0];
+        this.centroids[3*i+1]=ps[i].center[1];
+        this.centroids[3*i+2]=ps[i].center[2];
+      }
+      this.centroidHash.create(this.centroids);
+      const alpha=Math.max(0,this.contactCompliance)/(sdt*sdt);
+      const corrClampFrac=Math.max(0,Math.min(1,this.maxContactCorrFrac||0));
+      for(let i=0;i<n;i++){
+        const A=ps[i];
+        this.centroidHash.query(this.centroids,i,2.2*this.maxNR);
+        for(let nr=0;nr<this.centroidHash.querySize;nr++){
+          const j=this.centroidHash.queryIds[nr];
+          if(j<=i) continue;
+          const B=ps[j];
+          const dx=A.center[0]-B.center[0],dy=A.center[1]-B.center[1],dz=A.center[2]-B.center[2];
+          const d2=dx*dx+dy*dy+dz*dz;
+          const rA=Math.max(1e-6, A.boundingRadius||0, A.nominalRadius||0);
+          const rB=Math.max(1e-6, B.boundingRadius||0, B.nominalRadius||0);
+          const minD=rA+rB;
+          if(d2>=minD*minD || d2<1e-14) continue;
+          const d=Math.sqrt(d2);
+          const nx=dx/d,ny=dy/d,nz=dz/d;
+          const overlap=minD-d;
+          this.contactPairs++;
+          if(overlap>this.maxPenetration) this.maxPenetration=overlap;
+          const wA=1,wB=1;
+          let corr=overlap/(wA+wB+alpha);
+          const corrMax=minD*corrClampFrac;
+          if(corr>corrMax) corr=corrMax;
+          for(let k=0;k<A.numTetVerts;k++){
+            A.pos[3*k]+=corr*wA*nx; A.pos[3*k+1]+=corr*wA*ny; A.pos[3*k+2]+=corr*wA*nz;
+            this.container.constrainVertex(A.pos,A.prevPos,k,this.wallFriction);
+          }
+          for(let k=0;k<B.numTetVerts;k++){
+            B.pos[3*k]-=corr*wB*nx; B.pos[3*k+1]-=corr*wB*ny; B.pos[3*k+2]-=corr*wB*nz;
+            this.container.constrainVertex(B.pos,B.prevPos,k,this.wallFriction);
+          }
+          A.center[0]+=corr*wA*nx;A.center[1]+=corr*wA*ny;A.center[2]+=corr*wA*nz;
+          B.center[0]-=corr*wB*nx;B.center[1]-=corr*wB*ny;B.center[2]-=corr*wB*nz;
+        }
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Particle template loading + scaling (same logic as syringe demo)
+  // ─────────────────────────────────────────────────────────────
+  let gPileTemplateBase=null;
+  let gPileTemplate=null;
+  let gNominalRadiusMm=0.3;
+
+  function _buildScaledTemplateFromBase(base,targetRadiusMm){
+    if(!base) return null;
+    const r0=Math.max(1e-9,+base.nominalRadius||0.3);
+    const r1=Math.max(1e-6,+targetRadiusMm||r0);
+    const sc=r1/r0;
+    const out={
+      tetIds:base.tetIds, edgeIds:base.edgeIds, surfTriIds:base.surfTriIds,
+      numVerts:base.numVerts, numTets:base.numTets, numEdges:base.numEdges, numSurfTris:base.numSurfTris,
+      hasSkinning:base.hasSkinning||false, nominalRadius:r1
+    };
+    if(base.verts){
+      out.verts=new Float32Array(base.verts.length);
+      for(let i=0;i<base.verts.length;i++) out.verts[i]=base.verts[i]*sc;
+    }
+    if(base.hasSkinning){
+      out.visVerts=new Float32Array(base.visVerts.length);
+      for(let i=0;i<base.visVerts.length;i++) out.visVerts[i]=base.visVerts[i]*sc;
+      out.visTriIds=base.visTriIds;
+      out.skinning=base.skinning;
+    }
+    return out;
+  }
+
+  function applyParticleTemplateFromJSON(data,which,sourceLabel){
+    if(!data||!data.tet||!data.vis){alert('Invalid particle JSON.');return}
+    const t=data.tet, v=data.vis, m=data.meta||{};
+    const hasSkinning=Array.isArray(v.skinning)&&v.skinning.length>0;
+    const baseTmpl={
+      verts:new Float32Array(t.verts),
+      tetIds:new Int32Array(t.tetIds),
+      edgeIds:new Int32Array(t.edgeIds),
+      surfTriIds:new Int32Array(t.surfTriIds),
+      numVerts:t.verts.length/3,
+      numTets:t.tetIds.length/4,
+      numEdges:t.edgeIds.length/2,
+      numSurfTris:t.surfTriIds.length/3,
+      hasSkinning:hasSkinning,
+      visVerts:new Float32Array(v.verts),
+      visTriIds:new Int32Array(v.triIds),
+      skinning:hasSkinning ? v.skinning : null,
+      nominalRadius:m.nominalRadius||0.3,
+      source:m.source||sourceLabel||'unknown'
+    };
+    if(which==='pile'){
+      gPileTemplateBase=baseTmpl;
+      gPileTemplate=_buildScaledTemplateFromBase(baseTmpl,gNominalRadiusMm);
+    }
+    onReset();
+  }
+
+  function loadParticleJSON(evt,which){
+    const file=evt.target.files[0]; if(!file) return;
+    const reader=new FileReader();
+    reader.onload=e=>{
+      try{
+        const data=JSON.parse(e.target.result);
+        applyParticleTemplateFromJSON(data,which,file.name);
+      }catch(err){alert('JSON parse error: '+err);}
+    };
+    reader.readAsText(file);
+  }
+
+  async function populateAssetLibrary(){
+    const selPile=document.getElementById('selPile');
+    if(!selPile) return;
+    const keepOnlyDefault=(sel)=>{
+      for(let i=sel.options.length-1;i>=0;i--){
+        if(sel.options[i].value!=="__default__") sel.remove(i);
+      }
+    };
+    keepOnlyDefault(selPile);
+    try{
+      const res=await fetch('assets/',{cache:'no-cache'});
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const html=await res.text();
+      const re=/href="([^"]+?\.json)"/ig;
+      const seen=new Set(); const assets=[];
+      for(;;){
+        const m=re.exec(html); if(!m) break;
+        let href=(m[1]||"").split('#')[0].split('?')[0];
+        if(href.includes('/')||href.includes('\\')) continue;
+        if(seen.has(href)) continue;
+        seen.add(href);
+        assets.push(href);
+      }
+      assets.sort((a,b)=>a.localeCompare(b,undefined,{numeric:true,sensitivity:'base'}));
+      for(const fname of assets){
+        const label=fname.replace(/\.json$/i,'');
+        const opt1=document.createElement('option'); opt1.value=`assets/${fname}`; opt1.textContent=label;
+        selPile.appendChild(opt1);
+      }
+    }catch(err){
+      console.warn('Asset listing unavailable; using Default sphere only.',err);
+    }
+  }
+
+  async function onSelectTemplate(which,value){
+    if(value==="__default__"){
+      if(which==='pile'){gPileTemplateBase=null;gPileTemplate=null;}
+      onReset();
+      return;
+    }
+    try{
+      const res=await fetch(value,{cache:'no-cache'});
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data=await res.json();
+      applyParticleTemplateFromJSON(data,which,value);
+    }catch(err){
+      alert('Failed to load particle JSON. Make sure you are serving via a local HTTP server.\n\n'+err);
+    }
+  }
+
+  function onRadiusChange(v){
+    const r=Math.max(0.01,+v);
+    if(!Number.isFinite(r)) return;
+    gNominalRadiusMm=r;
+    const lbl=document.getElementById('lblNomRadius');
+    if(lbl) lbl.textContent=r.toFixed(3);
+    if(gPileTemplateBase) gPileTemplate=_buildScaledTemplateFromBase(gPileTemplateBase,r);
+    onReset();
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Three.js scene + interaction (pick + drag the probe)
+  // ─────────────────────────────────────────────────────────────
+  let gRenderer,gScene,gCamera,gControls;
+  let gSim=null,gContainer=null;
+  let gPaused=true,gNormalFrameCounter=0;
+
+  function initThree(){
+    gScene=new THREE.Scene();
+    gScene.background=new THREE.Color(0xffffff);
+    gScene.fog=new THREE.Fog(0xffffff,40,250);
+    gScene.add(new THREE.AmbientLight(0x404060,0.8));
+    const dir=new THREE.DirectionalLight(0xffffff,0.9);
+    dir.position.set(5,20,10); dir.castShadow=true;
+    dir.shadow.camera.near=1; dir.shadow.camera.far=300;
+    dir.shadow.camera.left=dir.shadow.camera.bottom=-60;
+    dir.shadow.camera.right=dir.shadow.camera.top=60;
+    dir.shadow.mapSize.width=dir.shadow.mapSize.height=2048;
+    gScene.add(dir);
+    gScene.add(new THREE.HemisphereLight(0x3a4060,0x101830,0.5));
+
+    const wrap=document.getElementById('canvasWrap');
+    gRenderer=new THREE.WebGLRenderer({antialias:true});
+    gRenderer.shadowMap.enabled=true;
+    gRenderer.shadowMap.type=THREE.PCFSoftShadowMap;
+    gRenderer.setPixelRatio(window.devicePixelRatio);
+    gRenderer.setSize(wrap.clientWidth,wrap.clientHeight);
+    wrap.appendChild(gRenderer.domElement);
+
+    gCamera=new THREE.PerspectiveCamera(55,wrap.clientWidth/wrap.clientHeight,0.002,2000);
+    gCamera.position.set(22,22,30);
+    gScene.add(gCamera);
+
+    gControls=new THREE.OrbitControls(gCamera,gRenderer.domElement);
+    gControls.target.set(0,8,0);
+    gControls.minDistance=2;
+    gControls.maxDistance=900;
+    gControls.update();
+
+    window.addEventListener('resize',onResize,false);
+  }
+
+  function onResize(){
+    const wrap=document.getElementById('canvasWrap');
+    gCamera.aspect=wrap.clientWidth/wrap.clientHeight;
+    gCamera.updateProjectionMatrix();
+    gRenderer.setSize(wrap.clientWidth,wrap.clientHeight);
+  }
+
+  // (Pointer dragging removed: interaction is via piston slider)
+
+  // ─────────────────────────────────────────────────────────────
+  // UI wiring
+  // ─────────────────────────────────────────────────────────────
+  function onRun(){
+    gPaused=!gPaused;
+    document.getElementById('btnRun').textContent=gPaused?'Run':'Stop';
+    const pb=document.getElementById('btnPause');
+    if(pb) pb.textContent=gPaused?'Resume':'Pause';
+  }
+  function onPauseToggle(){
+    gPaused=!gPaused;
+    const rb=document.getElementById('btnRun');
+    if(rb) rb.textContent=gPaused?'Run':'Stop';
+    const pb=document.getElementById('btnPause');
+    if(pb) pb.textContent=gPaused?'Resume':'Pause';
+  }
+
+  function onPileEdgeC(v){
+    const num=+v;
+    document.getElementById('lblEdgeC').textContent=(Number.isFinite(num)?num:0).toFixed(3);
+    if(gSim){ gSim.setPileMaterial(num, +document.getElementById('sVolC').value); updateExportBox(); }
+  }
+  function onPileVolC(v){
+    const num=+v;
+    document.getElementById('lblVolC').textContent=String(num);
+    if(gSim){ gSim.setPileMaterial(+document.getElementById('sEdgeC').value, num); updateExportBox(); }
+  }
+  function onContactC(v){
+    const num=+v;
+    document.getElementById('lblContactC').textContent=(Number.isFinite(num)?num:0).toFixed(4);
+    if(gSim){gSim.contactCompliance=num; updateExportBox();}
+  }
+  function onSubstepsChange(v){ if(gSim) gSim.numSubsteps=Math.max(1,+v|0); updateExportBox(); }
+  function onGravityChange(v){ if(gSim) gSim.gravity=[0,-Math.abs(+v||0),0]; updateExportBox(); }
+  function onDampChange(v){ if(gSim) gSim.velDampingPerSec=Math.max(0,+v||0); updateExportBox(); }
+  function onWallMuChange(v){
+    const pct=Math.max(0,Math.min(100,+v));
+    const mu=pct/100;
+    document.getElementById('lblWallMu').textContent=mu.toFixed(2);
+    if(gSim) gSim.wallFriction=mu;
+  }
+
+  function onPistonEnable(on){
+    if(gContainer){
+      gContainer.pistonEnabled=!!on;
+      gContainer.updatePistonMesh();
+    }
+    updateExportBox();
+  }
+  function onPistonY(v){
+    const y=Math.max(0,+v);
+    const el=document.getElementById('lblPistonY');
+    if(el) el.textContent=y.toFixed(2);
+    if(gContainer){
+      gContainer.pistonY=y;
+      gContainer.updatePistonMesh();
+    }
+    updateExportBox();
+  }
+
+  function updateExportBox(){
+    const edge=+document.getElementById('sEdgeC').value;
+    const vol=+document.getElementById('sVolC').value;
+    const radius=+document.getElementById('sRadius').value;
+    const substeps=+document.getElementById('pSubsteps').value|0;
+    const gravity=+document.getElementById('pGravity').value;
+    const damp=+document.getElementById('pDamp').value;
+    const wallMu=(+document.getElementById('sWallMu').value)/100;
+    const contact=+document.getElementById('sContactC').value;
+    const pistonEnabled=!!document.getElementById('chkPiston')?.checked;
+    const pistonY=+document.getElementById('sPistonY')?.value;
+    const out={
+      particles:{
+        radiusMm:radius,
+        edgeCompliance:edge,
+        volCompliance:vol
+      },
+      physics:{
+        substeps:substeps,
+        gravity:gravity,
+        wallFriction:wallMu,
+        contactCompliance:contact,
+        dampingPerSec:damp,
+        pistonEnabled:pistonEnabled,
+        pistonY:pistonY
+      }
+    };
+    const box=document.getElementById('exportBox');
+    if(box) box.value=JSON.stringify(out,null,2);
+  }
+
+  async function copyExport(){
+    updateExportBox();
+    const txt=document.getElementById('exportBox')?.value||"";
+    try{
+      await navigator.clipboard.writeText(txt);
+    }catch{
+      // fallback: select
+      const el=document.getElementById('exportBox');
+      if(el){el.focus();el.select();}
+    }
+  }
+
+  function clearPile(){
+    const el=document.getElementById('pPileCount');
+    if(el) el.value="0";
+    onReset();
+  }
+
+  function onReset(){
+    gPaused=true;
+    document.getElementById('btnRun').textContent='Run';
+    const pb=document.getElementById('btnPause');
+    if(pb) pb.textContent='Resume';
+    gControls && (gControls.enabled=true);
+
+    const r=gNominalRadiusMm||0.3;
+    if(!gPileTemplate){
+      const base=buildSphereTetTemplate(r);
+      gPileTemplateBase=base;
+      gPileTemplate=base;
+    }
+
+    if(gSim){gSim.dispose(); gSim=null;}
+    if(gContainer){gContainer.dispose(gScene); gContainer=null;}
+
+    const halfR=Math.max(1,+document.getElementById('pBoxR').value||3.2);
+    const h=Math.max(1,+document.getElementById('pBoxH').value||7.5);
+    gContainer=new BoxContainer(halfR,h);
+    gContainer.buildMeshes(gScene);
+
+    gSim=new TesterSimulator(gPileTemplate,gContainer,gScene);
+    gSim.numSubsteps=Math.max(1,+document.getElementById('pSubsteps').value|0);
+    gSim.gravity=[0,-Math.abs(+document.getElementById('pGravity').value||0),0];
+    gSim.velDampingPerSec=Math.max(0,+document.getElementById('pDamp').value||0);
+    gSim.wallFriction=(+document.getElementById('sWallMu').value)/100;
+    gSim.contactCompliance=+document.getElementById('sContactC').value;
+
+    onPileEdgeC(document.getElementById('sEdgeC').value);
+    onPileVolC(document.getElementById('sVolC').value);
+    onContactC(document.getElementById('sContactC').value);
+    onWallMuChange(document.getElementById('sWallMu').value);
+
+    // piston slider range: [0..containerHeight]
+    const pist=document.getElementById('sPistonY');
+    if(pist){
+      pist.min="0";
+      pist.max=String(h);
+      // default piston starts near the top
+      const def=Math.max(0.05, h-0.25);
+      pist.value=String(def);
+      document.getElementById('lblPistonY').textContent=def.toFixed(2);
+    }
+    const chk=document.getElementById('chkPiston');
+    if(chk) gContainer.pistonEnabled=!!chk.checked;
+    gContainer.pistonY=+document.getElementById('sPistonY').value;
+    gContainer.updatePistonMesh();
+
+    updateExportBox();
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Main loop
+  // ─────────────────────────────────────────────────────────────
+  const DT=1/60;
+  function update(){
+    requestAnimationFrame(update);
+    if(!gPaused && gSim){
+      gSim.simulate(DT);
+    }
+    if(gSim){
+      document.getElementById('statContacts').textContent=gSim.contactPairs;
+      document.getElementById('statMaxPen').textContent=gSim.maxPenetration.toFixed(4);
+      const strain=gSim.getMaxStrain();
+      document.getElementById('statStrain').textContent=(Math.max(0,strain)*100).toFixed(1)+'%';
+      document.getElementById('statTime').textContent=gSim.simTime.toFixed(3);
+    }
+    gControls && gControls.update();
+    gRenderer.render(gScene,gCamera);
+  }
+
+  (async function boot(){
+    initThree();
+    await populateAssetLibrary();
+    // init labels
+    document.getElementById('lblNomRadius').textContent=(+document.getElementById('sRadius').value).toFixed(3);
+    document.getElementById('lblEdgeC').textContent=(+document.getElementById('sEdgeC').value).toFixed(3);
+    document.getElementById('lblVolC').textContent=document.getElementById('sVolC').value;
+    document.getElementById('lblContactC').textContent=(+document.getElementById('sContactC').value).toFixed(4);
+    onWallMuChange(document.getElementById('sWallMu').value);
+    onReset();
+    onResize();
+    update();
+  })();
+  </script>
+</body>
+</html>
+

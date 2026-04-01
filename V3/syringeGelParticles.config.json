@@ -1,0 +1,38 @@
+{
+  "syringe": {
+    "barrelDiam": 8.5,
+    "barrelLen": 40,
+    "needleDiam": 0.84,
+    "needleLen": 25,
+    "taperH": 2
+  },
+  "particles": {
+    "maxParticles": 300,
+    "initialDrop": 10,
+    "dropMore": 10,
+    "radiusMm": 0.3,
+    "edgeCompliance": 0.9,
+    "volCompliance": 0,
+    "hardenAfterStrainPct": 22,
+    "hardenFactorPct": 20
+  },
+  "physics": {
+    "enablePiston": false,
+    "enableEndCap": true,
+    "pistonSpeed": 1.0,
+    "gravity": 15,
+    "substeps": 20,
+    "wallFriction": 0.75,
+
+    "contactRestDistFactor": 0.94,
+    "contactCompliance": 0.008,
+    "contactIterations": 8,
+    "maxContactCorrFrac": 0.35,
+    "velDampingPerSec": 18
+  },
+  "viz": {
+    "colorMode": "stress",
+    "stressGain": 2
+  }
+}
+
