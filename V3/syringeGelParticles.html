@@ -115,6 +115,11 @@ canvas{display:block}
       <input type="range" id="sRadius" min="0.05" max="2.00" step="0.01" value="0.30"
              oninput="onRadiusChange(this.value)" title="Particle size; changing restarts the simulation"></div>
     <div class="row"><label></label><span id="lblNomRadius" class="statVal">0.300</span></div>
+    <div class="row"><label>Softness</label>
+      <input type="range" id="sSoftness" min="0" max="100" value="50" step="1"
+             oninput="onSoftnessChange(this.value)"
+             title="Convenience control: drives edge + volume compliance (higher = more flexible)"></div>
+    <div class="row"><label></label><span id="lblSoftness" class="statVal">0.50</span></div>
     <div class="row"><label>Edge compliance</label>
       <input type="range"  id="sEdgeC" min="0" max="2" value="0.41" step="0.001"
              oninput="onEdgeCChange(this.value)"></div>
@@ -131,6 +136,20 @@ canvas{display:block}
       <input type="range" id="sHardFactor" min="0" max="100" value="15"
              oninput="onHardFactorChange(this.value)" title="0% = infinitely stiff (edge compliance -> 0), 100% = no change"></div>
     <div class="row"><label></label><span id="lblHardFactor" class="statVal">15%</span></div>
+    <div class="row"><label>Particle lock</label>
+      <input type="checkbox" id="chkParticleLock" onchange="onToggleParticleLock(this.checked)"
+             title="When enabled, particles stop deforming after exceeding the lock strain threshold"></div>
+    <div class="row"><label>Lock after strain</label>
+      <input type="range" id="sLockStrain" min="0" max="200" value="35" step="1"
+             oninput="onLockStrainChange(this.value)" title="Max deformation allowed (percent strain). Particle shape clamps at this level."></div>
+    <div class="row"><label></label><span id="lblLockStrain" class="statVal">35%</span></div>
+    <div class="row"><label>Pick mode</label>
+      <select id="selPickMode" onchange="onPickModeChange(this.value)" style="width:auto" title="Inspector: just pick. Particle lock: click a deformed particle to set lock threshold and lock all >= that deformation.">
+        <option value="inspect" selected>Inspect</option>
+        <option value="lock">Particle lock</option>
+      </select></div>
+    <div class="row"><label></label>
+      <button class="btn" id="btnLockFromPicked" onclick="lockFromPicked()" title="Sets lock threshold from picked particle and locks all particles at that deformation level or greater">Lock &gt;= picked</button></div>
     <div class="row"><label>Show tets</label>
       <input type="checkbox" id="chkTets" onchange="onToggleTets(this.checked)"></div>
   </div>
@@ -373,6 +392,9 @@ class GelParticle {
     this.invMass=new Float32Array(tmpl.numVerts);
     this.restVol=new Float32Array(tmpl.numTets);
     this.edgeLens=new Float32Array(tmpl.numEdges);
+    // "Base" rest-shape for stress visualization (never changes)
+    this.restVol0=new Float32Array(tmpl.numTets);
+    this.edgeLens0=new Float32Array(tmpl.numEdges);
     this.temp  =new Float32Array(12);
     this.grads =new Float32Array(12);
     // compliance (set by simulator)
@@ -382,6 +404,7 @@ class GelParticle {
     this.baseVolCompliance =0.0;
     this.hardened=false;
     this.maxEdgeStrainEver=0;
+    this.locked=false;
     // state
     this.center=new Float32Array(3);
     this.boundingRadius=0;
@@ -409,12 +432,32 @@ class GelParticle {
     for(let i=0;i<this.numTets;i++){
       const vol=this._tetVol(i);
       this.restVol[i]=vol;
+      this.restVol0[i]=vol;
       const pm=vol>0?1/(vol/4):0;
       for(let j=0;j<4;j++)this.invMass[this.tetIds[4*i+j]]+=pm}
     for(let i=0;i<this.numEdges;i++){
       const a=this.edgeIds[2*i],b=this.edgeIds[2*i+1];
-      this.edgeLens[i]=Math.sqrt(vecDistSq(this.pos,a,this.pos,b))}
+      const L=Math.sqrt(vecDistSq(this.pos,a,this.pos,b));
+      this.edgeLens[i]=L;
+      this.edgeLens0[i]=L;}
     this.updateCenter()}
+
+  lockDeformation(){
+    // Freeze the *current* deformed shape as the rest-shape for constraints,
+    // while keeping stress visualization tied to the original rest-shape (edgeLens0/restVol0).
+    if(this.locked) return;
+    for(let i=0;i<this.numEdges;i++){
+      const a=this.edgeIds[2*i],b=this.edgeIds[2*i+1];
+      this.edgeLens[i]=Math.sqrt(vecDistSq(this.pos,a,this.pos,b));
+    }
+    for(let t=0;t<this.numTets;t++){
+      this.restVol[t]=this._tetVol(t);
+    }
+    this.locked=true;
+    // Apply immediately (even if the simulation is paused).
+    this.edgeCompliance=0;
+    this.volCompliance=0;
+  }
 
   _tetVol(nr){
     const i0=this.tetIds[4*nr],i1=this.tetIds[4*nr+1],
@@ -496,7 +539,9 @@ class GelParticle {
     this._stressTet.fill(0);
     for(let e=0;e<this.numEdges;e++){
       const a=this.edgeIds[2*e],b=this.edgeIds[2*e+1];
-      const rest=this.edgeLens[e];
+      // IMPORTANT: do not change how the stress gradient looks.
+      // Always measure against the original rest-shape, even if the particle is deformation-locked.
+      const rest=this.edgeLens0[e];
       if(rest<=1e-12)continue;
       const cur=Math.sqrt(vecDistSq(this.pos,a,this.pos,b));
       const strain=(cur/rest-1);
@@ -506,7 +551,7 @@ class GelParticle {
     }
     // Add volume deviation (captures isotropic compression / pressure)
     for(let t=0;t<this.numTets;t++){
-      const restV=this.restVol[t];
+      const restV=this.restVol0[t];
       if(Math.abs(restV)<=1e-12)continue;
       const curV=this._tetVol(t);
       const dv=Math.abs(curV/restV-1);
@@ -835,6 +880,9 @@ class SyringeSimulator {
     // strain hardening controls (UI-adjustable, live)
     this.hardStrain=0.18;     // 18% strain threshold
     this.hardFactor=0.15;     // compliance multiplier after hardening
+    // deformation lock controls
+    this.particleLockEnabled=false;
+    this.lockStrain=0.35;     // 35% strain threshold (0..inf; UI clamps)
     // gel-like tuning (defaults)
     this.velDampingPerSec=18.0;    // higher = more “gel”, less liquid slosh
     this.wallFriction=0.65;        // 0..1; tangential damping when touching syringe walls/cap/piston
@@ -996,8 +1044,20 @@ class SyringeSimulator {
       p.prevPos[3*i+2]=p.pos[3*i+2];
       p.vel[3*i]=p.vel[3*i+1]=p.vel[3*i+2]=0;
     }
+    // If this particle was previously deformation-locked, restore original rest-shape.
+    // (Otherwise re-used particles can start with stale constraint rest lengths/volumes,
+    // which skews deformation + stress distribution.)
+    for(let e=0;e<p.numEdges;e++){
+      p.edgeLens[e]=p.edgeLens0[e];
+    }
+    for(let t=0;t<p.numTets;t++){
+      p.restVol[t]=p.restVol0[t];
+    }
     p.hardened=false;
     p.maxEdgeStrainEver=0;
+    p.locked=false;
+    p.edgeCompliance=p.baseEdgeCompliance;
+    p.volCompliance=p.baseVolCompliance;
     p.active=true;
     p.updateCenter();
   }
@@ -1242,9 +1302,20 @@ class SyringeSimulator {
       if(!p.active)continue;
       const cur=p.computeMaxEdgeStrain();
       if(cur>thr)p.hardened=true;
-      const mul=p.hardened ? factor : 1.0;
-      p.edgeCompliance=p.baseEdgeCompliance*mul;
-      p.volCompliance =p.baseVolCompliance*mul;
+      // Deformation lock: once max deformation exceeds threshold, freeze the shape.
+      if(this.particleLockEnabled && !p.locked && p.maxEdgeStrainEver>=this.lockStrain){
+        p.lockDeformation();
+      }
+      if(p.locked){
+        // Locked particles must not deform further, even under additional piling/compression.
+        // Keep compliance at zero so constraints enforce the locked shape.
+        p.edgeCompliance=0;
+        p.volCompliance =0;
+      }else{
+        const mul=p.hardened ? factor : 1.0;
+        p.edgeCompliance=p.baseEdgeCompliance*mul;
+        p.volCompliance =p.baseVolCompliance*mul;
+      }
     }
     // update visuals
     for(const p of this.particles)p.updateVisMesh(this.allPositions);
@@ -1341,31 +1412,54 @@ class SyringeSimulator {
   /** OBJ export: returns the full scene as an OBJ string. */
   exportToOBJ(){
     let s=`# Syringe Gel-Particle Simulation\n`;
-    s+=`# t=${this.simTime.toFixed(3)} s   particles=${this.particles.length}\n\n`;
+    const activeCount=this.particles.reduce((acc,p)=>acc+(p.active?1:0),0);
+    s+=`# t=${this.simTime.toFixed(3)} s   particles_active=${activeCount} (of ${this.particles.length})\n\n`;
     let vOff=1;
-    // syringe meshes
-    for(const {name,mesh} of this.syringe.meshes){
-      const geo=mesh.geometry;
-      const pos=geo.attributes.position.array;
-      const idx=geo.index?geo.index.array:null;
-      if(!pos||pos.length<3)continue;
-      // ensure matrixWorld is current (important for the moving piston)
-      mesh.updateWorldMatrix(true,false);
-      const wm=mesh.matrixWorld;
-      s+=`o ${name}\n`;
+    const writeMeshOBJ=(obj, objName)=>{
+      if(!obj) return;
+      // Groups have no geometry; export their children.
+      if(obj.children && obj.children.length){
+        for(let i=0;i<obj.children.length;i++){
+          writeMeshOBJ(obj.children[i], `${objName}_${i}`);
+        }
+        return;
+      }
+      const geo=obj.geometry;
+      const pos=geo?.attributes?.position?.array;
+      const idx=geo?.index ? geo.index.array : null;
+      if(!pos || pos.length<3) return;
+      obj.updateWorldMatrix(true,false);
+      const wm=obj.matrixWorld;
+      s+=`o ${objName}\n`;
       for(let i=0;i<pos.length;i+=3){
         const v=new THREE.Vector3(pos[i],pos[i+1],pos[i+2]).applyMatrix4(wm);
-        s+=`v ${v.x.toFixed(4)} ${v.y.toFixed(4)} ${v.z.toFixed(4)}\n`}
-      if(idx){for(let i=0;i<idx.length;i+=3)
-        s+=`f ${idx[i]+vOff} ${idx[i+1]+vOff} ${idx[i+2]+vOff}\n`}
-      vOff+=pos.length/3;s+='\n'}
+        s+=`v ${v.x.toFixed(4)} ${v.y.toFixed(4)} ${v.z.toFixed(4)}\n`;
+      }
+      if(idx){
+        for(let i=0;i<idx.length;i+=3){
+          s+=`f ${idx[i]+vOff} ${idx[i+1]+vOff} ${idx[i+2]+vOff}\n`;
+        }
+      }
+      vOff+=pos.length/3;
+      s+='\n';
+    };
+    // syringe meshes
+    for(const {name,mesh} of this.syringe.meshes){
+      writeMeshOBJ(mesh, name);
+    }
     // particles
     for(let pi=0;pi<this.particles.length;pi++){
       const p=this.particles[pi];
+      if(!p.active) continue; // Skip hidden/offscreen particles (Rhino often fails on huge OFF coords)
+      if(!Number.isFinite(p.center?.[0]) || Math.abs(p.center[0])>1e6 ||
+         !Number.isFinite(p.center?.[1]) || Math.abs(p.center[1])>1e6 ||
+         !Number.isFinite(p.center?.[2]) || Math.abs(p.center[2])>1e6) continue;
       s+=`o particle_${String(pi+1).padStart(4,'0')}\n`;
       for(let i=0;i<p.numVisVerts;i++){
         const b=(p.visVertOffset+i)*3;
-        s+=`v ${this.allPositions[b].toFixed(4)} ${this.allPositions[b+1].toFixed(4)} ${this.allPositions[b+2].toFixed(4)}\n`}
+        const x=this.allPositions[b], y=this.allPositions[b+1], z=this.allPositions[b+2];
+        if(!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+        s+=`v ${x.toFixed(4)} ${y.toFixed(4)} ${z.toFixed(4)}\n`}
       const ids=p.visTriIds;
       for(let i=0;i<ids.length;i+=3)
         s+=`f ${ids[i]+vOff} ${ids[i+1]+vOff} ${ids[i+2]+vOff}\n`;
@@ -1481,6 +1575,8 @@ let gNominalRadiusMm=0.3;
 let gPaused=true, gFrameIdx=0;
 let gRaycaster=null,gPointer=null,gPickedParticle=-1;
 let gTuningOverrides={}; // loaded from config.json (optional)
+let gPickMode='inspect'; // 'inspect' | 'lock'
+let gPickMarker=null;
 
 // ═══════════════════════════════════════════════════════════════
 // 7b.  ASSET LIBRARY POPULATION (assets/*.json + default sphere)
@@ -1601,7 +1697,47 @@ function initThreeScene(){
   gCamCtrl.update();
   _updateCameraClipFromZoom();
 
+  // Pick marker: wireframe sphere around selected particle (visual only).
+  // depthTest=false so it always shows on top of the particle/walls.
+  const pmGeo=new THREE.SphereGeometry(1, 18, 14);
+  const pmMat=new THREE.MeshBasicMaterial({color:0x00c8ff,wireframe:true,transparent:true,opacity:0.9,depthTest:false});
+  gPickMarker=new THREE.Mesh(pmGeo, pmMat);
+  gPickMarker.visible=false;
+  gPickMarker.renderOrder=999;
+  gScene.add(gPickMarker);
+
   window.addEventListener('resize',onResize,false);}
+
+function updatePickedVisual(){
+  if(!gPickMarker){
+    return;
+  }
+  if(!gSimulator || gPickedParticle<0 || gPickedParticle>=gSimulator.particles.length){
+    gPickMarker.visible=false;
+    return;
+  }
+  const p=gSimulator.particles[gPickedParticle];
+  if(!p || !p.active){
+    gPickMarker.visible=false;
+    return;
+  }
+  // Defensive: ignore offscreen/disabled particles.
+  if(!Number.isFinite(p.center[0]) || Math.abs(p.center[0])>1e8 ||
+     !Number.isFinite(p.center[1]) || Math.abs(p.center[1])>1e8 ||
+     !Number.isFinite(p.center[2]) || Math.abs(p.center[2])>1e8){
+    gPickMarker.visible=false;
+    return;
+  }
+  // Make it clearly visible even for tiny particles.
+  const r=Math.max(0.25, (p.boundingRadius||0) * 1.35);
+  gPickMarker.position.set(p.center[0], p.center[1], p.center[2]);
+  gPickMarker.scale.set(r, r, r);
+  const mat=gPickMarker.material;
+  if(mat && mat.color){
+    mat.color.setHex(p.locked ? 0xff55aa : 0x00c8ff);
+  }
+  gPickMarker.visible=true;
+}
 
 function _focusTarget(x,y,z, keepDistance=true){
   if(!gCamCtrl||!gCamera)return;
@@ -1626,6 +1762,7 @@ function focusPicked(){
   if(!gSimulator||gPickedParticle<0)return;
   const p=gSimulator.particles[gPickedParticle];
   if(!p||!p.active)return;
+  updatePickedVisual();
   _focusTarget(p.center[0],p.center[1],p.center[2],true);
 }
 
@@ -1637,7 +1774,16 @@ function onPickParticle(ev){
   gPointer.set(x,y);
   gRaycaster.setFromCamera(gPointer,gCamera);
   const hits=gRaycaster.intersectObject(gSimulator.particleMesh,false);
-  if(!hits||hits.length===0)return;
+  if(!hits||hits.length===0){
+    // Clicked empty space -> deselect.
+    gPickedParticle=-1;
+    updatePickedVisual();
+    const elD=document.getElementById('statDims');
+    const elR=document.getElementById('statRmax');
+    if(elD) elD.textContent='—';
+    if(elR) elR.textContent='—';
+    return;
+  }
   const h=hits[0];
   let visVertIdx=-1;
   // Prefer face vertex index when available
@@ -1657,8 +1803,22 @@ function onPickParticle(ev){
   if(visVertIdx<0)return;
   const pi=gSimulator.getParticleIndexFromVisVert(visVertIdx);
   if(pi<0)return;
+  // Clicking the same particle again toggles deselect.
+  if(pi===gPickedParticle){
+    gPickedParticle=-1;
+    updatePickedVisual();
+    const elD=document.getElementById('statDims');
+    const elR=document.getElementById('statRmax');
+    if(elD) elD.textContent='—';
+    if(elR) elR.textContent='—';
+    return;
+  }
   gPickedParticle=pi;
   gSimulator.updateInspector(pi);
+  updatePickedVisual();
+  if(gPickMode==='lock'){
+    lockFromPicked();
+  }
 }
 
 function onResize(){
@@ -1722,12 +1882,17 @@ function initSimulation(){
     if(Number.isFinite(+o.stressSampleEveryNFrames)) gSimulator.stressSampleEveryNFrames=Math.max(1,Math.floor(+o.stressSampleEveryNFrames));
     if(Number.isFinite(+o.normalSampleEveryNFrames)) gSimulator.normalSampleEveryNFrames=Math.max(1,Math.floor(+o.normalSampleEveryNFrames));
     if(Number.isFinite(+o.stressPercentile)) gSimulator.stressPercentile=Math.max(0,Math.min(0.999,+o.stressPercentile));
+    if(o.particleLockEnabled===true || o.particleLockEnabled===false) gSimulator.particleLockEnabled=!!o.particleLockEnabled;
+    if(Number.isFinite(+o.lockStrain)) gSimulator.lockStrain=Math.max(0, +o.lockStrain);
   }
   // apply current UI-controlled material params
   onEdgeCChange(document.getElementById('sEdgeC').value);
   onVolCChange(document.getElementById('sVolC').value);
   onHardStrainChange(document.getElementById('sHardStrain').value);
   onHardFactorChange(document.getElementById('sHardFactor').value);
+  onToggleParticleLock(document.getElementById('chkParticleLock')?.checked ?? false);
+  onLockStrainChange(document.getElementById('sLockStrain')?.value ?? 35);
+  onPickModeChange(document.getElementById('selPickMode')?.value ?? 'inspect');
   onWallMuChange(document.getElementById('sWallMu')?.value ?? 65);
   onStressGainChange(document.getElementById('sStressGain')?.value ?? 120);
   onColorModeChange(document.getElementById('selColorMode')?.value ?? 'contact');
@@ -1771,6 +1936,25 @@ function onVolCChange(v){
     p.volCompliance=+v;
   }}
 
+function onSoftnessChange(v){
+  // Softness is a convenience mapping to the existing compliance sliders:
+  // higher softness => higher compliance => more flexy particles.
+  const pct=Math.max(0,Math.min(100,+v));
+  const t=pct/100;
+  // Quadratic curve: finer control at low softness.
+  const q=t*t;
+  const edgeC = 0.02 + (2.0-0.02)*q;   // 0..2 slider range (avoid exact 0 at stiff end)
+  const volC  = 0.0  + (50.0-0.0)*q;   // 0..50 slider range
+  const lbl=document.getElementById('lblSoftness');
+  if(lbl) lbl.textContent=t.toFixed(2);
+  const eEl=document.getElementById('sEdgeC');
+  const vEl=document.getElementById('sVolC');
+  if(eEl) eEl.value=String(edgeC);
+  if(vEl) vEl.value=String(volC);
+  onEdgeCChange(edgeC);
+  onVolCChange(volC);
+}
+
 function onHardStrainChange(v){
   const pct=Math.max(0,+v);
   document.getElementById('lblHardStrain').textContent=pct.toFixed(0)+'%';
@@ -1780,6 +1964,54 @@ function onHardFactorChange(v){
   const pct=Math.max(0,Math.min(100,+v));
   document.getElementById('lblHardFactor').textContent=pct.toFixed(0)+'%';
   if(gSimulator)gSimulator.hardFactor=pct/100;
+}
+
+function onToggleParticleLock(on){
+  const enabled=!!on;
+  if(gSimulator) gSimulator.particleLockEnabled=enabled;
+}
+
+function onLockStrainChange(v){
+  const pct=Math.max(0, Math.min(200, +v));
+  const el=document.getElementById('lblLockStrain');
+  if(el) el.textContent=pct.toFixed(0)+'%';
+  if(gSimulator) gSimulator.lockStrain=pct/100;
+}
+
+function onPickModeChange(v){
+  gPickMode=(v==='lock')?'lock':'inspect';
+}
+
+function lockFromPicked(){
+  if(!gSimulator) return;
+  if(gPickedParticle<0 || gPickedParticle>=gSimulator.particles.length) return;
+  const p=gSimulator.particles[gPickedParticle];
+  if(!p || !p.active) return;
+  // Use the particle's lifetime max deformation as the selection signal.
+  const thr = Math.max(0, p.maxEdgeStrainEver || 0);
+  // Enable lock + set UI slider to match.
+  const chk=document.getElementById('chkParticleLock');
+  if(chk) chk.checked=true;
+  onToggleParticleLock(true);
+  const slider=document.getElementById('sLockStrain');
+  if(slider) slider.value=String(Math.max(0, Math.min(200, Math.round(thr*100))));
+  onLockStrainChange(thr*100);
+  // Lock all particles with that deformation level or greater.
+  for(const q of gSimulator.particles){
+    if(!q.active) continue;
+    if(q.locked) continue;
+    if((q.maxEdgeStrainEver||0) >= thr){
+      q.lockDeformation();
+    }
+  }
+  // Ensure locked compliance is applied immediately even while paused.
+  for(const q of gSimulator.particles){
+    if(!q.active) continue;
+    if(!q.locked) continue;
+    q.edgeCompliance=0;
+    q.volCompliance=0;
+  }
+  updatePickedVisual();
 }
 
 function onWallMuChange(v){
@@ -1897,8 +2129,32 @@ async function loadUIConfig(){
       setNum('pInitCount', cfg.particles.initialDrop);
       setNum('pDropCount', cfg.particles.dropMore);
       setNum('sRadius',    cfg.particles.radiusMm);
+      if(cfg.particles.softness!==undefined){
+        const t=+cfg.particles.softness;
+        if(Number.isFinite(t)){
+          setNum('sSoftness', Math.max(0,Math.min(100, Math.round(t*100))));
+        }
+      }
+      if(cfg.particles.softnessPct!==undefined){
+        const pct=+cfg.particles.softnessPct;
+        if(Number.isFinite(pct)){
+          setNum('sSoftness', Math.max(0,Math.min(100, Math.round(pct))));
+        }
+      }
       setNum('sEdgeC',     cfg.particles.edgeCompliance);
       setNum('sVolC',      cfg.particles.volCompliance);
+      // Particle lock (optional)
+      if(cfg.particles.particleLockEnabled!==undefined){
+        const el=document.getElementById('chkParticleLock');
+        if(el) el.checked=!!cfg.particles.particleLockEnabled;
+      }
+      if(cfg.particles.lockAfterStrainPct!==undefined){
+        const pct=Math.max(0, Math.min(200, +cfg.particles.lockAfterStrainPct));
+        if(Number.isFinite(pct)){
+          const el=document.getElementById('sLockStrain');
+          if(el) el.value=String(pct);
+        }
+      }
     }
 
     // Physics
@@ -1951,6 +2207,10 @@ async function loadUIConfig(){
     }
     onEdgeCChange(document.getElementById('sEdgeC')?.value ?? 0);
     onVolCChange(document.getElementById('sVolC')?.value ?? 0);
+    onSoftnessChange(document.getElementById('sSoftness')?.value ?? 50);
+    onLockStrainChange(document.getElementById('sLockStrain')?.value ?? 35);
+    onToggleParticleLock(document.getElementById('chkParticleLock')?.checked ?? false);
+    onPickModeChange(document.getElementById('selPickMode')?.value ?? 'inspect');
     onWallMuChange(document.getElementById('sWallMu')?.value ?? 65);
     onStressGainChange(document.getElementById('sStressGain')?.value ?? 120);
 
@@ -2116,62 +2376,98 @@ function _download(content,filename,type){
 // ═══════════════════════════════════════════════════════════════
 // 10.  MAIN LOOP
 // ═══════════════════════════════════════════════════════════════
-const DT=1/60;
-let _lastMs=0;
-function update(){
-  requestAnimationFrame(update);
+// Rendering is driven by requestAnimationFrame (for smooth visuals),
+// but physics stepping is driven by a timer so it can continue (as much as
+// the browser allows) even when the tab is not visible.
+const FIXED_DT = 1/60;
+const PHYSICS_HZ = 60;
+const MAX_CATCHUP_SEC = 3.0;     // avoid huge stalls after long tab sleep
+const MAX_STEP_DT = 0.25;        // clamp per-tick dt to keep solver stable
+
+let _lastFrameMs = 0;
+let _lastPhysicsMs = 0;
+let _physicsAcc = 0;
+let _renderMsEMA = 0;
+
+function _stepPhysics(dt){
+  if(!gSimulator) return;
+  // Break long dt into fixed steps for stability and consistent behavior.
+  dt = Math.max(0, Math.min(MAX_STEP_DT, dt));
+  _physicsAcc += dt;
+  // Cap catch-up so coming back after minutes doesn't freeze the tab.
+  _physicsAcc = Math.min(_physicsAcc, MAX_CATCHUP_SEC);
+  while(_physicsAcc >= FIXED_DT){
+    gSimulator.simulate(FIXED_DT);
+    gSimulator.pushContactRow(gFrameIdx, FIXED_DT);
+    gFrameIdx++;
+    _physicsAcc -= FIXED_DT;
+  }
+}
+
+function _physicsTick(){
+  const now = performance.now();
+  if(!_lastPhysicsMs) _lastPhysicsMs = now;
+  const dt = (now - _lastPhysicsMs) / 1000;
+  _lastPhysicsMs = now;
+  if(!gPaused && gSimulator) _stepPhysics(dt);
+}
+
+function _updateStats(){
+  if(!gSimulator) return;
+  const st=gSimulator.getContactStats();
+  document.getElementById('statContacts').textContent=st.totalContacts;
+  document.getElementById('statMaxPen').textContent=st.maxPenetration.toFixed(4);
+  document.getElementById('statAvgC').textContent=st.avgContacts.toFixed(2);
+  document.getElementById('statDisp').textContent=gSimulator.dispensed;
+  document.getElementById('statTime').textContent=gSimulator.simTime.toFixed(3);
+  document.getElementById('statMs').textContent=_renderMsEMA.toFixed(1);
+  document.getElementById('lblPistonY').textContent=
+    gSimulator.syringe.pistonY.toFixed(2)+' mm';
+
+  // Manual piston UI: becomes available once piston bottoms out (or when user uses it).
+  const sp=gSimulator.syringe;
+  if(sp){
+    const row=document.getElementById('rowPistonManual');
+    const rowv=document.getElementById('rowPistonManualVal');
+    const slider=document.getElementById('sPistonManual');
+    const num=document.getElementById('nPistonManual');
+    const lbl=document.getElementById('lblPistonManual');
+    const show=!!sp.pistonEnabled && !!sp.pistonManualEnabled;
+    if(row) row.style.display=show?'flex':'none';
+    if(rowv)rowv.style.display=show?'flex':'none';
+    if(show && slider){
+      const minY=sp.needleLen+0.01;
+      const maxY=sp._barrelTop;
+      if(+slider.min!==minY) slider.min=String(minY);
+      if(+slider.max!==maxY) slider.max=String(maxY);
+      if(!slider.matches(':active')) slider.value=String(sp.pistonY);
+    }
+    if(show && num){
+      const minY=sp.needleLen+0.01;
+      const maxY=sp._barrelTop;
+      if(+num.min!==minY) num.min=String(minY);
+      if(+num.max!==maxY) num.max=String(maxY);
+      if(!num.matches(':focus')) num.value=String(sp.pistonY.toFixed(3));
+    }
+    if(show && lbl) lbl.textContent=sp.pistonY.toFixed(2)+' mm';
+  }
+}
+
+function _renderLoop(){
+  requestAnimationFrame(_renderLoop);
   const t0=performance.now();
-  if(!gPaused&&gSimulator){
-    gSimulator.simulate(DT);
-    gSimulator.pushContactRow(gFrameIdx,DT);
-    gFrameIdx++;}
+
   if(gSimulator && gPickedParticle>=0 && gPickedParticle<gSimulator.particles.length){
     gSimulator.updateInspector(gPickedParticle);
+    updatePickedVisual();
   }
   gCamCtrl.update();
   gRenderer.render(gScene,gCamera);
-  const ms=performance.now()-t0;
-  _lastMs=_lastMs*.85+ms*.15;
-  // update stats
-  if(gSimulator){
-    const st=gSimulator.getContactStats();
-    document.getElementById('statContacts').textContent=st.totalContacts;
-    document.getElementById('statMaxPen').textContent=st.maxPenetration.toFixed(4);
-    document.getElementById('statAvgC').textContent=st.avgContacts.toFixed(2);
-    document.getElementById('statDisp').textContent=gSimulator.dispensed;
-    document.getElementById('statTime').textContent=gSimulator.simTime.toFixed(3);
-    document.getElementById('statMs').textContent=_lastMs.toFixed(1);
-    document.getElementById('lblPistonY').textContent=
-      gSimulator.syringe.pistonY.toFixed(2)+' mm';
 
-    // Manual piston UI: becomes available once piston bottoms out (or when user uses it).
-    const sp=gSimulator.syringe;
-    if(sp){
-      const row=document.getElementById('rowPistonManual');
-      const rowv=document.getElementById('rowPistonManualVal');
-      const slider=document.getElementById('sPistonManual');
-      const num=document.getElementById('nPistonManual');
-      const lbl=document.getElementById('lblPistonManual');
-      const show=!!sp.pistonEnabled && !!sp.pistonManualEnabled;
-      if(row) row.style.display=show?'flex':'none';
-      if(rowv)rowv.style.display=show?'flex':'none';
-      if(show && slider){
-        const minY=sp.needleLen+0.01;
-        const maxY=sp._barrelTop;
-        if(+slider.min!==minY) slider.min=String(minY);
-        if(+slider.max!==maxY) slider.max=String(maxY);
-        if(!slider.matches(':active')) slider.value=String(sp.pistonY);
-      }
-      if(show && num){
-        const minY=sp.needleLen+0.01;
-        const maxY=sp._barrelTop;
-        if(+num.min!==minY) num.min=String(minY);
-        if(+num.max!==maxY) num.max=String(maxY);
-        if(!num.matches(':focus')) num.value=String(sp.pistonY.toFixed(3));
-      }
-      if(show && lbl) lbl.textContent=sp.pistonY.toFixed(2)+' mm';
-    }
-  }}
+  const ms=performance.now()-t0;
+  _renderMsEMA=_renderMsEMA*0.85 + ms*0.15;
+  _updateStats();
+}
 
 // ── Boot ──────────────────────────────────────────────────────
 (async function boot(){
@@ -2180,7 +2476,10 @@ function update(){
   await loadUIConfig();
   initSimulation();
   onResize();
-  update();
+  // Physics timer continues (best-effort) in background tabs.
+  _lastPhysicsMs = performance.now();
+  setInterval(_physicsTick, 1000/PHYSICS_HZ);
+  _renderLoop();
 })();
 </script>
 </body>

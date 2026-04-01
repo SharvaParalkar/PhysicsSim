@@ -20,14 +20,14 @@
     "enablePiston": false,
     "enableEndCap": true,
     "pistonSpeed": 1.0,
-    "gravity": 15,
+    "gravity": 70,
     "substeps": 20,
     "wallFriction": 0.75,
     "wallAllowPenetrationMm": 0.08,
 
-    "contactRestDistFactor": 0.94,
+    "contactRestDistFactor": 0.99,
     "contactCompliance": 0.008,
-    "contactIterations": 8,
+    "contactIterations": 10,
     "maxContactCorrFrac": 0.35,
     "velDampingPerSec": 18
   },
