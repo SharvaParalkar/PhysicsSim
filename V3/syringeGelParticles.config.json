@@ -8,35 +8,59 @@
   },
   "particles": {
     "maxParticles": 300,
-    "initialDrop": 10,
-    "dropMore": 10,
+    "initialDrop": 1,
+    "dropMore": 1,
     "radiusMm": 0.3,
     "edgeCompliance": 14.0,
     "volCompliance": 0.03,
     "hardenAfterStrainPct": 999,
-    "hardenFactorPct": 100
+    "hardenFactorPct": 100,
+    "particleLockEnabled": false,
+    "lockAfterStrainPct": 35
   },
   "physics": {
-    "enablePiston": false,
+    "containerMode": "syringe",
+    "volumeBox_mm": {
+      "widthMm": 1,
+      "heightMm": 5,
+      "depthMm": 1,
+      "centerX_mm": 0,
+      "centerY_mm": 10,
+      "centerZ_mm": 0
+    },
+
     "enableEndCap": true,
-    "pistonSpeed": 1.0,
+    "blockNeedleInlet": false,
+
+    "cohesiveExtrusionWhenUncapped": false,
+    "extrusionLockDelaySec": 1.5,
+    "extrusionBondMaxFactor": 0.94,
+    "extrusionFilamentAxialMin": 0.28,
+    "extrusionCohesionCompliance": 0.004,
+
+    "filamentGuideEnabled": false,
+    "filamentGuideMarginMm": 0.55,
+
+    "catchTrayTopY_mm": -7,
+
     "gravity": 70,
-    "substeps": 20,
+    "substeps": 12,
     "wallFriction": 0.75,
     "wallAllowPenetrationMm": 0.08,
 
-    "contactRestDistFactor": 0.99,
+    "contactRestDistFactor": 0.94,
+    "contactBoundingWeight": 0.5,
     "contactCompliance": 0.008,
-    "contactIterations": 10,
-    "maxContactCorrFrac": 0.35,
+    "contactIterations": 7,
+    "maxContactCorrFrac": 0.48,
     "velDampingPerSec": 18
   },
   "viz": {
     "colorMode": "stress",
     "stressGain": 0.72,
+    "stressDepthMix": 0.52,
     "stressPercentile": 0.9,
     "stressSampleEveryNFrames": 4,
     "normalSampleEveryNFrames": 24
   }
 }
-
