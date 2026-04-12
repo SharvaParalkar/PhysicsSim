@@ -10,7 +10,8 @@
 #   python obj_to_tet_json.py input.obj output.json [options]
 #
 # Options:
-#   --resolution INT      Interior sampling resolution (default: 10, 0 = surface only)
+#   --resolution INT      Interior grid resolution (default: 10). Use >=5 for solid
+#                         volumes; 0 = surface vertices only (thin shells, not solids).
 #   --min-quality FLOAT   Minimum tet quality threshold (default: 0.001)
 #   --one-face-per-tet    Store shared vertex indices (default: True)
 #   --scale FLOAT         Tet shrink scale for exploded view (default: 1.0)
@@ -126,10 +127,13 @@ class BVHTree:
 # Helpers (direct ports)
 # ---------------------------------------------------------------------------
 
+# Fix this in preprocess.py
 DIRS = [
-    Vec3(1,0,0), Vec3(0,-1,0), Vec3(0,1,0),
-    Vec3(0,-1,0), Vec3(0,0,1), Vec3(0,0,-1),
+    Vec3(1,0,0), Vec3(-1,0,0), # Must have both positive and negative X
+    Vec3(0,1,0), Vec3(0,-1,0), 
+    Vec3(0,0,1), Vec3(0,0,-1),
 ]
+
 TET_FACES = [[2,1,0], [0,1,3], [1,2,3], [2,0,3]]
 
 
@@ -558,6 +562,9 @@ def obj_to_tet_json(obj_path, json_path, resolution=10, min_quality=0.001,
     center=center/len(tet_verts)
     radius=max((p-center).magnitude for p in tet_verts)
 
+    if resolution == 0:
+        print("  Warning: --resolution 0 adds no interior seeds (surface verts only). "
+              "Closed solids often get few or no valid tets; use --resolution >= 5 for solids.")
     if resolution>0:
         dims=bmax-bmin
         dim=max(dims.x,dims.y,dims.z); h=dim/resolution
@@ -575,8 +582,13 @@ def obj_to_tet_json(obj_path, json_path, resolution=10, min_quality=0.001,
 
     print(f"  {len(tet_verts)} sample points total")
 
-    s=5.0*radius
-    tet_verts+=[Vec3(-s,0,-s),Vec3(s,0,-s),Vec3(0,s,s),Vec3(0,-s,s)]
+    s = 5.0 * radius
+    tet_verts += [
+        Vec3(center.x - s, center.y, center.z - s),
+        Vec3(center.x + s, center.y, center.z - s),
+        Vec3(center.x, center.y + s, center.z + s),
+        Vec3(center.x, center.y - s, center.z + s),
+    ]
 
     tet_id_list=create_tet_ids(tet_verts,tree,min_quality)
     num_tets=len(tet_id_list)//4
@@ -654,7 +666,7 @@ def main():
     parser.add_argument("input",  help="Input .obj file")
     parser.add_argument("output", help="Output .json file")
     parser.add_argument("--resolution",       type=int,   default=10,
-                        help="Interior sampling resolution (default: 10, 0=surface only)")
+                        help="Interior grid resolution (default: 10; >=5 for solids; 0=surface only, for thin shells)")
     parser.add_argument("--min-quality",      type=float, default=0.001,
                         help="Minimum tet quality 0–1 (default: 0.001)")
     parser.add_argument("--one-face-per-tet", action="store_true", default=True,

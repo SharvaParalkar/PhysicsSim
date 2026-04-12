@@ -22,6 +22,12 @@
     2. Click "Load particle JSON" and select my_particle.json.
     3. Click "Restart" to populate the syringe with the new shape.
 
+  Fill a mesh with particles (box mode):
+    - Toolbar “Fill volume OBJ” + Container → Invisible box volume (closed watertight OBJ, mm).
+    - Optional “Auto-fit box to mesh” resizes the physics box to the mesh bounds + padding.
+    - The OBJ is also used as an inner wall: the particle’s centroid is kept in as a sphere (nominal radius),
+      with one rigid shift per solve so the soft body doesn’t “ragdoll” against per-vertex projections.
+
   MIT License — based on Matthias Müller "Ten Minute Physics" code patterns.
 -->
 <html lang="en">
@@ -97,7 +103,7 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
   <button class="btn"        onclick="exportOBJ()">Export OBJ</button>
   <button class="btn"        onclick="exportPoresOBJ()" title="Empty space inside the fluid domain minus gel (void mesh). Smooth isosurface via marching cubes + vertex normals when Performance → Smooth pore mesh is on.">Export pores (OBJ)</button>
   <button class="btn"        onclick="exportPLYColors()" title="Exports particles with vertex colors (stress/contact gradient)">Export PLY (colors)</button>
-  <button class="btn"        onclick="exportMetricsCSV()" title="Single CSV: P2P contacts, overlap, Hertz patch-area proxy, force proxy, motion &amp; strain, settle flags — logs whole run; export anytime">Export metrics CSV</button>
+  <button class="btn"        onclick="exportMetricsCSV()" title="CSV: P2P contacts, contact area, force stats, porosity (box), motion &amp; strain, settle flags. Timer mode logs for a wall-clock window after Run / Drop.">Export metrics CSV</button>
   <label>Library:
     <select id="particleLibrary" onchange="onSelectLibrary(this.value)" style="width:auto">
       <option value="__default__">Default sphere</option>
@@ -105,6 +111,9 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
   </label>
   <label>Particle JSON: <input type="file" id="particleFile" accept=".json"
          onchange="loadParticleJSON(event)" style="width:auto;font-size:11px"></label>
+  <label title="Closed watertight mesh (mm). Spawns inside mesh in Invisible box mode; use Container → Auto-fit.">Fill volume OBJ:
+    <input type="file" id="fillVolumeObjFile" accept=".obj,.OBJ,text/plain"
+           onchange="loadFillVolumeObj(event)" style="width:auto;font-size:11px"></label>
 </div>
 
 <div id="main">
@@ -120,11 +129,21 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
         <option value="syringe" selected>Syringe (visible)</option>
         <option value="volume">Invisible box volume</option>
       </select></div>
+    <div class="row"><label>Auto-fit box to mesh</label>
+      <input type="checkbox" id="chkFillMeshAutofit" checked
+             title="Set width/height/depth and center from mesh AABB + padding (box mode)"></div>
+    <div class="row"><label>Show fill mesh</label>
+      <input type="checkbox" id="chkFillMeshShow" checked onchange="onFillMeshShowChange()"
+             title="Semi-transparent preview when Invisible box mode is on"></div>
+    <div class="row"><label></label>
+      <button type="button" class="btn" onclick="clearFillVolumeObj()">Clear fill mesh</button></div>
+    <div class="row"><label></label>
+      <span style="font-size:11px;color:#7a9abd">Load mesh from the top bar (“Fill volume OBJ”). Set Mode to Invisible box volume for spawn layout + box size fields.</span></div>
     <div id="wrapVolumeDims" style="display:none">
     <div class="row"><label>Width X (mm)</label>
       <input type="number" id="pVolW" value="1" min="0.5" max="400" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
     <div class="row"><label>Height Y (mm)</label>
-      <input type="number" id="pVolH" value="5" min="0.5" max="400" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
+      <input type="number" id="pVolH" value="20" min="0.5" max="400" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
     <div class="row"><label>Depth Z (mm)</label>
       <input type="number" id="pVolD" value="1" min="0.5" max="400" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
     <div class="row"><label>Center X</label>
@@ -133,6 +152,10 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
       <input type="number" id="pVolCy" value="10" step="0.5" title="Box center Y (mm)" oninput="syncVolumeOutlinePreview()"></div>
     <div class="row"><label>Center Z</label>
       <input type="number" id="pVolCz" value="0" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
+    <div class="row"><label>Drop height (mm)</label>
+      <input type="number" id="pVolDropH" value="0" min="0" max="200" step="0.5"
+             oninput="onVolDropHeightInput()"
+             title="Extra height above the box inner top for Drop / spawns (mm). Timer mode defaults this to 20 mm."></div>
     </div>
     <div class="row"><label></label>
       <span style="font-size:11px;color:#7a9abd">Switching mode auto-restarts. Resize the box, then Restart to apply bounds.</span></div>
@@ -166,6 +189,16 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
       <input type="number" id="pDropCount" value="1" min="1" max="2000" step="1" title="How many to add when pressing Drop"></div>
     <div class="row"><label></label>
       <button class="btn" id="btnDropMore" onclick="onDropMore()" title="Activate more particles without rebuilding the sim">Drop</button></div>
+    <div class="row"><label>Timer export mode</label>
+      <input type="checkbox" id="chkTimerExport" onchange="onTimerExportModeChange(this.checked)"
+             title="After each Drop: log for 60 s wall-clock time (settle auto-pause off), then pause and auto-download CSV. Defaults to invisible box and 20 mm drop height."></div>
+    <div class="row"><label>Capture window (real s)</label>
+      <input type="number" id="pTimerCaptureS" value="60" min="0.25" max="3600" step="0.25"
+             oninput="onTimerCaptureInput()"
+             title="Wall-clock seconds after each Drop: metrics + physics run until this real-time limit, then pause and auto-download CSV (independent of sim time / speed)"></div>
+    <div class="row"><label>Auto-save CSV</label>
+      <input type="checkbox" id="chkTimerAutoCsv" checked onchange="onTimerAutoCsvChange(this.checked)"
+             title="When the capture window ends, download the metrics CSV automatically"></div>
     <div class="row"><label>Nominal radius (mm)</label>
       <input type="range" id="sRadius" min="0.05" max="2.00" step="0.01" value="0.30"
              oninput="onRadiusChange(this.value)" title="Particle size; changing restarts the simulation"></div>
@@ -1127,6 +1160,415 @@ function _poreRayTriHit(ox, oy, oz, dx, dy, dz,
   return t>1e-5;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 5c.  FILL BOX SPAWN SLOTS FROM A CLOSED MESH (OBJ)
+//  Uses the same ray–triangle test as pore export. Mesh must be
+//  closed and consistently wound for parity (+X ray) to be reliable.
+//  Physics walls remain the axis-aligned box — auto-fit aligns the box.
+// ═══════════════════════════════════════════════════════════════
+function parseObjToTriangleSoup(objText){
+  const verts=[];
+  const cornerIdx=[];
+  const lines=String(objText).split(/\r?\n/);
+  for(let li=0;li<lines.length;li++){
+    const t=lines[li].trim();
+    if(!t||t[0]==='#')continue;
+    const p=t.split(/\s+/);
+    if(p[0]==='v'&&p.length>=4){
+      const x=+p[1],y=+p[2],z=+p[3];
+      if(Number.isFinite(x)&&Number.isFinite(y)&&Number.isFinite(z))
+        verts.push(x,y,z);
+    }else if(p[0]==='f'){
+      const face=[];
+      for(let k=1;k<p.length;k++){
+        const tok=p[k].split('/')[0];
+        let vi=+tok;
+        if(!Number.isFinite(vi))continue;
+        const n=verts.length/3;
+        if(vi<0)vi=n+vi+1;
+        if(vi>=1&&vi<=n)face.push(vi-1);
+      }
+      for(let k=1;k+1<face.length;k++)
+        cornerIdx.push(face[0],face[k],face[k+1]);
+    }
+  }
+  if(!cornerIdx.length)return new Float32Array(0);
+  const out=new Float32Array(cornerIdx.length*3);
+  let o=0;
+  for(let i=0;i<cornerIdx.length;i+=3){
+    for(let c=0;c<3;c++){
+      const vi=cornerIdx[i+c]*3;
+      out[o++]=verts[vi];
+      out[o++]=verts[vi+1];
+      out[o++]=verts[vi+2];
+    }
+  }
+  return out;
+}
+
+function _fillMeshAabb(tris){
+  let minX=1e30,minY=1e30,minZ=1e30,maxX=-1e30,maxY=-1e30,maxZ=-1e30;
+  for(let i=0;i<tris.length;i+=3){
+    const x=tris[i],y=tris[i+1],z=tris[i+2];
+    if(x<minX)minX=x;if(y<minY)minY=y;if(z<minZ)minZ=z;
+    if(x>maxX)maxX=x;if(y>maxY)maxY=y;if(z>maxZ)maxZ=z;
+  }
+  return{minX,minY,minZ,maxX,maxY,maxZ};
+}
+
+function _fillPointInsideMesh(px,py,pz,tris){
+  const dx=1,dy=0,dz=0;
+  let hits=0;
+  const eps=1e-7;
+  for(let i=0;i<tris.length;i+=9){
+    if(_poreRayTriHit(px,py,pz,dx,dy,dz,
+        tris[i],tris[i+1],tris[i+2],
+        tris[i+3],tris[i+4],tris[i+5],
+        tris[i+6],tris[i+7],tris[i+8],eps))
+      hits++;
+  }
+  return(hits&1)===1;
+}
+
+/**
+ * Grid sample inside closed mesh; returns up to `capacity` slot positions [x,y,z].
+ * Falls back to empty array if bounds collapse or nothing is inside.
+ */
+function _fillBuildSpawnSlotsFromClosedMesh(tris, capacity, spacing, r){
+  const cap=Math.max(0,capacity|0);
+  if(cap<=0||!tris||tris.length<9)return[];
+  const sp=Math.max(1e-6,spacing);
+  const bb=_fillMeshAabb(tris);
+  let minX=bb.minX+r,maxX=bb.maxX-r;
+  let minY=bb.minY+r,maxY=bb.maxY-r;
+  let minZ=bb.minZ+r,maxZ=bb.maxZ-r;
+  if(minX>=maxX){minX=bb.minX;maxX=bb.maxX;}
+  if(minY>=maxY){minY=bb.minY;maxY=bb.maxY;}
+  if(minZ>=maxZ){minZ=bb.minZ;maxZ=bb.maxZ;}
+  const spanX=maxX-minX,spanY=maxY-minY,spanZ=maxZ-minZ;
+  const nx=Math.max(1,Math.floor(spanX/sp)+1);
+  const ny=Math.max(1,Math.floor(spanY/sp)+1);
+  const nz=Math.max(1,Math.floor(spanZ/sp)+1);
+  if(nx*ny*nz>4e6){
+    console.warn(`Fill mesh grid very large (${nx}×${ny}×${nz}); simplify the OBJ or increase particle spacing.`);
+  }
+  const cand=[];
+  for(let iy=0;iy<ny;iy++){
+    const cy=minY+(iy+0.5)*spanY/ny;
+    for(let ix=0;ix<nx;ix++){
+      const cx=minX+(ix+0.5)*spanX/nx;
+      for(let iz=0;iz<nz;iz++){
+        const cz=minZ+(iz+0.5)*spanZ/nz;
+        if(_fillPointInsideMesh(cx,cy,cz,tris))
+          cand.push(cx,cy,cz);
+      }
+    }
+  }
+  if(!cand.length)return[];
+  const nPts=cand.length/3;
+  const want=Math.min(cap,nPts);
+  const idx=new Uint32Array(nPts);
+  for(let i=0;i<nPts;i++)idx[i]=i;
+  for(let i=0;i<want;i++){
+    const j=i+((Math.random()*(nPts-i))|0);
+    const t=idx[i];idx[i]=idx[j];idx[j]=t;
+  }
+  const slots=[];
+  for(let k=0;k<want;k++){
+    const i=idx[k]*3;
+    slots.push([cand[i],cand[i+1],cand[i+2]]);
+  }
+  slots.sort((a,b)=>b[1]-a[1]);
+  return slots;
+}
+
+function _fillDistSq(ax,ay,az, bx,by,bz){
+  const dx=ax-bx,dy=ay-by,dz=az-bz;
+  return dx*dx+dy*dy+dz*dz;
+}
+
+/** Closest point on segment AB to P; writes into out. */
+function _fillClosestPointOnSegment(px,py,pz, ax,ay,az, bx,by,bz, out){
+  const abx=bx-ax, aby=by-ay, abz=bz-az;
+  const apx=px-ax, apy=py-ay, apz=pz-az;
+  const ab2=abx*abx+aby*aby+abz*abz;
+  let t=ab2>1e-20?(apx*abx+apy*aby+apz*abz)/ab2:0;
+  t=Math.max(0,Math.min(1,t));
+  out.x=ax+abx*t;
+  out.y=ay+aby*t;
+  out.z=az+abz*t;
+}
+
+/**
+ * Closest point on triangle (A,B,C) to P; writes closest into out and unit normal (from edges, flipped toward P).
+ * Returns squared distance.
+ */
+function _fillClosestPointOnTriangle(px,py,pz, ax,ay,az, bx,by,bz, cx,cy,cz, out){
+  const abx=bx-ax, aby=by-ay, abz=bz-az;
+  const acx=cx-ax, acy=cy-ay, acz=cz-az;
+  const apx=px-ax, apy=py-ay, apz=pz-az;
+  const d1=abx*apx+aby*apy+abz*apz;
+  const d2=acx*apx+acy*apy+acz*apz;
+  const bcx=cx-bx, bcy=cy-by, bcz=cz-bz;
+  const bpx=px-bx, bpy=py-by, bpz=pz-bz;
+  const d3=bcx*bpx+bcy*bpy+bcz*bpz;
+  const d4=abx*acx+aby*acy+abz*acz;
+  const d5=abx*abx+aby*aby+abz*abz;
+  const d6=acx*acx+acy*acy+acz*acz;
+  const d7=bcx*bcx+bcy*bcy+bcz*bcz;
+  const nax=aby*acz-abz*acy;
+  const nay=abz*acx-abx*acz;
+  const naz=abx*acy-aby*acx;
+  let nl=Math.hypot(nax,nay,naz);
+  if(nl<1e-20){
+    const s1={x:0,y:0,z:0};
+    _fillClosestPointOnSegment(px,py,pz, ax,ay,az, bx,by,bz, s1);
+    let bx_=s1.x,by_=s1.y,bz_=s1.z;
+    let best=_fillDistSq(px,py,pz, bx_,by_,bz_);
+    out.x=bx_;out.y=by_;out.z=bz_;
+    _fillClosestPointOnSegment(px,py,pz, bx,by,bz, cx,cy,cz, s1);
+    let d=_fillDistSq(px,py,pz, s1.x,s1.y,s1.z);
+    if(d<best){best=d;out.x=s1.x;out.y=s1.y;out.z=s1.z}
+    _fillClosestPointOnSegment(px,py,pz, cx,cy,cz, ax,ay,az, s1);
+    d=_fillDistSq(px,py,pz, s1.x,s1.y,s1.z);
+    if(d<best){out.x=s1.x;out.y=s1.y;out.z=s1.z}
+    out.nx=1;out.ny=0;out.nz=0;
+    return _fillDistSq(px,py,pz, out.x,out.y,out.z);
+  }
+  const invN=1/nl;
+  let nnx=nax*invN, nny=nay*invN, nnz=naz*invN;
+  const denom=d5*d6-d4*d4;
+  let u=1,v=0,w=0;
+  if(Math.abs(denom)>1e-20){
+    v=(d6*d1-d4*d2)/denom;
+    w=(d5*d2-d4*d1)/denom;
+    u=1-v-w;
+  }
+  const eps=-1e-4;
+  if(u>=eps&&v>=eps&&w>=eps){
+    const qx=ax+abx*v+acx*w;
+    const qy=ay+aby*v+acy*w;
+    const qz=az+abz*v+acz*w;
+    out.x=qx;out.y=qy;out.z=qz;
+    const qpx=px-qx,qpy=py-qy,qpz=pz-qz;
+    if(qpx*nnx+qpy*nny+qpz*nnz<0){nnx=-nnx;nny=-nny;nnz=-nnz}
+    out.nx=nnx;out.ny=nny;out.nz=nnz;
+    return _fillDistSq(px,py,pz, qx,qy,qz);
+  }
+  const s={x:0,y:0,z:0};
+  let best=1e30;
+  _fillClosestPointOnSegment(px,py,pz, ax,ay,az, bx,by,bz, s);
+  let d=_fillDistSq(px,py,pz, s.x,s.y,s.z);
+  if(d<best){best=d;out.x=s.x;out.y=s.y;out.z=s.z}
+  _fillClosestPointOnSegment(px,py,pz, bx,by,bz, cx,cy,cz, s);
+  d=_fillDistSq(px,py,pz, s.x,s.y,s.z);
+  if(d<best){best=d;out.x=s.x;out.y=s.y;out.z=s.z}
+  _fillClosestPointOnSegment(px,py,pz, cx,cy,cz, ax,ay,az, s);
+  d=_fillDistSq(px,py,pz, s.x,s.y,s.z);
+  if(d<best){out.x=s.x;out.y=s.y;out.z=s.z;best=d}
+  const vx=out.x-ax, vy=out.y-ay, vz=out.z-az;
+  if(vx*nnx+vy*nny+vz*nnz<0){nnx=-nnx;nny=-nny;nnz=-nnz}
+  const qpx=px-out.x,qpy=py-out.y,qpz=pz-out.z;
+  if(qpx*nnx+qpy*nny+qpz*nnz<0){nnx=-nnx;nny=-nny;nnz=-nnz}
+  out.nx=nnx;out.ny=nny;out.nz=nnz;
+  return best;
+}
+
+/**
+ * Keeps tet vertices inside a closed fill mesh (same OBJ as spawn layout). Uses a uniform grid over
+ * triangle AABBs for closest-point queries; parity ray test for inside/outside.
+ */
+class FillMeshCollider{
+  constructor(tris, skinMm, centroidXYZ, nominalRadiusMm){
+    this.tris=tris;
+    this.skinMm=Math.max(0.012, skinMm||0.03);
+    this.nominalR=Math.max(0.05, nominalRadiusMm||0.3);
+    this.bb=_fillMeshAabb(tris);
+    const c=centroidXYZ;
+    if(c&&Number.isFinite(c[0])){
+      this.cx=c[0];this.cy=c[1];this.cz=c[2];
+    }else{
+      let sx=0,sy=0,sz=0,nv=0;
+      for(let i=0;i<tris.length;i+=3){sx+=tris[i];sy+=tris[i+1];sz+=tris[i+2];nv++}
+      this.cx=sx/nv;this.cy=sy/nv;this.cz=sz/nv;
+    }
+    const sx=this.bb.maxX-this.bb.minX;
+    const sy=this.bb.maxY-this.bb.minY;
+    const sz=this.bb.maxZ-this.bb.minZ;
+    this.cellSize=Math.max(0.2, Math.min(Math.max(sx,sy,sz)/18, 5));
+    this.buckets=new Map();
+    this._tmpClosest={x:0,y:0,z:0,nx:1,ny:0,nz:0};
+    const nt=(tris.length/9)|0;
+    this.triBounds=new Float32Array(nt*6);
+    for(let t=0,base=0;t<nt;t++,base+=9){
+      let tminX=1e30,tminY=1e30,tminZ=1e30,tmaxX=-1e30,tmaxY=-1e30,tmaxZ=-1e30;
+      for(let k=0;k<9;k+=3){
+        const x=tris[base+k],y=tris[base+k+1],z=tris[base+k+2];
+        if(x<tminX)tminX=x;if(y<tminY)tminY=y;if(z<tminZ)tminZ=z;
+        if(x>tmaxX)tmaxX=x;if(y>tmaxY)tmaxY=y;if(z>tmaxZ)tmaxZ=z;
+      }
+      const o=t*6;
+      const tb=this.triBounds;
+      tb[o]=tminX;tb[o+1]=tmaxX;tb[o+2]=tminY;tb[o+3]=tmaxY;tb[o+4]=tminZ;tb[o+5]=tmaxZ;
+    }
+    this._buildBuckets();
+  }
+
+  /** Parity along +X through P; skips triangles that cannot intersect the ray (cheap AABB rejects). */
+  pointInside(px,py,pz){
+    const tris=this.tris,tb=this.triBounds;
+    const eps=1e-6;
+    let hits=0;
+    const nt=(tris.length/9)|0;
+    for(let t=0,base=0;t<nt;t++,base+=9){
+      const o=t*6;
+      if(tb[o+1]<=px+eps)continue;
+      if(py<tb[o+2]-eps||py>tb[o+3]+eps||pz<tb[o+4]-eps||pz>tb[o+5]+eps)continue;
+      if(_poreRayTriHit(px,py,pz,1,0,0,
+          tris[base],tris[base+1],tris[base+2],
+          tris[base+3],tris[base+4],tris[base+5],
+          tris[base+6],tris[base+7],tris[base+8],1e-7))
+        hits++;
+    }
+    return(hits&1)===1;
+  }
+
+  _key(ix,iy,iz){return`${ix},${iy},${iz}`}
+
+  _buildBuckets(){
+    const bb=this.bb, cs=this.cellSize, inv=1/cs;
+    const tris=this.tris;
+    for(let base=0;base<tris.length;base+=9){
+      let tminX=1e30,tminY=1e30,tminZ=1e30,tmaxX=-1e30,tmaxY=-1e30,tmaxZ=-1e30;
+      for(let k=0;k<9;k+=3){
+        const x=tris[base+k],y=tris[base+k+1],z=tris[base+k+2];
+        if(x<tminX)tminX=x;if(y<tminY)tminY=y;if(z<tminZ)tminZ=z;
+        if(x>tmaxX)tmaxX=x;if(y>tmaxY)tmaxY=y;if(z>tmaxZ)tmaxZ=z;
+      }
+      const i0=Math.floor((tminX-bb.minX)*inv)-1;
+      const i1=Math.floor((tmaxX-bb.minX)*inv)+1;
+      const j0=Math.floor((tminY-bb.minY)*inv)-1;
+      const j1=Math.floor((tmaxY-bb.minY)*inv)+1;
+      const k0=Math.floor((tminZ-bb.minZ)*inv)-1;
+      const k1=Math.floor((tmaxZ-bb.minZ)*inv)+1;
+      for(let ix=i0;ix<=i1;ix++)for(let iy=j0;iy<=j1;iy++)for(let iz=k0;iz<=k1;iz++){
+        const key=this._key(ix,iy,iz);
+        let arr=this.buckets.get(key);
+        if(!arr){arr=[];this.buckets.set(key,arr)}
+        arr.push(base);
+      }
+    }
+  }
+
+  _closestPointBruteforce(px,py,pz,out){
+    const tris=this.tris, tmp=this._tmpClosest;
+    let best=1e30;
+    for(let base=0;base<tris.length;base+=9){
+      const d2=_fillClosestPointOnTriangle(px,py,pz,
+        tris[base],tris[base+1],tris[base+2],
+        tris[base+3],tris[base+4],tris[base+5],
+        tris[base+6],tris[base+7],tris[base+8], tmp);
+      if(d2<best){
+        best=d2;
+        out.x=tmp.x;out.y=tmp.y;out.z=tmp.z;
+        out.nx=tmp.nx;out.ny=tmp.ny;out.nz=tmp.nz;
+      }
+    }
+    return best;
+  }
+
+  closestPoint(px,py,pz,out){
+    const bb=this.bb, cs=this.cellSize;
+    const ix=Math.floor((px-bb.minX)/cs);
+    const iy=Math.floor((py-bb.minY)/cs);
+    const iz=Math.floor((pz-bb.minZ)/cs);
+    const tris=this.tris;
+    let best=1e30;
+    const tmp=this._tmpClosest;
+    for(let di=-2;di<=2;di++)for(let dj=-2;dj<=2;dj++)for(let dk=-2;dk<=2;dk++){
+      const arr=this.buckets.get(this._key(ix+di,iy+dj,iz+dk));
+      if(!arr)continue;
+      for(let a=0;a<arr.length;a++){
+        const base=arr[a];
+        const d2=_fillClosestPointOnTriangle(px,py,pz,
+          tris[base],tris[base+1],tris[base+2],
+          tris[base+3],tris[base+4],tris[base+5],
+          tris[base+6],tris[base+7],tris[base+8], tmp);
+        if(d2<best){
+          best=d2;
+          out.x=tmp.x;out.y=tmp.y;out.z=tmp.z;
+          out.nx=tmp.nx;out.ny=tmp.ny;out.nz=tmp.nz;
+        }
+      }
+    }
+    if(best>=1e29)return this._closestPointBruteforce(px,py,pz,out);
+    return best;
+  }
+
+  /**
+   * Treat the particle as a sphere (nominal radius) at the centroid of mobile verts.
+   * One rigid translation keeps tet constraints coherent — avoids per-vertex “ragdoll” vs the mesh.
+   */
+  constrainParticleRigid(pos,prevPos,numTetVerts,invMass,mu,boundingRadiusMm){
+    let tcx=0,tcy=0,tcz=0,cnt=0;
+    for(let i=0;i<numTetVerts;i++){
+      if(invMass[i]<=0)continue;
+      tcx+=pos[3*i];tcy+=pos[3*i+1];tcz+=pos[3*i+2];cnt++;
+    }
+    if(cnt===0)return false;
+    tcx/=cnt;tcy/=cnt;tcz/=cnt;
+    const br=(boundingRadiusMm!=null&&Number.isFinite(+boundingRadiusMm))?+boundingRadiusMm:this.nominalR;
+    const rBody=Math.max(this.nominalR,br*0.9);
+    const need=rBody+this.skinMm;
+    const out=this._tmpClosest;
+    const d2=this.closestPoint(tcx,tcy,tcz,out);
+    const ml=Math.sqrt(Math.max(0,d2));
+    let nx=(tcx-out.x),ny=(tcy-out.y),nz=(tcz-out.z);
+    if(ml>1e-8){
+      nx/=ml;ny/=ml;nz/=ml;
+    }else{
+      nx=this.cx-tcx;ny=this.cy-tcy;nz=this.cz-tcz;
+      const nl=Math.hypot(nx,ny,nz);
+      if(nl>1e-8){nx/=nl;ny/=nl;nz/=nl}
+      else{nx=out.nx;ny=out.ny;nz=out.nz}
+    }
+    let ncx=tcx,ncy=tcy,ncz=tcz;
+    if(this.pointInside(tcx,tcy,tcz)){
+      if(ml>=need-1e-6)return false;
+      const shift=need-ml;
+      ncx=tcx+nx*shift;ncy=tcy+ny*shift;ncz=tcz+nz*shift;
+    }else{
+      ncx=out.x-nx*need;ncy=out.y-ny*need;ncz=out.z-nz*need;
+    }
+    const dx=ncx-tcx,dy=ncy-tcy,dz=ncz-tcz;
+    if(dx*dx+dy*dy+dz*dz<1e-14)return false;
+    for(let i=0;i<numTetVerts;i++){
+      if(invMass[i]<=0)continue;
+      pos[3*i]+=dx;pos[3*i+1]+=dy;pos[3*i+2]+=dz;
+    }
+    mu=Math.max(0,Math.min(1,(mu===undefined?0:mu)));
+    if(prevPos && mu>0){
+      let vcx=0,vcy=0,vcz=0,c2=0;
+      for(let i=0;i<numTetVerts;i++){
+        if(invMass[i]<=0)continue;
+        vcx+=pos[3*i]-prevPos[3*i];
+        vcy+=pos[3*i+1]-prevPos[3*i+1];
+        vcz+=pos[3*i+2]-prevPos[3*i+2];
+        c2++;
+      }
+      if(c2>0){vcx/=c2;vcy/=c2;vcz/=c2}
+      const wx=out.nx,wy=out.ny,wz=out.nz;
+      const vn=vcx*wx+vcy*wy+vcz*wz;
+      const tx=vcx-vn*wx,ty=vcy-vn*wy,tz=vcz-vn*wz;
+      for(let i=0;i<numTetVerts;i++){
+        if(invMass[i]<=0)continue;
+        prevPos[3*i]+=tx*mu;prevPos[3*i+1]+=ty*mu;prevPos[3*i+2]+=tz*mu;
+      }
+    }
+    return true;
+  }
+}
+
 function _porePointInVisMesh(particle, apos, ox, oy, oz, dx, dy, dz){
   const ids=particle.visTriIds;
   const vo=particle.visVertOffset;
@@ -1440,6 +1882,9 @@ class SyringeSimulator {
     // contact stats
     this.contactPairs    =0;
     this.maxPenetration  =0;
+    /** Optional closed triangle soup (Float32, 9 floats/triangle) for interior spawn layout in box mode. */
+    this.fillVolumeTris=(typeof gFillVolumeTris!=='undefined' && gFillVolumeTris && gFillVolumeTris.length>=9)
+      ? gFillVolumeTris : null;
     // build syringe or invisible box volume
     const cm=String(syringeParams.containerMode||'').trim().toLowerCase();
     const volMode=(cm==='volume'||cm==='box');
@@ -1450,6 +1895,14 @@ class SyringeSimulator {
       this.syringe=new Syringe(syringeParams);
     }
     this.syringe.buildMeshes(scene);
+    this.fillMeshCollider=null;
+    if(this.fillVolumeTris && this.fillVolumeTris.length>=9 && this.syringe._boxVolume){
+      const nr=particleTemplate.nominalRadius||0.3;
+      const wa=Math.max(0,this.syringe.wallAllowPenetrationMm||0);
+      const skin=Math.max(0.02, nr*0.08+wa*0.5);
+      this.fillMeshCollider=new FillMeshCollider(this.fillVolumeTris, skin, null, particleTemplate.nominalRadius||0.3);
+      console.log(`Fill mesh collider: ${(this.fillVolumeTris.length/9)|0} tris, sphere r≈${(particleTemplate.nominalRadius||0.3).toFixed(3)} mm, skin ${skin.toFixed(3)} mm`);
+    }
     // spawn particles (capacity allocated; only initialCount active)
     this.capacityCount=Math.max(0,capacityCount|0);
     this.initialCount=Math.max(0,Math.min(this.capacityCount, initialCount|0));
@@ -1463,11 +1916,26 @@ class SyringeSimulator {
     // metrics log + settlement (updated each physics step)
     this.particlesDroppedViaUi=0;
     this._autoPauseAfterSettle=false;
+    /** Timer export: fixed wall-clock window after each Drop; see timerExportMode. */
+    this.timerExportMode=false;
+    this.timerWallDurationS=60;
+    this.timerAutoExportCsv=true;
+    /** Sim time at Drop (CSV / correlation). */
+    this._timerAnchorSim=null;
+    /** performance.now() at Drop — capture ends after timerWallDurationS wall seconds. */
+    this._timerWallAnchorMs=null;
+    this._timerCaptureDone=false;
+    /** Extra mm above box inner top for volume-mode Drop slot (timer mode defaults UI to 20). */
+    this.volumeDropHeightMm=Math.max(0,+syringeParams.volumeDropHeightMm||0);
     this._lastMetrics={
       p2pUniquePairs:0,
       p2pSumOverlapMm:0,
       p2pEstContactAreaMm2:0,
       p2pForceProxy:0,
+      p2pForcePerPairMean:0,
+      p2pForcePerPairMin:0,
+      p2pForcePerPairMax:0,
+      p2pForcePerPairStd:0,
       maxPenetrationMm:0,
       meanCmSpeedMmS:0,
       meanMaxEdgeStrain:0};
@@ -1552,6 +2020,16 @@ class SyringeSimulator {
     const spacing = r*2.1;
     const slots=[];
     if(sp._boxVolume){
+      if(this.fillVolumeTris && this.fillVolumeTris.length>=9){
+        const meshSlots=_fillBuildSpawnSlotsFromClosedMesh(this.fillVolumeTris, capacity, spacing, r);
+        if(meshSlots.length){
+          this.spawnSlots=meshSlots;
+          this.spawnCursor=0;
+          console.log(`Fill mesh: ${meshSlots.length} interior spawn slots (capacity ${capacity}).`);
+          return;
+        }
+        console.warn('Fill mesh produced no interior points — falling back to full box grid. Check mesh is closed/watertight.');
+      }
       const minX=sp.centerX-sp.halfX+r,maxX=sp.centerX+sp.halfX-r;
       const minY=sp.centerY-sp.halfY+r,maxY=sp.centerY+sp.halfY-r;
       const minZ=sp.centerZ-sp.halfZ+r,maxZ=sp.centerZ+sp.halfZ-r;
@@ -1609,9 +2087,10 @@ class SyringeSimulator {
   _volumeDropSlot(){
     const b=this.syringe;
     const r=this.tmpl.nominalRadius||0.3;
+    const lift=Number.isFinite(this.volumeDropHeightMm)?this.volumeDropHeightMm:0;
     return[
       b.centerX,
-      b.centerY+b.halfY-r,
+      b.centerY+b.halfY-r+lift,
       b.centerZ];
   }
 
@@ -1682,6 +2161,12 @@ class SyringeSimulator {
     if(spawned>0){
       this.particlesDroppedViaUi+=spawned;
       this._resetSettle();
+      if(this.timerExportMode){
+        this._timerAnchorSim=this.simTime;
+        this._timerWallAnchorMs=(typeof performance!=='undefined'&&performance.now)?performance.now():Date.now();
+        this._timerCaptureDone=false;
+        this._resetMetricsLog();
+      }
     }
     return spawned;
   }
@@ -1744,10 +2229,14 @@ class SyringeSimulator {
 
   _resetMetricsLog(){
     this._metricsRows=[
-      'frame,time_s,p2p_unique_pairs,p2p_sum_overlap_mm,p2p_est_contact_area_mm2,p2p_force_proxy,'+
+      'frame,time_s,'+
+      'p2p_contacts_count,p2p_sum_overlap_mm,surface_area_contact_p2p_mm2,p2p_force_proxy_sum,'+
+      'p2p_force_per_pair_mean,p2p_force_per_pair_min,p2p_force_per_pair_max,p2p_force_per_pair_std,'+
       'max_penetration_mm,avg_p2p_contacts_per_particle,mean_cm_speed_mm_s,mean_max_edge_strain,'+
+      'container_volume_mm3,solid_volume_nominal_mm3,porosity_void_volume_mm3,porosity_fraction,'+
       'dispensed,particles_active,particles_dropped_via_ui,particles_released_total,settled,time_to_settle_s,settle_eta_sim_s,'+
-      'predicted_settle_at_sim_s,needle_inlet_blocked'];
+      'predicted_settle_at_sim_s,needle_inlet_blocked,'+
+      'timer_window_start_sim_s,timer_capture_wall_s'];
   }
 
   /** One broadphase pass on current centers: unique touching pairs + overlap/Hertz-area / XPBD-ish force proxy. */
@@ -1756,12 +2245,13 @@ class SyringeSimulator {
     const n=ps.length;
     if(n<2){
       return{
-        uniquePairs:0,sumOverlap:0,sumArea:0,sumForceProxy:0,maxPen:0};
+        uniquePairs:0,sumOverlap:0,sumArea:0,sumForceProxy:0,maxPen:0,fpMin:0,fpMax:0,fpSumSq:0};
     }
     const restF=Math.max(0.5, Math.min(1.2, this.contactRestDistFactor||1.0));
     const sdt=Math.max(1e-12, dt/Math.max(1,this.numSubsteps|0));
     const alpha=this.contactCompliance/(sdt*sdt);
     let uniquePairs=0,sumOverlap=0,sumArea=0,sumForceProxy=0,maxPen=0;
+    let fpMin=Infinity,fpMax=-Infinity,fpSumSq=0;
     const accumPair=(A,B)=>{
       const dx=A.center[0]-B.center[0];
       const dy=A.center[1]-B.center[1];
@@ -1779,7 +2269,11 @@ class SyringeSimulator {
       const Reff=(rA*rB)/Math.max(1e-9,rA+rB);
       const a=Math.sqrt(Math.max(0, Reff*overlap));
       sumArea+=Math.PI*a*a;
-      sumForceProxy+=overlap/Math.max(1e-18,(2+alpha));
+      const fp=overlap/Math.max(1e-18,(2+alpha));
+      sumForceProxy+=fp;
+      if(fp<fpMin)fpMin=fp;
+      if(fp>fpMax)fpMax=fp;
+      fpSumSq+=fp*fp;
     };
     let activeCount=0;
     for(let i=0;i<n;i++)if(ps[i].active)activeCount++;
@@ -1811,7 +2305,27 @@ class SyringeSimulator {
         }
       }
     }
-    return{uniquePairs,sumOverlap,sumArea,sumForceProxy,maxPen};
+    if(uniquePairs===0){fpMin=0;fpMax=0;fpSumSq=0;}
+    return{uniquePairs,sumOverlap,sumArea,sumForceProxy,maxPen,fpMin,fpMax,fpSumSq};
+  }
+
+  /** Geometric porosity proxy for box mode: void ≈ V_box − Σ(sphere nominal); ignores overlap (syringe: NaN). */
+  _porositySnapshot(){
+    if(!this.syringe||!this.syringe._boxVolume){
+      return{containerVolMm3:NaN,solidNominalMm3:NaN,voidMm3:NaN,porosityFraction:NaN};
+    }
+    const b=this.syringe;
+    const V=(2*b.halfX)*(2*b.halfY)*(2*b.halfZ);
+    const k=(4*Math.PI)/3;
+    let S=0;
+    for(const p of this.particles){
+      if(!p.active)continue;
+      const r=Math.max(1e-9,p.nominalRadius||0.3);
+      S+=k*r*r*r;
+    }
+    const voidV=Math.max(0,V-S);
+    const phi=V>1e-18?voidV/V:0;
+    return{containerVolMm3:V,solidNominalMm3:S,voidMm3:voidV,porosityFraction:phi};
   }
 
   _meanCentroidSpeedActive(){
@@ -1966,6 +2480,12 @@ class SyringeSimulator {
       }}}
 
   _updateSettleAfterStep(){
+    if(this.timerExportMode){
+      const st=this.settleState;
+      st.etaCountdownSim=null;
+      st.predictedSettleAtSim=null;
+      return;
+    }
     const st=this.settleState;
     const dt=this.physicsFixedDt;
     if(st.settled){
@@ -2267,6 +2787,14 @@ class SyringeSimulator {
       for(const p of this.particles){
         if(!p.active)continue;
         p.preSolve(sdt,this.gravity,this.syringe,this.velDampingPerSec,this.wallFriction)}
+      if(this.fillMeshCollider){
+        const fc=this.fillMeshCollider;
+        for(const p of this.particles){
+          if(!p.active)continue;
+          if(fc.constrainParticleRigid(p.pos,p.prevPos,p.numTetVerts,p.invMass,this.wallFriction,p.boundingRadius))
+            p.inWallContact=true;
+        }
+      }
       // Keep centroid + bounding radius in sync after integration so p2p broadphase radii
       // are not a substep behind (reduces false air gaps and odd first-contact frames).
       for(const p of this.particles){
@@ -2283,6 +2811,23 @@ class SyringeSimulator {
           if(!p.active)continue;
           p.solveEdges(sdt);
           p.solveVolumes(sdt)}}
+      if(this.fillMeshCollider){
+        const fc=this.fillMeshCollider;
+        for(let rep=0;rep<2;rep++){
+          for(const p of this.particles){
+            if(!p.active)continue;
+            if(fc.constrainParticleRigid(p.pos,p.prevPos,p.numTetVerts,p.invMass,this.wallFriction,p.boundingRadius))
+              p.inWallContact=true;
+          }
+        }
+        for(const p of this.particles){
+          if(!p.active)continue;
+          for(let k=0;k<p.numTetVerts;k++){
+            if(p.invMass[k]===0)continue;
+            if(this.syringe.constrainVertex(p.pos,p.prevPos,k,this.wallFriction))p.inWallContact=true;
+          }
+        }
+      }
       for(const p of this.particles){
         if(!p.active)continue;
         p.postSolve(sdt)}}
@@ -2350,16 +2895,28 @@ class SyringeSimulator {
     geo.attributes.color.needsUpdate=true;
     if(this.tetLinesMesh.visible)this._updateTetLines();
     const g=this._measureP2PContactsGeometry(dt);
+    const np=g.uniquePairs|0;
+    const fmean=np>0?g.sumForceProxy/np:0;
+    const fstd=np>0?Math.sqrt(Math.max(0,(g.fpSumSq/np)-fmean*fmean)):0;
     this._lastMetrics={
       p2pUniquePairs:g.uniquePairs,
       p2pSumOverlapMm:g.sumOverlap,
       p2pEstContactAreaMm2:g.sumArea,
       p2pForceProxy:g.sumForceProxy,
+      p2pForcePerPairMean:fmean,
+      p2pForcePerPairMin:np>0?g.fpMin:0,
+      p2pForcePerPairMax:np>0?g.fpMax:0,
+      p2pForcePerPairStd:fstd,
       maxPenetrationMm:g.maxPen,
       meanCmSpeedMmS:this._meanCentroidSpeedActive(),
       meanMaxEdgeStrain:meanStrainCnt>0?meanStrainSum/meanStrainCnt:0};
     this.simTime+=dt;
-    this._updateSettleAfterStep();}
+    this._updateSettleAfterStep();
+  }
+
+  timerWallDurationMs(){
+    return Math.max(250,this.timerWallDurationS*1000);
+  }
 
   // ── Particle–particle contact (centroid-level XPBD) ───────────
   _solveContacts(sdt){
@@ -2563,6 +3120,13 @@ class SyringeSimulator {
 
   /** Append one metrics row (call once per fixed physics step). */
   pushMetricsRow(frameIdx){
+    if(this.timerExportMode){
+      if(this._timerAnchorSim==null)return;
+      if(this._timerWallAnchorMs==null)return;
+      if(this._timerCaptureDone)return;
+      const now=(typeof performance!=='undefined'&&performance.now)?performance.now():Date.now();
+      if(now-this._timerWallAnchorMs>this.timerWallDurationMs()+1e-3)return;
+    }
     const m=this._lastMetrics;
     const n=this.particles.reduce((a,p)=>a+(p.active?1:0),0);
     const avgP2p=n>0?(m.p2pUniquePairs*2/n):0;
@@ -2571,13 +3135,19 @@ class SyringeSimulator {
     const eta=st.etaCountdownSim!=null ? st.etaCountdownSim.toFixed(6) : '';
     const pred=st.predictedSettleAtSim!=null ? st.predictedSettleAtSim.toFixed(6) : '';
     const nib=this.syringe.needleInletCapActive ? 1 : 0;
+    const por=this._porositySnapshot();
+    const fmtNum=x=>(Number.isFinite(x)?x.toFixed(6):'');
+    const tw=this._timerAnchorSim!=null?this._timerAnchorSim.toFixed(6):'';
+    const td=this.timerExportMode?this.timerWallDurationS.toFixed(4):'';
     this._metricsRows.push(
       `${frameIdx},${this.simTime.toFixed(4)},${m.p2pUniquePairs},`+
       `${m.p2pSumOverlapMm.toFixed(6)},${m.p2pEstContactAreaMm2.toFixed(6)},${m.p2pForceProxy.toFixed(6)},`+
+      `${m.p2pForcePerPairMean.toFixed(8)},${m.p2pForcePerPairMin.toFixed(8)},${m.p2pForcePerPairMax.toFixed(8)},${m.p2pForcePerPairStd.toFixed(8)},`+
       `${m.maxPenetrationMm.toFixed(6)},${avgP2p.toFixed(4)},`+
       `${m.meanCmSpeedMmS.toFixed(6)},${m.meanMaxEdgeStrain.toFixed(6)},`+
+      `${fmtNum(por.containerVolMm3)},${fmtNum(por.solidNominalMm3)},${fmtNum(por.voidMm3)},${fmtNum(por.porosityFraction)},`+
       `${this.dispensed},${n},${this.particlesDroppedViaUi},${this.spawnCursor|0},`+
-      `${st.settled?1:0},${tts},${eta},${pred},${nib}`);}
+      `${st.settled?1:0},${tts},${eta},${pred},${nib},${tw},${td}`);}
 
   getMetricsCSV(){
     return(this._metricsRows||[]).join('\n');
@@ -2951,6 +3521,10 @@ let gPickMode='inspect'; // 'inspect' | 'lock'
 let gPickMarker=null;
 /** Wireframe preview of invisible box volume while physics is paused (Container → volume mode). */
 let gVolumeOutline=null;
+/** Triangle soup from “fill volume” OBJ: 9 floats per triangle (ax..cz), world mm. Box mode only. */
+let gFillVolumeTris=null;
+/** Optional semi-transparent preview mesh for gFillVolumeTris. */
+let gFillMeshPreview=null;
 
 // ═══════════════════════════════════════════════════════════════
 // 7b.  ASSET LIBRARY POPULATION (assets/*.json + default sphere)
@@ -3152,6 +3726,93 @@ function syncVolumeOutlinePreview(){
   const vb=readVolumeBoxParams();
   gVolumeOutline.scale.set(vb.widthMm,vb.heightMm,vb.depthMm);
   gVolumeOutline.position.set(vb.centerX_mm,vb.centerY_mm,vb.centerZ_mm);
+  syncFillMeshPreviewVisibility();
+}
+
+function syncFillMeshPreviewVisibility(){
+  if(!gFillMeshPreview)return;
+  const volMode=document.getElementById('selContainerMode')?.value==='volume';
+  const want=!!(document.getElementById('chkFillMeshShow')?.checked);
+  gFillMeshPreview.visible=volMode && want && !gPerfSkipDraw;
+}
+
+function disposeFillMeshPreview(){
+  if(!gFillMeshPreview||!gScene)return;
+  gScene.remove(gFillMeshPreview);
+  if(gFillMeshPreview.geometry)gFillMeshPreview.geometry.dispose();
+  if(gFillMeshPreview.material)gFillMeshPreview.material.dispose();
+  gFillMeshPreview=null;
+}
+
+function rebuildFillMeshPreview(tris){
+  disposeFillMeshPreview();
+  if(!gScene||!tris||tris.length<9)return;
+  const geom=new THREE.BufferGeometry();
+  geom.setAttribute('position',new THREE.BufferAttribute(tris,3));
+  geom.computeVertexNormals();
+  const mat=new THREE.MeshPhongMaterial({
+    color:0x7eb8e0,transparent:true,opacity:0.24,side:THREE.DoubleSide,
+    depthWrite:false,depthTest:true});
+  gFillMeshPreview=new THREE.Mesh(geom,mat);
+  gScene.add(gFillMeshPreview);
+  syncFillMeshPreviewVisibility();
+}
+
+function applyFillMeshAutoFitBox(bb){
+  const r=gNominalRadiusMm||0.3;
+  const pad=Math.max(1.0,r*2.5);
+  const w=bb.maxX-bb.minX+2*pad;
+  const h=bb.maxY-bb.minY+2*pad;
+  const d=bb.maxZ-bb.minZ+2*pad;
+  const cx=(bb.minX+bb.maxX)*0.5;
+  const cy=(bb.minY+bb.maxY)*0.5;
+  const cz=(bb.minZ+bb.maxZ)*0.5;
+  const set=(id,v)=>{
+    const el=document.getElementById(id);
+    if(el)el.value=String(+v.toFixed(4));
+  };
+  set('pVolW',w);set('pVolH',h);set('pVolD',d);
+  set('pVolCx',cx);set('pVolCy',cy);set('pVolCz',cz);
+}
+
+function onFillMeshShowChange(){
+  syncFillMeshPreviewVisibility();
+}
+
+function loadFillVolumeObj(evt){
+  const file=evt.target?.files?.[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    try{
+      const soup=parseObjToTriangleSoup(e.target.result);
+      if(soup.length<9){
+        alert('No triangles found in OBJ (need v + f lines).');
+        return;
+      }
+      const nTri=(soup.length/9)|0;
+      if(nTri>20000)
+        console.warn(`Fill mesh: ${nTri} triangles — startup sampling may take a moment.`);
+      gFillVolumeTris=soup;
+      if(document.getElementById('chkFillMeshAutofit')?.checked!==false)
+        applyFillMeshAutoFitBox(_fillMeshAabb(soup));
+      rebuildFillMeshPreview(soup);
+      syncVolumeOutlinePreview();
+      onRestart();
+    }catch(err){
+      alert('Could not read fill OBJ: '+err);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function clearFillVolumeObj(){
+  gFillVolumeTris=null;
+  disposeFillMeshPreview();
+  const inp=document.getElementById('fillVolumeObjFile');
+  if(inp)inp.value='';
+  syncVolumeOutlinePreview();
+  onRestart();
 }
 
 function focusNeedleTip(){ _focusTarget(0,0,0,true); }
@@ -3159,11 +3820,32 @@ function focusBarrel(){
   if(!gSimulator||!gSimulator.syringe)return;
   const sp=gSimulator.syringe;
   if(sp._boxVolume){
-    _focusTarget(sp.centerX,sp.centerY,sp.centerZ,true);
+    focusVolumeBox();
     return;
   }
   const mid=(sp._taperEnd+sp._barrelTop)*0.5;
   _focusTarget(0,mid,0,true);
+}
+
+/** Frame the invisible box from current sidebar / simulator bounds (mm space). */
+function focusVolumeBox(){
+  if(!gCamCtrl||!gCamera)return;
+  let cx,cy,cz,w,h,d;
+  if(gSimulator&&gSimulator.syringe&&gSimulator.syringe._boxVolume){
+    const b=gSimulator.syringe;
+    cx=b.centerX; cy=b.centerY; cz=b.centerZ;
+    w=b.halfX*2; h=b.halfY*2; d=b.halfZ*2;
+  }else{
+    const vb=readVolumeBoxParams();
+    cx=vb.centerX_mm; cy=vb.centerY_mm; cz=vb.centerZ_mm;
+    w=vb.widthMm; h=vb.heightMm; d=vb.depthMm;
+  }
+  const diag=Math.sqrt(w*w+h*h+d*d);
+  const dist=Math.max(6, diag*1.25);
+  gCamCtrl.target.set(cx,cy,cz);
+  const dir=new THREE.Vector3(0.82,0.5,0.95).normalize();
+  gCamera.position.set(cx+dir.x*dist, cy+dir.y*dist, cz+dir.z*dist);
+  gCamCtrl.update();
 }
 function focusPicked(){
   if(!gSimulator||gPickedParticle<0)return;
@@ -3289,12 +3971,19 @@ function readVolumeBoxParams(){
     return Number.isFinite(v)?v:NaN;
   };
   const w=Math.max(0.5, g('pVolW')||1);
-  const h=Math.max(0.5, g('pVolH')||5);
+  const h=Math.max(0.5, g('pVolH')||20);
   const d=Math.max(0.5, g('pVolD')||1);
   let cx=g('pVolCx'); if(!Number.isFinite(cx))cx=0;
   let cy=g('pVolCy'); if(!Number.isFinite(cy))cy=h*0.5;
   let cz=g('pVolCz'); if(!Number.isFinite(cz))cz=0;
   return{widthMm:w,heightMm:h,depthMm:d,centerX_mm:cx,centerY_mm:cy,centerZ_mm:cz};
+}
+
+function readVolumeDropHeightMm(){
+  const el=document.getElementById('pVolDropH');
+  if(!el)return 0;
+  const v=+el.value;
+  return Number.isFinite(v)?Math.max(0,v):0;
 }
 
 function readSyringeParams(){
@@ -3303,6 +3992,7 @@ function readSyringeParams(){
   return{
     containerMode,
     volumeBox:readVolumeBoxParams(),
+    volumeDropHeightMm:readVolumeDropHeightMm(),
     barrelDiam  :+document.getElementById('pBarrelDiam').value,
     barrelLen   :+document.getElementById('pBarrelLen').value,
     needleDiam  :+document.getElementById('pNeedleDiam').value,
@@ -3337,6 +4027,13 @@ function initSimulation(){
   document.getElementById('pGravity').value
     && (gSimulator && (gSimulator.gravity[1]=-Math.abs(+document.getElementById('pGravity').value)));
   gSimulator=new SyringeSimulator(gParticleTemplate,sp,capacity,initial,gScene);
+  gSimulator.volumeDropHeightMm=readVolumeDropHeightMm();
+  gSimulator.timerExportMode=!!document.getElementById('chkTimerExport')?.checked;
+  gSimulator.timerWallDurationS=Math.max(0.25,+document.getElementById('pTimerCaptureS')?.value||60);
+  gSimulator.timerAutoExportCsv=!!document.getElementById('chkTimerAutoCsv')?.checked;
+  gSimulator._timerAnchorSim=null;
+  gSimulator._timerWallAnchorMs=null;
+  gSimulator._timerCaptureDone=false;
   gSimulator.gravity=[0,-Math.abs(+document.getElementById('pGravity').value),0];
   gSimulator.numSubsteps=Math.max(1,+document.getElementById('pSubsteps').value);
   gSimulator.extrusionCohesionEnabled=document.getElementById('chkExtrCohesion')?.checked ?? true;
@@ -3396,6 +4093,17 @@ function onRun(){
   document.getElementById('btnRun').textContent=gPaused?'Run':'Stop';
   const pb=document.getElementById('btnPause');
   if(pb)pb.textContent=gPaused?'Resume':'Pause';
+  // Timer export: if nothing has called Drop yet, start the wall-clock window on first Run
+  // (initial particles already spawned at restart).
+  if(!gPaused&&gSimulator&&gSimulator.timerExportMode&&gSimulator._timerWallAnchorMs==null){
+    const released=(gSimulator.spawnCursor|0)>0;
+    if(released){
+      gSimulator._timerAnchorSim=gSimulator.simTime;
+      gSimulator._timerWallAnchorMs=(typeof performance!=='undefined'&&performance.now)?performance.now():Date.now();
+      gSimulator._timerCaptureDone=false;
+      gSimulator._resetMetricsLog();
+    }
+  }
   syncVolumeOutlinePreview();
 }
 
@@ -3799,6 +4507,49 @@ function onFilamentGuideMarginChange(){
   gSimulator.syringe.filamentGuideRadius=_filamentGuideRadiusFromUi();
 }
 
+function onTimerExportModeChange(on){
+  if(on){
+    const sel=document.getElementById('selContainerMode');
+    if(sel) sel.value='volume';
+    const vh=document.getElementById('pVolH');
+    if(vh) vh.value='20';
+    const h=document.getElementById('pVolDropH');
+    if(h) h.value='20';
+    const initEl=document.getElementById('pInitCount');
+    if(initEl) initEl.value='30';
+    const capS=document.getElementById('pTimerCaptureS');
+    if(capS) capS.value='60';
+    const autoCsv=document.getElementById('chkTimerAutoCsv');
+    if(autoCsv) autoCsv.checked=true;
+    const soft=document.getElementById('sSoftness');
+    if(soft){
+      soft.value='83';
+      onSoftnessChange(83);
+    }
+    onContainerModeChange(true);
+    syncVolumeOutlinePreview();
+    focusVolumeBox();
+  }else if(gSimulator){
+    gSimulator.timerExportMode=false;
+    gSimulator._timerAnchorSim=null;
+    gSimulator._timerWallAnchorMs=null;
+    gSimulator._timerCaptureDone=false;
+  }
+}
+
+function onTimerCaptureInput(){
+  const t=Math.max(0.25,+document.getElementById('pTimerCaptureS')?.value||60);
+  if(gSimulator) gSimulator.timerWallDurationS=t;
+}
+
+function onTimerAutoCsvChange(on){
+  if(gSimulator) gSimulator.timerAutoExportCsv=!!on;
+}
+
+function onVolDropHeightInput(){
+  if(gSimulator) gSimulator.volumeDropHeightMm=readVolumeDropHeightMm();
+}
+
 function onContainerModeChange(fromUser){
   const vol=document.getElementById('selContainerMode')?.value==='volume';
   const ds=document.getElementById('detailsSyringeMm');
@@ -3975,6 +4726,21 @@ function _stepPhysics(dt){
         if(pb)pb.textContent='Resume';
       }
       break;
+    }
+    if(gSimulator.timerExportMode&&gSimulator._timerWallAnchorMs!=null&&!gSimulator._timerCaptureDone){
+      const now=(typeof performance!=='undefined'&&performance.now)?performance.now():Date.now();
+      if(now-gSimulator._timerWallAnchorMs>=gSimulator.timerWallDurationMs()){
+        gSimulator._timerCaptureDone=true;
+        if(!gPaused){
+          gPaused=true;
+          const rb=document.getElementById('btnRun');
+          if(rb)rb.textContent='Run';
+          const pb=document.getElementById('btnPause');
+          if(pb)pb.textContent='Resume';
+        }
+        if(gSimulator.timerAutoExportCsv) exportMetricsCSV();
+        break;
+      }
     }
   }
 }
