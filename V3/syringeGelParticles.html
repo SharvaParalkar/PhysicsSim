@@ -3556,13 +3556,37 @@ async function populateAssetLibrary(){
     if(sel.options[i].value!=="__default__")sel.remove(i);
   }
 
-  // With `python -m http.server`, `assets/` returns an HTML directory listing.
-  // We parse it to discover *.json files without maintaining a manual list.
+  const appendAssets=(files)=>{
+    const assets=files
+      .map(f=>String(f||'').split('#')[0].split('?')[0])
+      .filter(f=>f && !f.includes('/') && !f.includes('\\') && /\.json$/i.test(f) && f!=='manifest.json');
+    assets.sort((a,b)=>a.localeCompare(b, undefined, {numeric:true,sensitivity:'base'}));
+    for(const fname of assets){
+      const opt=document.createElement('option');
+      opt.value=`assets/${fname}`;
+      opt.textContent=fname.replace(/\.json$/i,'');
+      sel.appendChild(opt);
+    }
+  };
+
+  // Cloudflare Workers static assets: use manifest.json (no directory listing).
+  try{
+    const manRes=await fetch(resolveAppUrl('assets/manifest.json'), {cache:'no-cache'});
+    if(manRes.ok){
+      const man=await manRes.json();
+      const files=Array.isArray(man)?man:(man&&man.files);
+      if(Array.isArray(files)&&files.length){
+        appendAssets(files);
+        return;
+      }
+    }
+  }catch(_e){/* try directory listing fallback */}
+
+  // Local dev: `python -m http.server` serves HTML directory listing for assets/.
   try{
     const res=await fetch(resolveAppUrl('assets/'), {cache:'no-cache'});
     if(!res.ok)throw new Error(`HTTP ${res.status}`);
     const html=await res.text();
-
     const re=/href="([^"]+?\.json)"/ig;
     const seen=new Set();
     const assets=[];
@@ -3571,20 +3595,12 @@ async function populateAssetLibrary(){
       if(!m)break;
       let href=m[1]||"";
       href=href.split('#')[0].split('?')[0];
-      // Keep only direct filenames (avoid "../", nested paths, etc.)
       if(href.includes('/')||href.includes('\\'))continue;
       if(seen.has(href))continue;
       seen.add(href);
       assets.push(href);
     }
-
-    assets.sort((a,b)=>a.localeCompare(b, undefined, {numeric:true,sensitivity:'base'}));
-    for(const fname of assets){
-      const opt=document.createElement('option');
-      opt.value=`assets/${fname}`;
-      opt.textContent=fname.replace(/\.json$/i,'');
-      sel.appendChild(opt);
-    }
+    appendAssets(assets);
   }catch(err){
     console.warn('Asset library listing unavailable; showing only Default sphere.', err);
   }
