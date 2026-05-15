@@ -390,6 +390,24 @@ window._PORE_MC={"edgeTable":[0,265,515,778,1030,1295,1541,1804,2060,2309,2575,2
 <script>
 "use strict";
 // ═══════════════════════════════════════════════════════════════
+// 0.  URL helpers (subpath deploys, e.g. example.com/simulation)
+// ═══════════════════════════════════════════════════════════════
+/** Resolve same-folder asset paths. Without this, /simulation (no trailing slash) makes `assets/` fetch /assets/ at domain root. */
+function resolveAppUrl(relPath){
+  const s=String(relPath||'');
+  if(/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(s))return s;
+  const rel=s.replace(/^\//,'');
+  const pathname=window.location.pathname||'/';
+  let dir;
+  if(pathname.endsWith('/'))dir=pathname;
+  else{
+    const last=pathname.split('/').pop()||'';
+    dir=last.includes('.')?pathname.slice(0,pathname.lastIndexOf('/')+1):pathname+'/';
+  }
+  return new URL(rel,window.location.origin+dir).href;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // 1.  VECTOR / MATRIX MATH  (pattern from existing demos)
 // ═══════════════════════════════════════════════════════════════
 
@@ -3541,7 +3559,7 @@ async function populateAssetLibrary(){
   // With `python -m http.server`, `assets/` returns an HTML directory listing.
   // We parse it to discover *.json files without maintaining a manual list.
   try{
-    const res=await fetch('assets/', {cache:'no-cache'});
+    const res=await fetch(resolveAppUrl('assets/'), {cache:'no-cache'});
     if(!res.ok)throw new Error(`HTTP ${res.status}`);
     const html=await res.text();
 
@@ -4296,7 +4314,7 @@ async function loadUIConfig(){
   // Optional user-editable config file (served from V3/).
   // If missing or invalid, we silently keep the HTML defaults.
   try{
-    const res=await fetch('syringeGelParticles.config.json', {cache:'no-cache'});
+    const res=await fetch(resolveAppUrl('syringeGelParticles.config.json'), {cache:'no-cache'});
     if(!res.ok) return;
     const cfg=await res.json();
     if(!cfg || typeof cfg!=='object') return;
@@ -4628,8 +4646,8 @@ async function onSelectLibrary(value){
     return;
   }
   try{
-    // Paths are relative to this HTML file (V3/…)
-    const res=await fetch(value, {cache:'no-cache'});
+    // Paths are relative to this HTML file (V3/…); resolve for subpath hosting.
+    const res=await fetch(resolveAppUrl(value), {cache:'no-cache'});
     if(!res.ok)throw new Error(`HTTP ${res.status}`);
     const data=await res.json();
     applyParticleTemplateFromJSON(data, value);
