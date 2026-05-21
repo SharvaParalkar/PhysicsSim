@@ -1439,29 +1439,26 @@ function _airwayBifurVisualGeo(leftCurve, rightCurve, tL0, tR0, trunkROut, rOutF
   return _mergeBufferGeometries([mk(leftCurve, tL0), mk(rightCurve, tR0)]);
 }
 
-// ── Shell-SDF + marching-cubes outer shell ───────────────────────────────────
+// ── Solid-SDF + marching-cubes outer shell ───────────────────────────────────
 //
-// Key design: use a SHELL SDF, not a solid SDF.
-//   shell_SDF = |dist_to_centerline − rMid| − halfWall
-// This is NEGATIVE only inside the wall material and POSITIVE everywhere else
-// (both inside the lumen and in the gap between branches).  Marching cubes
-// therefore produces a thin-walled hollow tube — not a filled solid mass — and
-// there is natural visible negative space between the two daughter tubes.
+// Solid SDF: negative everywhere inside the tube, positive outside.
+// Marching cubes produces the outer skin only; FrontSide culling means the
+// interior is never visible — no inner cylinders, no bored-out holes.
+// Open-end flags replace the natural hemispherical domes at the trunk inlet
+// and branch outlets with clean flat-cut circular terminations.
 
 /** Smooth polynomial minimum — blends two SDF values. k = blend width in mm. */
 function _smin(a,b,k){const h=Math.max(k-Math.abs(a-b),0)/k;return Math.min(a,b)-h*h*k*0.25;}
 
 /**
- * Shell SDF for a variable-radius Catmull-Rom tube.
- *   rMidAt(t) = midpoint radius of the wall = (rIn+rOut)/2
- *   hWall     = half wall thickness = (rOut-rIn)/2
- * Returns negative inside the wall, positive in lumen and exterior.
+ * Solid SDF for a variable-radius Catmull-Rom tube.
+ * Returns negative inside, positive outside.
  *
- * openAtStart / openAtEnd suppress the hemispherical end-cap that a clamped
- * closest-point search would otherwise generate, giving a clean open rim.
- * A ×4 push factor keeps the residual micro-dome below voxel resolution.
+ * openAtStart: trunk inlet — suppress dome, leave a flat open circle at t=0.
+ * openAtEnd:   branch outlet — suppress dome, leave a flat open circle at t=1.
+ * The ×4 push factor shrinks the residual micro-dome below voxel resolution.
  */
-function _airwayTubeShellSDF(curve,rMidAt,hWall,px,py,pz,openAtStart,openAtEnd){
+function _airwayTubeSolidSDF(curve,rOutAt,px,py,pz,openAtStart,openAtEnd){
   const COARSE=32,GR=(Math.sqrt(5)-1)*0.5;
   let bD2=1e30,bT=0;
   for(let i=0;i<=COARSE;i++){
@@ -1480,14 +1477,14 @@ function _airwayTubeShellSDF(curve,rMidAt,hWall,px,py,pz,openAtStart,openAtEnd){
     else{lo=t1;t1=t2;e1=e2;t2=lo+GR*(hi-lo);q2=curve.getPoint(t2);e2=(px-q2.x)**2+(py-q2.y)**2+(pz-q2.z)**2;}
   }
   const tB=e1<e2?t1:t2,pB=curve.getPoint(tB);
-  const distC=Math.hypot(px-pB.x,py-pB.y,pz-pB.z);
-  let d=Math.abs(distC-rMidAt(tB))-hWall;
-  // Suppress end-cap domes at open ends: push SDF strongly positive past the endpoint.
+  let d=Math.hypot(px-pB.x,py-pB.y,pz-pB.z)-rOutAt(tB);
+  // Flat open-end at trunk inlet: push SDF positive beyond t=0 endpoint.
   if(openAtStart&&tB<=1e-3){
     const tan=curve.getTangent(0);
     const ow=-((px-pB.x)*tan.x+(py-pB.y)*tan.y+(pz-pB.z)*tan.z);
     if(ow>0) d=Math.max(d,ow*4);
   }
+  // Flat open-end at branch outlet: push SDF positive beyond t=1 endpoint.
   if(openAtEnd&&tB>=1-1e-3){
     const tan=curve.getTangent(1);
     const ow=(px-pB.x)*tan.x+(py-pB.y)*tan.y+(pz-pB.z)*tan.z;
@@ -1497,55 +1494,46 @@ function _airwayTubeShellSDF(curve,rMidAt,hWall,px,py,pz,openAtStart,openAtEnd){
 }
 
 /**
- * Smooth union of trunk-shell + left-bronchus-shell + right-bronchus-shell SDFs.
- * Visual wall is padded to at least 1.2 mm total so the MC has ≥2 voxels to
- * resolve it.  Physics inner radius is untouched; only the outer radius grows
- * slightly when the physics wall is very thin.
+ * Smooth union of trunk + left bronchus + right bronchus solid SDFs.
+ * Blend radius k = 30 % of trunk outer radius — tight enough to keep the Y
+ * silhouette distinct while smoothing out any crease at the bifurcation.
  */
-function _airwayUnionShellSDF(tree,px,py,pz){
-  const physWall=tree.trunkROut-tree.trunkRIn;
-  // Minimum visual half-wall: gives reliable MC resolution and a readable silhouette.
-  const hWall=Math.max(physWall*0.5, 0.60);
-  // Fillet blend radius = 2× half-wall → smooth junction, no sphere artifact.
-  const k=hWall*2;
-  // rMid = physics inner radius + one half-wall (preserves lumen size).
-  const trMid=(t)=>tree.trunkRInAt(t)+hWall;
-  const brMid=(t)=>tree.rInAt(t)+hWall;
-  // Trunk: open at top (yTop), closed at bottom (merges into junction fillet).
-  const dT=_airwayTubeShellSDF(tree.trunkCurve,trMid,hWall,px,py,pz,true,false);
-  // Branches: closed at top (merges into junction), open outlet rim at bottom.
-  const dL=_airwayTubeShellSDF(tree.leftCurve, brMid,hWall,px,py,pz,false,true);
-  const dR=_airwayTubeShellSDF(tree.rightCurve,brMid,hWall,px,py,pz,false,true);
+function _airwayUnionSDF(tree,px,py,pz){
+  const k=tree.trunkROut*0.30;
+  // Trunk: open flat top (inlet), natural closed bottom (merges into junction).
+  const dT=_airwayTubeSolidSDF(tree.trunkCurve,tree.trunkROutAt,px,py,pz,true,false);
+  // Branches: natural closed top (merges into junction), open flat bottom (outlet).
+  const dL=_airwayTubeSolidSDF(tree.leftCurve, tree.rOutAt,       px,py,pz,false,true);
+  const dR=_airwayTubeSolidSDF(tree.rightCurve,tree.rOutAt,       px,py,pz,false,true);
   return _smin(_smin(dT,dL,k),dR,k);
 }
 
 /**
- * Marching-cubes shell mesh for the bronchial tree.
- * Voxel size is chosen so ≥2 voxels span the visual half-wall, ensuring the
- * thin shell is reliably detected.  Reuses window._PORE_MC tables.
- * Returns THREE.BufferGeometry or null.
+ * Marching-cubes solid outer skin for the bronchial tree.
+ * Solid SDF → no inner surfaces generated → FrontSide culling shows a clean,
+ * cohesive Y solid with flat open terminations and a smooth bifurcation fillet.
+ * Reuses window._PORE_MC tables.  Returns THREE.BufferGeometry or null.
  */
 function _airwaySmoothShellGeo(tree){
   if(!window._PORE_MC||!window._PORE_MC.edgeTable) return null;
   const mc=window._PORE_MC;
-  const physWall=tree.trunkROut-tree.trunkRIn;
-  const hWall=Math.max(physWall*0.5,0.60);
-  // Voxel: 55 % of half-wall → ~1.8 voxels per half-wall (enough for MC).
-  const vs=Math.min(Math.max(hWall*0.55,0.38),2.0);
-  const pad=Math.max(tree.trunkROut,hWall*2)*1.4;
+  // Voxel: ~28 % of trunk outer radius — fine enough to resolve the curvature
+  // without being slow for typical airway scales.
+  const vs=Math.min(Math.max(tree.trunkROut*0.28,0.55),2.2);
+  const pad=tree.trunkROut*1.5;
   const gx0=tree.boundsMin[0]-pad, gx1=tree.boundsMax[0]+pad;
   const gy0=tree.boundsMin[1]-pad, gy1=tree.boundsMax[1]+pad;
   const gz0=tree.boundsMin[2]-pad, gz1=tree.boundsMax[2]+pad;
   const NX=Math.max(4,Math.ceil((gx1-gx0)/vs)+1);
   const NY=Math.max(4,Math.ceil((gy1-gy0)/vs)+1);
   const NZ=Math.max(4,Math.ceil((gz1-gz0)/vs)+1);
-  if(NX*NY*NZ>1800000) return null;
+  if(NX*NY*NZ>1500000) return null;
   const field=new Float32Array(NX*NY*NZ);
   const gi=(ix,iy,iz)=>iz*NY*NX+iy*NX+ix;
   for(let iz=0;iz<NZ;iz++)
     for(let iy=0;iy<NY;iy++)
       for(let ix=0;ix<NX;ix++)
-        field[gi(ix,iy,iz)]=_airwayUnionShellSDF(tree,gx0+ix*vs,gy0+iy*vs,gz0+iz*vs);
+        field[gi(ix,iy,iz)]=_airwayUnionSDF(tree,gx0+ix*vs,gy0+iy*vs,gz0+iz*vs);
   // Corner ordering matches _poreMarchCubeEmit's `o` array:
   //   [0,0,0],[1,0,0],[1,0,1],[0,0,1],[0,1,0],[1,1,0],[1,1,1],[0,1,1]
   const positions=[];
@@ -1909,23 +1897,23 @@ class AirwayTree{
   }
 
   /**
-   * Visible outer shell: one thin-walled marching-cubes mesh (shell SDF).
-   * The interior lumen and the gap between daughter tubes are positive SDF → no mesh
-   * is generated there → visible negative space between branches, hollow tube appearance.
-   * Physics collision geometry is completely unchanged.
+   * Visible outer solid: one cohesive marching-cubes mesh (solid SDF, FrontSide).
+   * Only the outer skin is rendered — no inner bore surfaces, no visible holes.
+   * Flat open circles at the trunk inlet and branch outlets are preserved by the
+   * open-end SDF logic.  Physics collision geometry is completely unchanged.
    */
   buildMeshes(scene){
     const geo=_airwaySmoothShellGeo(this);
-    // DoubleSide: both outer wall face and inner lumen face are rendered, giving
-    // the correct "frosted glass tube" look — you see the wall from inside and out.
+    // FrontSide + depthWrite:true → solid, cohesive appearance with no inner artifacts.
+    // Semi-transparent so particles are still faintly visible through the skin.
     const shellMat=new THREE.MeshPhongMaterial({
-      color:0xd6eaf8,transparent:true,opacity:0.26,
-      side:THREE.DoubleSide,depthWrite:false,depthTest:true,
-      shininess:90,specular:0xffffff});
+      color:0xc8dff0,transparent:true,opacity:0.62,
+      side:THREE.FrontSide,depthWrite:true,depthTest:true,
+      shininess:45,specular:0x88aacc});
     if(geo){
       const mesh=new THREE.Mesh(geo,shellMat);
       mesh.name='airway_shell';
-      mesh.renderOrder=2;
+      mesh.renderOrder=1;
       scene.add(mesh);
       this.meshes.push({name:'airway_shell',mesh});
     }
