@@ -18,6 +18,18 @@
     "particleLockEnabled": false,
     "lockAfterStrainPct": 35
   },
+  "airway": {
+    "trunkRadiusMm": 2,
+    "trunkLengthMm": 7,
+    "branchRadiusMm": 2,
+    "branchLengthMm": 5,
+    "branchSpreadMm": 2,
+    "carinaY_mm": 17,
+    "maxParticles": 300,
+    "initialDrop": 10,
+    "dropMore": 1,
+    "radiusMm": 1.02
+  },
   "physics": {
     "containerMode": "syringe",
     "volumeBox_mm": {

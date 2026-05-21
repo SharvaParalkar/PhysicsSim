@@ -87,6 +87,11 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
            border:1px solid #2a3140;text-align:right}
 #settleHud .hudVal{color:#ffd080;font-weight:bold}
 #settleHud .hudSub{font-size:10px;color:#8ab;margin-top:4px;line-height:1.35}
+.airway-bake-progress{display:none;width:100%;margin-top:2px}
+.airway-bake-progress.is-active{display:block}
+.airway-bake-progress-track{height:8px;background:#232840;border-radius:4px;overflow:hidden;border:1px solid #334}
+.airway-bake-progress-fill{height:100%;width:0%;background:linear-gradient(90deg,#2e5c9e,#4a8fd4);transition:width .12s ease}
+.airway-bake-progress-meta{display:flex;justify-content:space-between;gap:8px;margin-top:4px;font-size:10px;color:#7a9abd}
 </style>
 </head>
 <body>
@@ -104,6 +109,8 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
   <button class="btn"        onclick="exportPoresOBJ()" title="Empty space inside the fluid domain minus gel (void mesh). Smooth isosurface via marching cubes + vertex normals when Performance → Smooth pore mesh is on.">Export pores (OBJ)</button>
   <button class="btn"        onclick="exportPLYColors()" title="Exports particles with vertex colors (stress/contact gradient)">Export PLY (colors)</button>
   <button class="btn"        onclick="exportMetricsCSV()" title="CSV: P2P contacts, contact area, force stats, porosity (box), motion &amp; strain, settle flags. Timer mode logs for a wall-clock window after Run / Drop.">Export metrics CSV</button>
+  <button class="btn" id="btnExport4kVideo" onclick="onExportAirwayVideo4K()" disabled
+          title="Bronchial tree: pre-compute first, then export all baked frames as 3840×2160 WebM.">Export 4K video</button>
   <label>Library:
     <select id="particleLibrary" onchange="onSelectLibrary(this.value)" style="width:auto">
       <option value="__default__">Default sphere</option>
@@ -111,9 +118,12 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
   </label>
   <label>Particle JSON: <input type="file" id="particleFile" accept=".json"
          onchange="loadParticleJSON(event)" style="width:auto;font-size:11px"></label>
-  <label title="Closed watertight mesh (mm). Spawns inside mesh in Invisible box mode; use Container → Auto-fit.">Fill volume OBJ:
+  <label title="Closed watertight mesh, or thin airway shell (open ends OK). Invisible box mode + Auto-fit.">Fill volume OBJ:
     <input type="file" id="fillVolumeObjFile" accept=".obj,.OBJ,text/plain"
            onchange="loadFillVolumeObj(event)" style="width:auto;font-size:11px"></label>
+  <label title="Optional fast spawn list from prepare_fill_volume.py --spawn-json">Spawn JSON:
+    <input type="file" id="fillSpawnJsonFile" accept=".json,application/json"
+           onchange="loadFillSpawnJson(event)" style="width:auto;font-size:11px"></label>
 </div>
 
 <div id="main">
@@ -127,8 +137,22 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
       <select id="selContainerMode" onchange="onContainerModeChange(true);syncVolumeOutlinePreview();" style="width:auto"
               title="Box mode: no syringe geometry; particles fill an invisible rectangular volume. Changing mode restarts the sim.">
         <option value="syringe" selected>Syringe (visible)</option>
+        <option value="airway">Bronchial tree (Y-tubes)</option>
         <option value="volume">Invisible box volume</option>
       </select></div>
+    <div id="wrapContainerOrbit">
+    <div class="row"><label>Orbit camera</label>
+      <select id="selContainerOrbitMode" onchange="onContainerOrbitModeChange()" style="width:auto"
+              title="Auto-orbit around the invisible box or bronchial tree center. Frame the view first (drag/zoom), then enable.">
+        <option value="off" selected>Off</option>
+        <option value="orbit">Orbit</option>
+      </select></div>
+    <div class="row"><label>Orbit speed (deg/s)</label>
+      <input type="number" id="pContainerOrbitDegS" value="18" min="1" max="180" step="1"
+             oninput="onContainerOrbitModeChange()"></div>
+    <div class="row"><label></label>
+      <span style="font-size:11px;color:#7a9abd">Works in <b>Invisible box volume</b> and <b>Bronchial tree</b>. Keeps your current camera angle; only the camera moves.</span></div>
+    </div>
     <div class="row"><label>Auto-fit box to mesh</label>
       <input type="checkbox" id="chkFillMeshAutofit" checked
              title="Set width/height/depth and center from mesh AABB + padding (box mode)"></div>
@@ -138,7 +162,7 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
     <div class="row"><label></label>
       <button type="button" class="btn" onclick="clearFillVolumeObj()">Clear fill mesh</button></div>
     <div class="row"><label></label>
-      <span style="font-size:11px;color:#7a9abd">Load mesh from the top bar (“Fill volume OBJ”). Set Mode to Invisible box volume for spawn layout + box size fields.</span></div>
+      <span style="font-size:11px;color:#7a9abd">For a lung shape without OBJ import, use <b>Bronchial tree (Y-tubes)</b>. Box mode can load a fill OBJ or spawn JSON.</span></div>
     <div id="wrapVolumeDims" style="display:none">
     <div class="row"><label>Width X (mm)</label>
       <input type="number" id="pVolW" value="1" min="0.5" max="400" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
@@ -157,8 +181,49 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
              oninput="onVolDropHeightInput()"
              title="Extra height above the box inner top for Drop / spawns (mm). Timer mode defaults this to 20 mm."></div>
     </div>
+    <div id="wrapAirwayDims" style="display:none">
+    <div class="row"><label>Trunk radius</label>
+      <input type="number" id="pAirTrunkR" value="2" min="1" max="20" step="0.1"
+             title="Inner radius of vertical trunk (mm)"></div>
+    <div class="row"><label>Trunk length</label>
+      <input type="number" id="pAirTrunkLen" value="7" min="4" max="80" step="0.5"></div>
+    <div class="row"><label>Branch radius</label>
+      <input type="number" id="pAirBranchR" value="2" min="0.8" max="16" step="0.1"></div>
+    <div class="row"><label>Branch length</label>
+      <input type="number" id="pAirBranchLen" value="5" min="4" max="60" step="0.5"></div>
+    <div class="row"><label>Branch spread</label>
+      <input type="number" id="pAirSpread" value="2" min="2" max="40" step="0.5"></div>
+    <div class="row"><label>Carina height Y</label>
+      <input type="number" id="pAirCarinaY" value="17" min="4" max="80" step="0.5"></div>
+    <div class="row"><label>Pre-compute on Run</label>
+      <input type="checkbox" id="chkAirwayBake" checked
+             title="When on, Run pre-computes physics first, then replays at 60+ fps. Re-bake after Restart or Drop."></div>
+    <div class="row"><label>Bake max (sim s)</label>
+      <input type="number" id="pAirBakeMaxS" value="45" min="5" max="300" step="5"
+             title="Stop baking after this much simulated time (or when settled)."></div>
+    <div class="row"><label>Playback fps</label>
+      <input type="number" id="pAirPlayFps" value="60" min="15" max="240" step="1"
+             title="Replay speed after pre-compute (wall-clock frames per second)."></div>
     <div class="row"><label></label>
-      <span style="font-size:11px;color:#7a9abd">Switching mode auto-restarts. Resize the box, then Restart to apply bounds.</span></div>
+      <button type="button" class="btn green" id="btnAirwayBake" onclick="onAirwayBake()"
+              title="Compute full physics off-screen as fast as possible, then play back smoothly at 60+ fps">Pre-compute &amp; play</button>
+      <button type="button" class="btn" id="btnAirwayBakeCancel" onclick="onAirwayBakeCancel()" style="display:none;margin-left:6px">Cancel</button></div>
+    <div class="row"><label></label>
+      <span id="lblAirwayBake" style="font-size:11px;color:#7a9abd">Pre-compute runs full physics headless from t=0, then loops smooth playback. Re-bake after Drop.</span></div>
+    <div class="row"><label></label>
+      <div id="wrapAirwayBakeProgress" class="airway-bake-progress" style="flex:1;min-width:0">
+        <div class="airway-bake-progress-track" id="airwayBakeProgressBar" role="progressbar"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+             aria-label="Pre-compute progress">
+          <div class="airway-bake-progress-fill" id="airwayBakeProgressFill"></div>
+        </div>
+        <div class="airway-bake-progress-meta">
+          <span id="lblAirwayBakePct">0%</span>
+          <span id="lblAirwayBakeEta">ETA —</span>
+        </div>
+      </div></div>
+    <div class="row"><label></label>
+      <span style="font-size:11px;color:#7a9abd">Branches curve downward (outlets sealed in physics). If gel still clips walls, lower particle radius or raise Performance → Substeps.</span></div>
     </div>
   </details>
 
@@ -1127,11 +1192,762 @@ class BoxVolume {
   }
 }
 
+/** Closest point on segment AB to P; returns distance and outward normal from axis. */
+function _capsuleAxisQuery(px,py,pz, ax,ay,az, bx,by,bz){
+  const abx=bx-ax, aby=by-ay, abz=bz-az;
+  const apx=px-ax, apy=py-ay, apz=pz-az;
+  const ab2=abx*abx+aby*aby+abz*abz;
+  let t=ab2>1e-20?(apx*abx+apy*aby+apz*abz)/ab2:0;
+  t=Math.max(0,Math.min(1,t));
+  const cx=ax+abx*t, cy=ay+aby*t, cz=az+abz*t;
+  const dx=px-cx, dy=py-cy, dz=pz-cz;
+  const dist=Math.hypot(dx,dy,dz);
+  if(dist>1e-10)
+    return{dist,cx,cy,cz,nx:dx/dist,ny:dy/dist,nz:dz/dist};
+  return{dist,cx,cy,cz,nx:0,ny:1,nz:0};
+}
+
+/**
+ * Closest interior-wall query on a variable-radius tube (Catmull-Rom centerline).
+ * Replaces per-capsule scans in the hot path; accuracy matches dense capsule sampling.
+ */
+function _airwayClosestOnCurve(curve, rInAt, px, py, pz){
+  const COARSE=28, REFINE=14;
+  const gr=(Math.sqrt(5)-1)*0.5;
+  const evalT=(t)=>{
+    const p=curve.getPoint(t);
+    const dx=px-p.x, dy=py-p.y, dz=pz-p.z;
+    const dist=Math.hypot(dx,dy,dz);
+    const rIn=rInAt(t);
+    return{m:dist-rIn, dist, rIn, px:p.x, py:p.y, pz:p.z, dx, dy, dz};
+  };
+  let bestT=0, best=evalT(0);
+  for(let i=1;i<=COARSE;i++){
+    const e=evalT(i/COARSE);
+    if(e.m<best.m){best=e; bestT=i/COARSE;}
+  }
+  let a=Math.max(0, bestT-2/COARSE), b=Math.min(1, bestT+2/COARSE);
+  let t1=b-gr*(b-a), t2=a+gr*(b-a);
+  let e1=evalT(t1), e2=evalT(t2);
+  for(let it=0;it<REFINE;it++){
+    if(e1.m<e2.m){
+      b=t2; t2=t1; e2=e1;
+      t1=b-gr*(b-a); e1=evalT(t1);
+    }else{
+      a=t1; t1=t2; e1=e2;
+      t2=a+gr*(b-a); e2=evalT(t2);
+    }
+  }
+  const e=e1.m<=e2.m?e1:e2;
+  if(e.dist>1e-10){
+    const inv=1/e.dist;
+    return{margin:e.m, cx:e.px, cy:e.py, cz:e.pz,
+      nx:e.dx*inv, ny:e.dy*inv, nz:e.dz*inv, rIn:e.rIn};
+  }
+  return{margin:e.m, cx:e.px, cy:e.py, cz:e.pz, nx:0, ny:1, nz:0, rIn:e.rIn};
+}
+
+/** Catmull-Rom curve from [x,y,z][] control points (centripetal, open). */
+function _airwayMakeCurve(pts){
+  const v=pts.map(p=>new THREE.Vector3(p[0],p[1],p[2]));
+  return new THREE.CatmullRomCurve3(v, false, 'centripetal', 0.5);
+}
+
+/** Smooth tube mesh; optional flush end caps share the tube ring (no separate floating geometry). */
+function _airwayVarTubeGeo(curve, tubularSeg, radialSeg, radiusAt, capOpts){
+  const capStart=!!(capOpts&&capOpts.capStart);
+  const capEnd=!!(capOpts&&capOpts.capEnd);
+  const frames=curve.computeFrenetFrames(tubularSeg, false);
+  const N=tubularSeg+1;
+  const R=radialSeg+1;
+  const pos=[];
+  const idx=[];
+  for(let i=0;i<N;i++){
+    const t=i/tubularSeg;
+    const p=curve.getPoint(t);
+    const rad=radiusAt(t);
+    const Nn=frames.normals[i];
+    const Bn=frames.binormals[i];
+    for(let j=0;j<R;j++){
+      const ang=(j/radialSeg)*Math.PI*2;
+      const c=Math.cos(ang), s=Math.sin(ang);
+      pos.push(
+        p.x+rad*(Nn.x*c+Bn.x*s),
+        p.y+rad*(Nn.y*c+Bn.y*s),
+        p.z+rad*(Nn.z*c+Bn.z*s));
+    }
+  }
+  for(let i=0;i<tubularSeg;i++){
+    for(let j=0;j<radialSeg;j++){
+      const a=i*R+j, b=a+R, c=a+1, d=b+1;
+      idx.push(a,b,d, a,d,c);
+    }
+  }
+  if(capStart){
+    const p=curve.getPoint(0);
+    const ci=pos.length/3;
+    pos.push(p.x,p.y,p.z);
+    for(let j=0;j<radialSeg;j++){
+      const a=j, b=(j+1)%R;
+      idx.push(ci, b, a);
+    }
+  }
+  if(capEnd){
+    const p=curve.getPoint(1);
+    const ci=pos.length/3;
+    pos.push(p.x,p.y,p.z);
+    const r0=tubularSeg*R;
+    for(let j=0;j<radialSeg;j++){
+      const a=r0+j, b=r0+((j+1)%R);
+      idx.push(ci, a, b);
+    }
+  }
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/** Tube mesh along curve parameter range [t0,t1] (visual-only; physics uses full curves). */
+function _airwayVarTubeGeoSegment(curve, t0, t1, tubularSeg, radialSeg, radiusAt, capOpts){
+  const tLo=Math.max(0, Math.min(1, t0));
+  const tHi=Math.max(tLo, Math.min(1, t1));
+  if(tHi-tLo<1e-5) return new THREE.BufferGeometry();
+  const mapT=(u)=>tLo+(tHi-tLo)*u;
+  const capStart=!!(capOpts&&capOpts.capStart);
+  const capEnd=!!(capOpts&&capOpts.capEnd);
+  const frames=curve.computeFrenetFrames(tubularSeg, false);
+  const N=tubularSeg+1;
+  const R=radialSeg+1;
+  const pos=[];
+  const idx=[];
+  for(let i=0;i<N;i++){
+    const u=i/tubularSeg;
+    const t=mapT(u);
+    const p=curve.getPoint(t);
+    const rad=radiusAt(t);
+    const fi=Math.max(0, Math.min(tubularSeg, Math.round(t*tubularSeg)));
+    const Nn=frames.normals[fi];
+    const Bn=frames.binormals[fi];
+    for(let j=0;j<R;j++){
+      const ang=(j/radialSeg)*Math.PI*2;
+      const c=Math.cos(ang), s=Math.sin(ang);
+      pos.push(
+        p.x+rad*(Nn.x*c+Bn.x*s),
+        p.y+rad*(Nn.y*c+Bn.y*s),
+        p.z+rad*(Nn.z*c+Bn.z*s));
+    }
+  }
+  for(let i=0;i<tubularSeg;i++){
+    for(let j=0;j<radialSeg;j++){
+      const a=i*R+j, b=a+R, c=a+1, d=b+1;
+      idx.push(a,b,d, a,d,c);
+    }
+  }
+  if(capStart){
+    const p=curve.getPoint(tLo);
+    const ci=pos.length/3;
+    pos.push(p.x,p.y,p.z);
+    for(let j=0;j<radialSeg;j++){
+      const a=j, b=(j+1)%R;
+      idx.push(ci, b, a);
+    }
+  }
+  if(capEnd){
+    const p=curve.getPoint(tHi);
+    const ci=pos.length/3;
+    pos.push(p.x,p.y,p.z);
+    const r0=tubularSeg*R;
+    for(let j=0;j<radialSeg;j++){
+      const a=r0+j, b=r0+((j+1)%R);
+      idx.push(ci, a, b);
+    }
+  }
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/** First t where branch centerline leaves the trunk outer cylinder (visual trim). */
+function _airwayBranchVisualT0(curve, trunkROut, carinaY){
+  const N=72;
+  for(let i=0;i<=N;i++){
+    const t=i/N;
+    const p=curve.getPoint(t);
+    if(p.y<carinaY-trunkROut*0.65) continue;
+    if(Math.hypot(p.x,p.z)>=trunkROut*0.92) return Math.max(0, t-1/N);
+  }
+  return 0.22;
+}
+
+/** Revolved trunk pipe (physics still uses full Catmull trunk curve below carina). */
+function _airwayTrunkCylinderGeo(yTop, yCarina, rOut, radialSeg){
+  const h=Math.max(0.01, yTop-yCarina);
+  const geo=new THREE.CylinderGeometry(rOut, rOut, h, radialSeg, 1, false);
+  geo.translate(0, yCarina+h*0.5, 0);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * Branch OD so the tube sits outside the trunk (centerline is inside/on trunk wall for physics).
+ * Outer envelope ≈ axis distance + r ≥ trunk OD near the carina — no penetrating lobes.
+ */
+function _airwayVisualBranchRadius(curve, t, trunkROut, rOutFn){
+  const p=curve.getPoint(t);
+  const axisR=Math.hypot(p.x,p.z);
+  const rEnd=rOutFn(t);
+  const flush=rEnd+Math.max(0, trunkROut-axisR+0.06);
+  return flush;
+}
+
+function _mergeBufferGeometries(geos){
+  let vertOff=0;
+  const pos=[], idx=[];
+  for(const g of geos){
+    if(!g) continue;
+    const p=g.getAttribute('position');
+    const ix=g.getIndex();
+    if(!p||p.count<3) continue;
+    for(let i=0;i<p.count;i++) pos.push(p.getX(i),p.getY(i),p.getZ(i));
+    if(ix){
+      for(let i=0;i<ix.count;i++) idx.push(ix.getX(i)+vertOff);
+    }else{
+      for(let i=2;i<p.count;i+=3){
+        idx.push(vertOff+i-2, vertOff+i-1, vertOff+i);
+      }
+    }
+    vertOff+=p.count;
+    g.dispose();
+  }
+  const out=new THREE.BufferGeometry();
+  out.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+  if(idx.length) out.setIndex(idx);
+  out.computeVertexNormals();
+  return out;
+}
+
+/** One airway shell mesh for both bronchi (no separate lobes intersecting each other). */
+function _airwayBifurVisualGeo(leftCurve, rightCurve, tL0, tR0, trunkROut, rOutFn, tubularSeg, radialSeg){
+  const mk=(curve,t0)=>_airwayVarTubeGeoSegment(
+    curve, t0, 1, tubularSeg, radialSeg,
+    (t)=>_airwayVisualBranchRadius(curve, t, trunkROut, rOutFn),
+    {capEnd:true});
+  return _mergeBufferGeometries([mk(leftCurve, tL0), mk(rightCurve, tR0)]);
+}
+
+// ── Shell-SDF + marching-cubes outer shell ───────────────────────────────────
+//
+// Key design: use a SHELL SDF, not a solid SDF.
+//   shell_SDF = |dist_to_centerline − rMid| − halfWall
+// This is NEGATIVE only inside the wall material and POSITIVE everywhere else
+// (both inside the lumen and in the gap between branches).  Marching cubes
+// therefore produces a thin-walled hollow tube — not a filled solid mass — and
+// there is natural visible negative space between the two daughter tubes.
+
+/** Smooth polynomial minimum — blends two SDF values. k = blend width in mm. */
+function _smin(a,b,k){const h=Math.max(k-Math.abs(a-b),0)/k;return Math.min(a,b)-h*h*k*0.25;}
+
+/**
+ * Shell SDF for a variable-radius Catmull-Rom tube.
+ *   rMidAt(t) = midpoint radius of the wall = (rIn+rOut)/2
+ *   hWall     = half wall thickness = (rOut-rIn)/2
+ * Returns negative inside the wall, positive in lumen and exterior.
+ *
+ * openAtStart / openAtEnd suppress the hemispherical end-cap that a clamped
+ * closest-point search would otherwise generate, giving a clean open rim.
+ * A ×4 push factor keeps the residual micro-dome below voxel resolution.
+ */
+function _airwayTubeShellSDF(curve,rMidAt,hWall,px,py,pz,openAtStart,openAtEnd){
+  const COARSE=32,GR=(Math.sqrt(5)-1)*0.5;
+  let bD2=1e30,bT=0;
+  for(let i=0;i<=COARSE;i++){
+    const t=i/COARSE,p=curve.getPoint(t);
+    const d2=(px-p.x)**2+(py-p.y)**2+(pz-p.z)**2;
+    if(d2<bD2){bD2=d2;bT=t;}
+  }
+  const S=2/COARSE;
+  let lo=Math.max(0,bT-S),hi=Math.min(1,bT+S);
+  let t1=hi-GR*(hi-lo),t2=lo+GR*(hi-lo);
+  let q1=curve.getPoint(t1),q2=curve.getPoint(t2);
+  let e1=(px-q1.x)**2+(py-q1.y)**2+(pz-q1.z)**2;
+  let e2=(px-q2.x)**2+(py-q2.y)**2+(pz-q2.z)**2;
+  for(let i=0;i<14;i++){
+    if(e1<e2){hi=t2;t2=t1;e2=e1;t1=hi-GR*(hi-lo);q1=curve.getPoint(t1);e1=(px-q1.x)**2+(py-q1.y)**2+(pz-q1.z)**2;}
+    else{lo=t1;t1=t2;e1=e2;t2=lo+GR*(hi-lo);q2=curve.getPoint(t2);e2=(px-q2.x)**2+(py-q2.y)**2+(pz-q2.z)**2;}
+  }
+  const tB=e1<e2?t1:t2,pB=curve.getPoint(tB);
+  const distC=Math.hypot(px-pB.x,py-pB.y,pz-pB.z);
+  let d=Math.abs(distC-rMidAt(tB))-hWall;
+  // Suppress end-cap domes at open ends: push SDF strongly positive past the endpoint.
+  if(openAtStart&&tB<=1e-3){
+    const tan=curve.getTangent(0);
+    const ow=-((px-pB.x)*tan.x+(py-pB.y)*tan.y+(pz-pB.z)*tan.z);
+    if(ow>0) d=Math.max(d,ow*4);
+  }
+  if(openAtEnd&&tB>=1-1e-3){
+    const tan=curve.getTangent(1);
+    const ow=(px-pB.x)*tan.x+(py-pB.y)*tan.y+(pz-pB.z)*tan.z;
+    if(ow>0) d=Math.max(d,ow*4);
+  }
+  return d;
+}
+
+/**
+ * Smooth union of trunk-shell + left-bronchus-shell + right-bronchus-shell SDFs.
+ * Visual wall is padded to at least 1.2 mm total so the MC has ≥2 voxels to
+ * resolve it.  Physics inner radius is untouched; only the outer radius grows
+ * slightly when the physics wall is very thin.
+ */
+function _airwayUnionShellSDF(tree,px,py,pz){
+  const physWall=tree.trunkROut-tree.trunkRIn;
+  // Minimum visual half-wall: gives reliable MC resolution and a readable silhouette.
+  const hWall=Math.max(physWall*0.5, 0.60);
+  // Fillet blend radius = 2× half-wall → smooth junction, no sphere artifact.
+  const k=hWall*2;
+  // rMid = physics inner radius + one half-wall (preserves lumen size).
+  const trMid=(t)=>tree.trunkRInAt(t)+hWall;
+  const brMid=(t)=>tree.rInAt(t)+hWall;
+  // Trunk: open at top (yTop), closed at bottom (merges into junction fillet).
+  const dT=_airwayTubeShellSDF(tree.trunkCurve,trMid,hWall,px,py,pz,true,false);
+  // Branches: closed at top (merges into junction), open outlet rim at bottom.
+  const dL=_airwayTubeShellSDF(tree.leftCurve, brMid,hWall,px,py,pz,false,true);
+  const dR=_airwayTubeShellSDF(tree.rightCurve,brMid,hWall,px,py,pz,false,true);
+  return _smin(_smin(dT,dL,k),dR,k);
+}
+
+/**
+ * Marching-cubes shell mesh for the bronchial tree.
+ * Voxel size is chosen so ≥2 voxels span the visual half-wall, ensuring the
+ * thin shell is reliably detected.  Reuses window._PORE_MC tables.
+ * Returns THREE.BufferGeometry or null.
+ */
+function _airwaySmoothShellGeo(tree){
+  if(!window._PORE_MC||!window._PORE_MC.edgeTable) return null;
+  const mc=window._PORE_MC;
+  const physWall=tree.trunkROut-tree.trunkRIn;
+  const hWall=Math.max(physWall*0.5,0.60);
+  // Voxel: 55 % of half-wall → ~1.8 voxels per half-wall (enough for MC).
+  const vs=Math.min(Math.max(hWall*0.55,0.38),2.0);
+  const pad=Math.max(tree.trunkROut,hWall*2)*1.4;
+  const gx0=tree.boundsMin[0]-pad, gx1=tree.boundsMax[0]+pad;
+  const gy0=tree.boundsMin[1]-pad, gy1=tree.boundsMax[1]+pad;
+  const gz0=tree.boundsMin[2]-pad, gz1=tree.boundsMax[2]+pad;
+  const NX=Math.max(4,Math.ceil((gx1-gx0)/vs)+1);
+  const NY=Math.max(4,Math.ceil((gy1-gy0)/vs)+1);
+  const NZ=Math.max(4,Math.ceil((gz1-gz0)/vs)+1);
+  if(NX*NY*NZ>1800000) return null;
+  const field=new Float32Array(NX*NY*NZ);
+  const gi=(ix,iy,iz)=>iz*NY*NX+iy*NX+ix;
+  for(let iz=0;iz<NZ;iz++)
+    for(let iy=0;iy<NY;iy++)
+      for(let ix=0;ix<NX;ix++)
+        field[gi(ix,iy,iz)]=_airwayUnionShellSDF(tree,gx0+ix*vs,gy0+iy*vs,gz0+iz*vs);
+  // Corner ordering matches _poreMarchCubeEmit's `o` array:
+  //   [0,0,0],[1,0,0],[1,0,1],[0,0,1],[0,1,0],[1,1,0],[1,1,1],[0,1,1]
+  const positions=[];
+  const val8=new Float32Array(8);
+  const pushTri=(ax,ay,az,bx,by,bz,cx,cy,cz)=>positions.push(ax,ay,az,bx,by,bz,cx,cy,cz);
+  for(let iz=0;iz<NZ-1;iz++)
+    for(let iy=0;iy<NY-1;iy++)
+      for(let ix=0;ix<NX-1;ix++){
+        val8[0]=field[gi(ix,  iy,  iz  )]; val8[1]=field[gi(ix+1,iy,  iz  )];
+        val8[2]=field[gi(ix+1,iy,  iz+1)]; val8[3]=field[gi(ix,  iy,  iz+1)];
+        val8[4]=field[gi(ix,  iy+1,iz  )]; val8[5]=field[gi(ix+1,iy+1,iz  )];
+        val8[6]=field[gi(ix+1,iy+1,iz+1)]; val8[7]=field[gi(ix,  iy+1,iz+1)];
+        _poreMarchCubeEmit(val8,gx0+ix*vs,gy0+iy*vs,gz0+iz*vs,vs,vs,vs,0,mc,pushTri);
+      }
+  if(positions.length<9) return null;
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * Branch outlet (t=1): block particles that move past the open end along the centerline tangent.
+ * Without this, closest-point-on-curve only finds the rim and gel can leak out the bottom.
+ */
+function _airwayBranchOutletQuery(curve, rInAt, px, py, pz){
+  const p1=curve.getPoint(1);
+  const tan=curve.getTangent(1);
+  const tl=Math.hypot(tan.x,tan.y,tan.z)||1;
+  const tx=tan.x/tl, ty=tan.y/tl, tz=tan.z/tl;
+  const vx=px-p1.x, vy=py-p1.y, vz=pz-p1.z;
+  const along=vx*tx+vy*ty+vz*tz;
+  if(along<=0) return null;
+  const rIn=rInAt(1);
+  const rx=vx-along*tx, ry=vy-along*ty, rz=vz-along*tz;
+  const radial=Math.hypot(rx,ry,rz);
+  if(radial>1e-10){
+    const inv=1/radial;
+    const rxn=rx*inv, ryn=ry*inv, rzn=rz*inv;
+    if(radial>rIn){
+      return{
+        margin:Math.max(along, radial-rIn),
+        cx:p1.x+rxn*rIn, cy:p1.y+ryn*rIn, cz:p1.z+rzn*rIn,
+        nx:rxn, ny:ryn, nz:rzn, rIn,
+      };
+    }
+  }
+  return{margin:along, cx:p1.x, cy:p1.y, cz:p1.z, nx:-tx, ny:-ty, nz:-tz, rIn};
+}
+
+/** Sample curve into collision capsules with radius callbacks rInAt(t), rOutAt(t) in [0,1]. */
+function _airwayCurveToCapsules(curve, nSamples, rInAt, rOutAt){
+  const caps=[];
+  const n=Math.max(8, nSamples|0);
+  let ax,ay,az,ri0,ro0;
+  for(let i=0;i<=n;i++){
+    const t=i/n;
+    const p=curve.getPoint(t);
+    const ri=rInAt(t), ro=rOutAt(t);
+    if(i>0)
+      caps.push({
+        ax,ay,az, bx:p.x,by:p.y,bz:p.z,
+        rIn:0.5*(ri0+ri), rOut:0.5*(ro0+ro),
+      });
+    ax=p.x; ay=p.y; az=p.z; ri0=ri; ro0=ro;
+  }
+  return caps;
+}
+
+/**
+ * Smooth Y-shaped airway: trunk cylinder + Catmull-Rom bronchi (one continuous tube each).
+ * Collision = dense capsules along curves + blend sphere at carina.
+ */
+class AirwayTree{
+  constructor(p){
+    this._airwayVolume=true;
+    this.wallAllowPenetrationMm=Math.max(0, +(p.wallAllowPenetrationMm||0));
+    /** Inflate inner wall by particle radius so skinned verts do not clip the shell. */
+    this.particleSkinMm=Math.max(0, +(p.particleSkinMm ?? p.particleRadiusMm ?? 0));
+    this.tubeSeg=Math.max(32, (p.tubeSegments|0)||96);
+    this.tubeRadial=Math.max(16, (p.tubeRadial|0)||28);
+    this._spawnPool=null;
+    this.capActive=false;
+    this.needleInletCapActive=false;
+    this.filamentGuideRadius=0;
+    this.catchTrayTopY=null;
+    this.catchTrayRadius=null;
+    this.meshes=[];
+    this.curves=[];
+
+    const trunkR=Math.max(1, +(p.trunkRadiusMm ?? p.trunkRadius ?? 2));
+    const branchR=Math.max(0.8, +(p.branchRadiusMm ?? p.branchRadius ?? 2));
+    const wall=Math.max(0.15, +(p.wallThicknessMm ?? p.wallThickness ?? 0.65));
+    this.trunkRIn=trunkR;
+    this.branchRIn=branchR;
+    this.trunkROut=trunkR+wall;
+    this.branchROut=branchR+wall;
+
+    const carinaY=+(p.carinaY_mm ?? p.carinaY ?? 17);
+    const trunkLen=Math.max(4, +(p.trunkLengthMm ?? p.trunkLength ?? 7));
+    const branchLen=Math.max(4, +(p.branchLengthMm ?? p.branchLength ?? 5));
+    const spread=Math.max(2, +(p.branchSpreadMm ?? p.branchSpread ?? 2));
+    const branchZ=+(p.branchTiltZ_mm ?? p.branchTiltZ ?? 6);
+    this.branchSpread=spread;
+
+    this.yCarina=carinaY;
+    this.yTop=carinaY+trunkLen;
+    this.yOutlet=carinaY-branchLen;
+    this.carina=[0,carinaY,0];
+    // Extend trunk below carina so the vertical tube meets the branch tubes (closes the V-gap).
+    this.trunkLowY=carinaY-trunkR*0.42;
+
+    const taper=(t)=>branchR+(trunkR-branchR)*Math.max(0,1-t*2.2);
+
+    this.trunkCurve=_airwayMakeCurve([
+      [0,this.yTop,0],
+      [0,carinaY+trunkLen*0.72,0],
+      [0,carinaY+trunkLen*0.38,0],
+      [0,carinaY+trunkLen*0.1,0],
+      [0,carinaY,0],
+      [0,this.trunkLowY,0],
+    ]);
+
+    const leftPts=[
+      [-spread*0.03,this.trunkLowY,-branchZ*0.02],
+      [-spread*0.11,carinaY-branchLen*0.22,-branchZ*0.1],
+      [-spread*0.28,carinaY-branchLen*0.48,-branchZ*0.32],
+      [-spread*0.55,carinaY-branchLen*0.74,-branchZ*0.62],
+      [-spread*0.82,carinaY-branchLen*0.92,-branchZ*0.88],
+      [-spread,this.yOutlet,-branchZ],
+    ];
+    const rightPts=[
+      [spread*0.03,this.trunkLowY,branchZ*0.02],
+      [spread*0.11,carinaY-branchLen*0.22,branchZ*0.1],
+      [spread*0.28,carinaY-branchLen*0.48,branchZ*0.32],
+      [spread*0.55,carinaY-branchLen*0.74,branchZ*0.62],
+      [spread*0.82,carinaY-branchLen*0.92,branchZ*0.88],
+      [spread,this.yOutlet,branchZ],
+    ];
+    this.leftCurve=_airwayMakeCurve(leftPts);
+    this.rightCurve=_airwayMakeCurve(rightPts);
+    this.curves=[this.trunkCurve,this.leftCurve,this.rightCurve];
+
+    const collN=Math.max(24, (p.collisionSamples|0)||40);
+    this.capsules=[];
+    const trunkCaps=_airwayCurveToCapsules(this.trunkCurve, collN,
+      t=>trunkR, t=>trunkR+wall);
+    const leftCaps=_airwayCurveToCapsules(this.leftCurve, collN,
+      t=>taper(t), t=>taper(t)+wall);
+    const rightCaps=_airwayCurveToCapsules(this.rightCurve, collN,
+      t=>taper(t), t=>taper(t)+wall);
+    this.capsules.push(...trunkCaps,...leftCaps,...rightCaps);
+
+    this.carinaR=Math.max(trunkR,branchR)*1.08;
+    this.taperFn=taper;
+    this.rOutAt=(t)=>taper(t)+wall;
+    this.rInAt=(t)=>taper(t);
+    this.trunkROutAt=(t)=>trunkR+wall;
+    this.trunkRInAt=(t)=>trunkR;
+
+    let x0=1e30,y0=1e30,z0=1e30,x1=-1e30,y1=-1e30,z1=-1e30;
+    const grow=(x,y,z,ro)=>{
+      if(x-ro<x0)x0=x-ro;if(y-ro<y0)y0=y-ro;if(z-ro<z0)z0=z-ro;
+      if(x+ro>x1)x1=x+ro;if(y+ro>y1)y1=y+ro;if(z+ro>z1)z1=z+ro;
+    };
+    for(const c of this.capsules)
+      for(const k of [[c.ax,c.ay,c.az],[c.bx,c.by,c.bz]])
+        grow(k[0],k[1],k[2],c.rOut);
+    grow(0,carinaY,0,this.carinaR+wall);
+    grow(0,this.trunkLowY,0,trunkR+wall);
+    grow(0,this.yTop,0,trunkR+wall);
+    this.boundsMin=[x0,y0,z0];
+    this.boundsMax=[x1,y1,z1];
+    this.centerX=(x0+x1)*0.5;
+    this.centerY=(y0+y1)*0.5;
+    this.centerZ=(z0+z1)*0.5;
+    this.halfX=(x1-x0)*0.5;
+    this.halfY=(y1-y0)*0.5;
+    this.halfZ=(z1-z0)*0.5;
+  }
+
+  _querySphere(px,py,pz,cx,cy,cz,rIn){
+    const dx=px-cx,dy=py-cy,dz=pz-cz;
+    const dist=Math.hypot(dx,dy,dz);
+    if(dist<1e-10)return{dist,cx,cy,cz,nx:0,ny:1,nz:0,margin:-rIn};
+    return{dist,cx,cy,cz,nx:dx/dist,ny:dy/dist,nz:dz/dist,margin:dist-rIn};
+  }
+
+  _queryNearest(px,py,pz){
+    const pad=(this.trunkROut||4)+2;
+    if(px<this.boundsMin[0]-pad||px>this.boundsMax[0]+pad||
+       py<this.boundsMin[1]-pad||py>this.boundsMax[1]+pad||
+       pz<this.boundsMin[2]-pad||pz>this.boundsMax[2]+pad)
+      return null;
+    let best=null;
+    const tryCurve=(curve, rInAt)=>{
+      const q=_airwayClosestOnCurve(curve, rInAt, px, py, pz);
+      if(!best||q.margin<best.margin) best=q;
+    };
+    tryCurve(this.trunkCurve, this.trunkRInAt);
+    tryCurve(this.leftCurve, this.rInAt);
+    tryCurve(this.rightCurve, this.rInAt);
+    const tryOutlet=(curve, rInAt)=>{
+      const q=_airwayBranchOutletQuery(curve, rInAt, px, py, pz);
+      if(q&&(!best||q.margin<best.margin)) best=q;
+    };
+    tryOutlet(this.leftCurve, this.rInAt);
+    tryOutlet(this.rightCurve, this.rInAt);
+    const sq=this._querySphere(px,py,pz,this.carina[0],this.carina[1],this.carina[2],this.carinaR);
+    if(!best||sq.margin<best.margin){
+      best={margin:sq.margin, cx:sq.cx, cy:sq.cy, cz:sq.cz, nx:sq.nx, ny:sq.ny, nz:sq.nz, rIn:this.carinaR};
+    }
+    return best;
+  }
+
+  pointInside(px,py,pz){
+    const q=this._queryNearest(px,py,pz);
+    return q&&q.margin<0;
+  }
+
+  getDropSlot(particleR, liftMm){
+    const r=Math.max(0.05, particleR||0.3);
+    const lift=Math.max(0, +(liftMm||0));
+    return[0, this.yTop-r+lift, 0];
+  }
+
+  /** Fast fill: sample along centerline (no per-point collision query). Physics walls correct placement. */
+  _spawnAlongCurveFast(curve, rAt, slots, sp, pr, ringsPerStation){
+    const len=curve.getLength();
+    const step=Math.max(sp*0.82, pr*1.65);
+    const nAlong=Math.max(2, Math.floor(len/step));
+    const rings=Math.max(1, ringsPerStation|0);
+    const b={nx:0,ny:0,nz:0,tx:0,ty:0,tz:0};
+    const basisU=(tx,ty,tz)=>{
+      let vx=0,vy=1,vz=0;
+      if(Math.abs(ty)>0.9){vx=1;vy=0;vz=0}
+      b.nx=ty*vz-tz*vy;b.ny=tz*vx-tx*vz;b.nz=tx*vy-ty*vx;
+      const nl=Math.hypot(b.nx,b.ny,b.nz)||1;
+      b.nx/=nl;b.ny/=nl;b.nz/=nl;
+      b.tx=vy*b.nz-vz*b.ny;b.ty=vz*b.nx-vx*b.nz;b.tz=vx*b.ny-ty*b.nx;
+      const tl=Math.hypot(b.tx,b.ty,b.tz)||1;
+      b.tx/=tl;b.ty/=tl;b.tz/=tl;
+    };
+    for(let j=0;j<nAlong;j++){
+      const t=(j+0.5)/nAlong;
+      const p=curve.getPoint(t);
+      const tan=curve.getTangent(t);
+      const ri=rAt(t);
+      const maxDisc=Math.max(0.04,ri-pr*1.08);
+      basisU(tan.x,tan.y,tan.z);
+      for(let r=0;r<rings;r++){
+        const ang=(r/rings)*Math.PI*2+((j*0.31+r*0.17)%1);
+        const rad=maxDisc*(0.55+0.4*Math.random());
+        slots.push(
+          p.x+(b.tx*Math.cos(ang)+b.nx*Math.sin(ang))*rad,
+          p.y+(b.ty*Math.cos(ang)+b.ny*Math.sin(ang))*rad,
+          p.z+(b.tz*Math.cos(ang)+b.nz*Math.sin(ang))*rad);
+      }
+    }
+  }
+
+  _buildSpawnPool(spacing, particleR){
+    const sp=Math.max(1e-6,spacing);
+    const pr=Math.max(0.05,particleR||0.3);
+    const key=sp.toFixed(4)+'|'+pr.toFixed(4);
+    if(this._spawnPool&&this._spawnPool.key===key)return this._spawnPool.slots;
+    const slots=[];
+    const trunkR=this.trunkRIn;
+    const taper=this.taperFn;
+    const rings=Math.max(3, Math.min(6, Math.floor(trunkR/sp)));
+    this._spawnAlongCurveFast(this.trunkCurve, ()=>trunkR, slots, sp, pr, rings);
+    this._spawnAlongCurveFast(this.leftCurve, taper, slots, sp, pr, Math.max(2,rings-1));
+    this._spawnAlongCurveFast(this.rightCurve, taper, slots, sp, pr, Math.max(2,rings-1));
+    const c=this.carina;
+    for(let k=0;k<14;k++){
+      const u=Math.random(), v=Math.random();
+      const theta=2*Math.PI*u, phi=Math.acos(2*v-1);
+      const rad=this.carinaR*0.5*Math.cbrt(Math.random());
+      slots.push(
+        c[0]+rad*Math.sin(phi)*Math.cos(theta),
+        c[1]-rad*Math.abs(Math.cos(phi))*0.55,
+        c[2]+rad*Math.sin(phi)*Math.sin(theta));
+    }
+    this._spawnPool={key,slots};
+    return slots;
+  }
+
+  buildSpawnSlots(capacity, spacing, particleR){
+    const cap=Math.max(0,capacity|0);
+    const pool=this._buildSpawnPool(spacing, particleR);
+    return _fillPickSpawnSlots(pool, cap);
+  }
+
+  constrainVertex(pos,prevPos,i,mu){
+    const px=pos[3*i],py=pos[3*i+1],pz=pos[3*i+2];
+    const q=this._queryNearest(px,py,pz);
+    if(!q)return false;
+    const allow=this.wallAllowPenetrationMm||0;
+    // Only push a vertex when it has actually escaped past the inner wall
+    // (margin > allow). rClamp keeps it just at the wall surface.
+    if(q.margin<=allow)return false;
+    const rClamp=q.rIn+allow;
+    pos[3*i]=q.cx+q.nx*rClamp;
+    pos[3*i+1]=q.cy+q.ny*rClamp;
+    pos[3*i+2]=q.cz+q.nz*rClamp;
+    mu=Math.max(0,Math.min(1,(mu===undefined?0:mu)));
+    if(prevPos&&mu>0){
+      const vx=pos[3*i]-prevPos[3*i];
+      const vy=pos[3*i+1]-prevPos[3*i+1];
+      const vz=pos[3*i+2]-prevPos[3*i+2];
+      const vn=vx*q.nx+vy*q.ny+vz*q.nz;
+      const tx=vx-vn*q.nx,ty=vy-vn*q.ny,tz=vz-vn*q.nz;
+      prevPos[3*i]+=tx*mu;prevPos[3*i+1]+=ty*mu;prevPos[3*i+2]+=tz*mu;
+    }
+    return true;
+  }
+
+  /** Rigid centroid push (like fill-mesh shell) — keeps tets coherent vs per-vertex ragdoll. */
+  constrainParticleRigid(pos,prevPos,numTetVerts,invMass,mu,boundingRadiusMm){
+    let tcx=0,tcy=0,tcz=0,cnt=0;
+    for(let i=0;i<numTetVerts;i++){
+      if(invMass[i]<=0)continue;
+      tcx+=pos[3*i];tcy+=pos[3*i+1];tcz+=pos[3*i+2];cnt++;
+    }
+    if(cnt===0)return false;
+    tcx/=cnt;tcy/=cnt;tcz/=cnt;
+    const q=this._queryNearest(tcx,tcy,tcz);
+    if(!q)return false;
+    const skin=this.particleSkinMm||0;
+    const br=(boundingRadiusMm!=null&&Number.isFinite(+boundingRadiusMm))?+boundingRadiusMm:skin;
+    const need=Math.max(skin, br*0.9);
+    const allow=this.wallAllowPenetrationMm||0;
+    if(q.margin<=-need+allow) return false;
+    const rClamp=Math.max(need, q.rIn-need+allow);
+    const ncx=q.cx+q.nx*rClamp, ncy=q.cy+q.ny*rClamp, ncz=q.cz+q.nz*rClamp;
+    const dx=ncx-tcx, dy=ncy-tcy, dz=ncz-tcz;
+    if(dx*dx+dy*dy+dz*dz<1e-14)return false;
+    for(let i=0;i<numTetVerts;i++){
+      if(invMass[i]<=0)continue;
+      pos[3*i]+=dx;pos[3*i+1]+=dy;pos[3*i+2]+=dz;
+    }
+    mu=Math.max(0,Math.min(1,(mu===undefined?0:mu)));
+    if(prevPos&&mu>0){
+      let vcx=0,vcy=0,vcz=0,c2=0;
+      for(let i=0;i<numTetVerts;i++){
+        if(invMass[i]<=0)continue;
+        vcx+=pos[3*i]-prevPos[3*i];
+        vcy+=pos[3*i+1]-prevPos[3*i+1];
+        vcz+=pos[3*i+2]-prevPos[3*i+2];
+        c2++;
+      }
+      if(c2>0){vcx/=c2;vcy/=c2;vcz/=c2}
+      const vn=vcx*q.nx+vcy*q.ny+vcz*q.nz;
+      const tx=vcx-vn*q.nx, ty=vcy-vn*q.ny, tz=vcz-vn*q.nz;
+      for(let i=0;i<numTetVerts;i++){
+        if(invMass[i]<=0)continue;
+        prevPos[3*i]+=tx*mu;prevPos[3*i+1]+=ty*mu;prevPos[3*i+2]+=tz*mu;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Visible outer shell: one thin-walled marching-cubes mesh (shell SDF).
+   * The interior lumen and the gap between daughter tubes are positive SDF → no mesh
+   * is generated there → visible negative space between branches, hollow tube appearance.
+   * Physics collision geometry is completely unchanged.
+   */
+  buildMeshes(scene){
+    const geo=_airwaySmoothShellGeo(this);
+    // DoubleSide: both outer wall face and inner lumen face are rendered, giving
+    // the correct "frosted glass tube" look — you see the wall from inside and out.
+    const shellMat=new THREE.MeshPhongMaterial({
+      color:0xd6eaf8,transparent:true,opacity:0.26,
+      side:THREE.DoubleSide,depthWrite:false,depthTest:true,
+      shininess:90,specular:0xffffff});
+    if(geo){
+      const mesh=new THREE.Mesh(geo,shellMat);
+      mesh.name='airway_shell';
+      mesh.renderOrder=2;
+      scene.add(mesh);
+      this.meshes.push({name:'airway_shell',mesh});
+    }
+  }
+
+  dispose(scene){
+    for(const {mesh} of this.meshes){
+      scene.remove(mesh);
+      if(mesh.geometry)mesh.geometry.dispose();
+      if(mesh.material)mesh.material.dispose();
+    }
+    this.meshes=[];
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════
 // 5b. PORE EXPORT  (void isosurface → OBJ for Rhino / Blender)
 // ═══════════════════════════════════════════════════════════════
 /** True if (x,y,z) lies in the analytic fluid domain (matches container physics, loosely). */
 function _porePointInFluidDomain(syringe, x, y, z){
+  if(syringe._airwayVolume)
+    return syringe.pointInside(x,y,z);
   if(syringe._boxVolume){
     const a=syringe.wallAllowPenetrationMm||0;
     const cx=syringe.centerX, cy=syringe.centerY, cz=syringe.centerZ;
@@ -1234,8 +2050,27 @@ function _fillMeshAabb(tris){
   return{minX,minY,minZ,maxX,maxY,maxZ};
 }
 
-function _fillPointInsideMesh(px,py,pz,tris){
-  const dx=1,dy=0,dz=0;
+function _fillMeshCountBoundaryEdges(tris){
+  const edgeCount=new Map();
+  const key=(x,y,z)=>`${Math.round(x*1000)},${Math.round(y*1000)},${Math.round(z*1000)}`;
+  for(let base=0;base<tris.length;base+=9){
+    const ks=[];
+    for(let c=0;c<3;c++){
+      const o=base+c*3;
+      ks.push(key(tris[o],tris[o+1],tris[o+2]));
+    }
+    for(let e=0;e<3;e++){
+      const a=ks[e], b=ks[(e+1)%3];
+      const ek=a<b?`${a}|${b}`:`${b}|${a}`;
+      edgeCount.set(ek,(edgeCount.get(ek)||0)+1);
+    }
+  }
+  let boundary=0;
+  for(const c of edgeCount.values())if(c===1)boundary++;
+  return boundary;
+}
+
+function _fillRayParity(px,py,pz,tris,dx,dy,dz){
   let hits=0;
   const eps=1e-7;
   for(let i=0;i<tris.length;i+=9){
@@ -1248,6 +2083,16 @@ function _fillPointInsideMesh(px,py,pz,tris){
   return(hits&1)===1;
 }
 
+function _fillPointInsideMesh(px,py,pz,tris){
+  const rays=[[1,0,0],[0,1,0],[0,0,1],[-1,0,0]];
+  let inside=0;
+  for(let r=0;r<rays.length;r++){
+    const rd=rays[r];
+    if(_fillRayParity(px,py,pz,tris,rd[0],rd[1],rd[2]))inside++;
+  }
+  return inside>=2;
+}
+
 /**
  * Grid sample inside closed mesh; returns up to `capacity` slot positions [x,y,z].
  * Falls back to empty array if bounds collapse or nothing is inside.
@@ -1255,8 +2100,47 @@ function _fillPointInsideMesh(px,py,pz,tris){
 function _fillBuildSpawnSlotsFromClosedMesh(tris, capacity, spacing, r){
   const cap=Math.max(0,capacity|0);
   if(cap<=0||!tris||tris.length<9)return[];
-  const sp=Math.max(1e-6,spacing);
   const bb=_fillMeshAabb(tris);
+  const lat=_fillSpawnLattice(bb,r,spacing,FILL_SPAWN_MAX_CELLS);
+  if(lat.coarsened)
+    console.warn(`Fill mesh spawn: coarsened probe grid to ${lat.nx}×${lat.ny}×${lat.nz}.`);
+  const cand=[];
+  for(let iy=0;iy<lat.ny;iy++){
+    const cy=lat.minY+(iy+0.5)*lat.spanY/lat.ny;
+    for(let ix=0;ix<lat.nx;ix++){
+      const cx=lat.minX+(ix+0.5)*lat.spanX/lat.nx;
+      for(let iz=0;iz<lat.nz;iz++){
+        const cz=lat.minZ+(iz+0.5)*lat.spanZ/lat.nz;
+        if(_fillPointInsideMesh(cx,cy,cz,tris))
+          cand.push(cx,cy,cz);
+      }
+    }
+  }
+  return _fillPickSpawnSlots(cand, cap);
+}
+
+/** Max triangles for fill-mesh physics (collision + spawn). Preview may use full mesh. */
+const FILL_COLLIDER_MAX_TRIS=2500;
+/** Cap interior grid probes so loading a large OBJ cannot freeze the tab. */
+const FILL_SPAWN_MAX_CELLS=36000;
+
+function _fillSimplifySoup(tris, maxTri){
+  const n=(tris.length/9)|0;
+  const cap=Math.max(64,maxTri|0);
+  if(n<=cap)return tris;
+  const step=Math.ceil(n/cap);
+  const outN=Math.ceil(n/step);
+  const out=new Float32Array(outN*9);
+  let o=0;
+  for(let t=0;t<n;t+=step){
+    const ti=t*9;
+    for(let k=0;k<9;k++)out[o++]=tris[ti+k];
+  }
+  return out;
+}
+
+/** Coarsen a regular lattice until nx*ny*nz <= maxCells. */
+function _fillSpawnLattice(bb,r,spacing,maxCells){
   let minX=bb.minX+r,maxX=bb.maxX-r;
   let minY=bb.minY+r,maxY=bb.maxY-r;
   let minZ=bb.minZ+r,maxZ=bb.maxZ-r;
@@ -1264,25 +2148,25 @@ function _fillBuildSpawnSlotsFromClosedMesh(tris, capacity, spacing, r){
   if(minY>=maxY){minY=bb.minY;maxY=bb.maxY;}
   if(minZ>=maxZ){minZ=bb.minZ;maxZ=bb.maxZ;}
   const spanX=maxX-minX,spanY=maxY-minY,spanZ=maxZ-minZ;
+  let sp=Math.max(1e-6,spacing);
+  const cap=Math.max(1000,maxCells|0);
+  for(let guard=0;guard<20;guard++){
+    const nx=Math.max(1,Math.floor(spanX/sp)+1);
+    const ny=Math.max(1,Math.floor(spanY/sp)+1);
+    const nz=Math.max(1,Math.floor(spanZ/sp)+1);
+    if(nx*ny*nz<=cap)
+      return{minX,maxX,minY,maxY,minZ,maxZ,spanX,spanY,spanZ,nx,ny,nz,sp,coarsened:sp>spacing*1.001};
+    sp*=1.22;
+  }
   const nx=Math.max(1,Math.floor(spanX/sp)+1);
   const ny=Math.max(1,Math.floor(spanY/sp)+1);
   const nz=Math.max(1,Math.floor(spanZ/sp)+1);
-  if(nx*ny*nz>4e6){
-    console.warn(`Fill mesh grid very large (${nx}×${ny}×${nz}); simplify the OBJ or increase particle spacing.`);
-  }
-  const cand=[];
-  for(let iy=0;iy<ny;iy++){
-    const cy=minY+(iy+0.5)*spanY/ny;
-    for(let ix=0;ix<nx;ix++){
-      const cx=minX+(ix+0.5)*spanX/nx;
-      for(let iz=0;iz<nz;iz++){
-        const cz=minZ+(iz+0.5)*spanZ/nz;
-        if(_fillPointInsideMesh(cx,cy,cz,tris))
-          cand.push(cx,cy,cz);
-      }
-    }
-  }
-  if(!cand.length)return[];
+  return{minX,maxX,minY,maxY,minZ,maxZ,spanX,spanY,spanZ,nx,ny,nz,sp,coarsened:true};
+}
+
+function _fillPickSpawnSlots(cand, capacity){
+  const cap=Math.max(0,capacity|0);
+  if(cap<=0||!cand.length)return[];
   const nPts=cand.length/3;
   const want=Math.min(cap,nPts);
   const idx=new Uint32Array(nPts);
@@ -1298,6 +2182,39 @@ function _fillBuildSpawnSlotsFromClosedMesh(tris, capacity, spacing, r){
   }
   slots.sort((a,b)=>b[1]-a[1]);
   return slots;
+}
+
+/**
+ * Grid sample on the interior side of a thin shell (open tubes / airway walls).
+ */
+function _fillBuildSpawnSlotsFromShellMesh(tris, capacity, spacing, r, collider, interiorSign, maxInteriorMm){
+  const cap=Math.max(0,capacity|0);
+  if(cap<=0||!tris||tris.length<9||!collider)return[];
+  const sign=interiorSign>=0?1:-1;
+  const maxIn=Math.max(r*2, maxInteriorMm||25);
+  const sp=Math.max(1e-6,spacing);
+  const bb=_fillMeshAabb(tris);
+  const voxSp=Math.max(sp*1.35, maxIn/6, 1.2);
+  const lat=_fillSpawnLattice(bb,r,voxSp,FILL_SPAWN_MAX_CELLS);
+  if(lat.coarsened)
+    console.warn(`Fill mesh spawn: coarsened probe grid to ${lat.nx}×${lat.ny}×${lat.nz} (≤${FILL_SPAWN_MAX_CELLS} cells).`);
+  const out=collider._tmpClosest;
+  const cand=[];
+  for(let iy=0;iy<lat.ny;iy++){
+    const cy=lat.minY+(iy+0.5)*lat.spanY/lat.ny;
+    for(let ix=0;ix<lat.nx;ix++){
+      const cx=lat.minX+(ix+0.5)*lat.spanX/lat.nx;
+      for(let iz=0;iz<lat.nz;iz++){
+        const cz=lat.minZ+(iz+0.5)*lat.spanZ/lat.nz;
+        collider.closestPoint(cx,cy,cz,out);
+        const dist=Math.sqrt(
+          (cx-out.x)**2+(cy-out.y)**2+(cz-out.z)**2);
+        if(_fillGeomSide(cx,cy,cz,out,sign)<0 && dist<=maxIn)
+          cand.push(cx,cy,cz);
+      }
+    }
+  }
+  return _fillPickSpawnSlots(cand, cap);
 }
 
 function _fillDistSq(ax,ay,az, bx,by,bz){
@@ -1351,10 +2268,12 @@ function _fillClosestPointOnTriangle(px,py,pz, ax,ay,az, bx,by,bz, cx,cy,cz, out
     d=_fillDistSq(px,py,pz, s1.x,s1.y,s1.z);
     if(d<best){out.x=s1.x;out.y=s1.y;out.z=s1.z}
     out.nx=1;out.ny=0;out.nz=0;
+    out.gnx=1;out.gny=0;out.gnz=0;
     return _fillDistSq(px,py,pz, out.x,out.y,out.z);
   }
   const invN=1/nl;
   let nnx=nax*invN, nny=nay*invN, nnz=naz*invN;
+  const gnx=nnx, gny=nny, gnz=nnz;
   const denom=d5*d6-d4*d4;
   let u=1,v=0,w=0;
   if(Math.abs(denom)>1e-20){
@@ -1371,6 +2290,7 @@ function _fillClosestPointOnTriangle(px,py,pz, ax,ay,az, bx,by,bz, cx,cy,cz, out
     const qpx=px-qx,qpy=py-qy,qpz=pz-qz;
     if(qpx*nnx+qpy*nny+qpz*nnz<0){nnx=-nnx;nny=-nny;nnz=-nnz}
     out.nx=nnx;out.ny=nny;out.nz=nnz;
+    out.gnx=gnx;out.gny=gny;out.gnz=gnz;
     return _fillDistSq(px,py,pz, qx,qy,qz);
   }
   const s={x:0,y:0,z:0};
@@ -1389,16 +2309,66 @@ function _fillClosestPointOnTriangle(px,py,pz, ax,ay,az, bx,by,bz, cx,cy,cz, out
   const qpx=px-out.x,qpy=py-out.y,qpz=pz-out.z;
   if(qpx*nnx+qpy*nny+qpz*nnz<0){nnx=-nnx;nny=-nny;nnz=-nnz}
   out.nx=nnx;out.ny=nny;out.nz=nnz;
+  out.gnx=gnx;out.gny=gny;out.gnz=gnz;
   return best;
+}
+
+function _fillGeomSide(px,py,pz,out,interiorSign){
+  const gx=out.gnx!=null?out.gnx:out.nx;
+  const gy=out.gny!=null?out.gny:out.ny;
+  const gz=out.gnz!=null?out.gnz:out.nz;
+  const side=(px-out.x)*gx+(py-out.y)*gy+(pz-out.z)*gz;
+  return interiorSign*side;
 }
 
 /**
  * Keeps tet vertices inside a closed fill mesh (same OBJ as spawn layout). Uses a uniform grid over
  * triangle AABBs for closest-point queries; parity ray test for inside/outside.
  */
+/** Watertight closed volume vs thin open shell (airways, uncapped tubes). */
+function _fillAnalyzeMesh(tris, boundaryEdges){
+  const bb=_fillMeshAabb(tris);
+  const cx=(bb.minX+bb.maxX)*0.5;
+  const cy=(bb.minY+bb.maxY)*0.5;
+  const cz=(bb.minZ+bb.maxZ)*0.5;
+  const boundary=(boundaryEdges!=null)?boundaryEdges:_fillMeshCountBoundaryEdges(tris);
+  const votes=[
+    _fillRayParity(cx,cy,cz,tris,1,0,0),
+    _fillRayParity(cx,cy,cz,tris,0,1,0),
+    _fillRayParity(cx,cy,cz,tris,0,0,1),
+  ];
+  const allSame=votes[0]===votes[1]&&votes[1]===votes[2];
+  const mode=(boundary===0&&allSame)?'volume':'shell';
+  const coll=new FillMeshCollider(tris,0.03,null,0.3,{mode:'shell',interiorSign:-1,maxInteriorMm:25});
+  const tmp=coll._tmpClosest;
+  coll.closestPoint(cx,cy,cz,tmp);
+  const gx=tmp.gnx!=null?tmp.gnx:tmp.nx;
+  const gy=tmp.gny!=null?tmp.gny:tmp.ny;
+  const gz=tmp.gnz!=null?tmp.gnz:tmp.nz;
+  const side=(cx-tmp.x)*gx+(cy-tmp.y)*gy+(cz-tmp.z)*gz;
+  const interiorSign=side>0?-1:1;
+  const sx=bb.maxX-bb.minX, sy=bb.maxY-bb.minY, sz=bb.maxZ-bb.minZ;
+  const maxInteriorMm=Math.max(8, Math.min(40, Math.min(sx,sy,sz)*0.45));
+  return{mode,interiorSign,maxInteriorMm,boundaryEdges:boundary};
+}
+
+function _fillPrepareLoadedSoup(fullSoup){
+  const nTri=(fullSoup.length/9)|0;
+  const boundary=_fillMeshCountBoundaryEdges(fullSoup);
+  const colliderSoup=_fillSimplifySoup(fullSoup, FILL_COLLIDER_MAX_TRIS);
+  const meta=_fillAnalyzeMesh(colliderSoup, boundary);
+  meta.visualTris=nTri;
+  meta.colliderTris=(colliderSoup.length/9)|0;
+  return{colliderSoup, meta};
+}
+
 class FillMeshCollider{
-  constructor(tris, skinMm, centroidXYZ, nominalRadiusMm){
+  constructor(tris, skinMm, centroidXYZ, nominalRadiusMm, opts){
+    opts=opts||{};
     this.tris=tris;
+    this.mode=(opts.mode==='shell')?'shell':'volume';
+    this.interiorSign=(opts.interiorSign===1)?1:-1;
+    this.maxInteriorMm=Math.max(4, opts.maxInteriorMm||25);
     this.skinMm=Math.max(0.012, skinMm||0.03);
     this.nominalR=Math.max(0.05, nominalRadiusMm||0.3);
     this.bb=_fillMeshAabb(tris);
@@ -1415,7 +2385,7 @@ class FillMeshCollider{
     const sz=this.bb.maxZ-this.bb.minZ;
     this.cellSize=Math.max(0.2, Math.min(Math.max(sx,sy,sz)/18, 5));
     this.buckets=new Map();
-    this._tmpClosest={x:0,y:0,z:0,nx:1,ny:0,nz:0};
+    this._tmpClosest={x:0,y:0,z:0,nx:1,ny:0,nz:0,gnx:1,gny:0,gnz:0};
     const nt=(tris.length/9)|0;
     this.triBounds=new Float32Array(nt*6);
     for(let t=0,base=0;t<nt;t++,base+=9){
@@ -1434,21 +2404,14 @@ class FillMeshCollider{
 
   /** Parity along +X through P; skips triangles that cannot intersect the ray (cheap AABB rejects). */
   pointInside(px,py,pz){
-    const tris=this.tris,tb=this.triBounds;
-    const eps=1e-6;
-    let hits=0;
-    const nt=(tris.length/9)|0;
-    for(let t=0,base=0;t<nt;t++,base+=9){
-      const o=t*6;
-      if(tb[o+1]<=px+eps)continue;
-      if(py<tb[o+2]-eps||py>tb[o+3]+eps||pz<tb[o+4]-eps||pz>tb[o+5]+eps)continue;
-      if(_poreRayTriHit(px,py,pz,1,0,0,
-          tris[base],tris[base+1],tris[base+2],
-          tris[base+3],tris[base+4],tris[base+5],
-          tris[base+6],tris[base+7],tris[base+8],1e-7))
-        hits++;
+    if(this.mode==='shell'){
+      const out=this._tmpClosest;
+      this.closestPoint(px,py,pz,out);
+      const dist=Math.sqrt(
+        (px-out.x)**2+(py-out.y)**2+(pz-out.z)**2);
+      return _fillGeomSide(px,py,pz,out,this.interiorSign)<0 && dist<=this.maxInteriorMm;
     }
-    return(hits&1)===1;
+    return _fillPointInsideMesh(px,py,pz,this.tris);
   }
 
   _key(ix,iy,iz){return`${ix},${iy},${iz}`}
@@ -1551,7 +2514,17 @@ class FillMeshCollider{
       else{nx=out.nx;ny=out.ny;nz=out.nz}
     }
     let ncx=tcx,ncy=tcy,ncz=tcz;
-    if(this.pointInside(tcx,tcy,tcz)){
+    if(this.mode==='shell'){
+      const gx=out.gnx!=null?out.gnx:out.nx;
+      const gy=out.gny!=null?out.gny:out.ny;
+      const gz=out.gnz!=null?out.gnz:out.nz;
+      const gside=_fillGeomSide(tcx,tcy,tcz,out,this.interiorSign);
+      const wantDepth=need;
+      if(gside<=-wantDepth+1e-6 && ml<=this.maxInteriorMm+need)return false;
+      ncx=out.x-gx*this.interiorSign*wantDepth;
+      ncy=out.y-gy*this.interiorSign*wantDepth;
+      ncz=out.z-gz*this.interiorSign*wantDepth;
+    }else if(this.pointInside(tcx,tcy,tcz)){
       if(ml>=need-1e-6)return false;
       const shift=need-ml;
       ncx=tcx+nx*shift;ncy=tcy+ny*shift;ncz=tcz+nz*shift;
@@ -1876,6 +2849,7 @@ class SyringeSimulator {
     this.velDampingPerSec=18.0;    // higher = more “gel”, less liquid slosh
     this.wallFriction=0.65;        // 0..1; tangential damping when touching syringe walls/cap/roof
     this.colorMode='stress';       // 'contact' | 'stress'
+    this._playbackStatsOverride=null; // baked airway playback HUD/stats
     this.stressGain=1.20;          // heatmap contrast
     this.stressPercentile=0.9;     // robust normalization (0..1)
     /** Blends in overburden from world Y (0=local strain only, ~0.5=clear bottom-heavy piles). */
@@ -1903,23 +2877,40 @@ class SyringeSimulator {
     /** Optional closed triangle soup (Float32, 9 floats/triangle) for interior spawn layout in box mode. */
     this.fillVolumeTris=(typeof gFillVolumeTris!=='undefined' && gFillVolumeTris && gFillVolumeTris.length>=9)
       ? gFillVolumeTris : null;
+    this.fillColliderTris=(typeof gFillColliderTris!=='undefined' && gFillColliderTris && gFillColliderTris.length>=9)
+      ? gFillColliderTris
+      : (this.fillVolumeTris ? _fillSimplifySoup(this.fillVolumeTris, FILL_COLLIDER_MAX_TRIS) : null);
     // build syringe or invisible box volume
     const cm=String(syringeParams.containerMode||'').trim().toLowerCase();
     const volMode=(cm==='volume'||cm==='box');
+    const airwayMode=(cm==='airway');
     if(volMode){
       this.syringe=new BoxVolume(Object.assign({}, syringeParams.volumeBox||{},{
         wallAllowPenetrationMm:syringeParams.wallAllowPenetrationMm}));
+    }else if(airwayMode){
+      this.syringe=new AirwayTree(Object.assign({}, syringeParams.airway||{},{
+        wallAllowPenetrationMm:syringeParams.wallAllowPenetrationMm,
+        particleSkinMm:particleTemplate.nominalRadius||0.3}));
     }else{
       this.syringe=new Syringe(syringeParams);
     }
     this.syringe.buildMeshes(scene);
     this.fillMeshCollider=null;
-    if(this.fillVolumeTris && this.fillVolumeTris.length>=9 && this.syringe._boxVolume){
+    if(this.fillColliderTris && this.fillColliderTris.length>=9 && this.syringe._boxVolume){
       const nr=particleTemplate.nominalRadius||0.3;
       const wa=Math.max(0,this.syringe.wallAllowPenetrationMm||0);
       const skin=Math.max(0.02, nr*0.08+wa*0.5);
-      this.fillMeshCollider=new FillMeshCollider(this.fillVolumeTris, skin, null, particleTemplate.nominalRadius||0.3);
-      console.log(`Fill mesh collider: ${(this.fillVolumeTris.length/9)|0} tris, sphere r≈${(particleTemplate.nominalRadius||0.3).toFixed(3)} mm, skin ${skin.toFixed(3)} mm`);
+      const meta=(typeof gFillMeshMeta!=='undefined'&&gFillMeshMeta)?gFillMeshMeta:_fillAnalyzeMesh(this.fillColliderTris);
+      this.fillMeshCollider=new FillMeshCollider(this.fillColliderTris, skin, null, nr, meta);
+      const mode=meta.mode||'volume';
+      const vis=(this.fillVolumeTris?((this.fillVolumeTris.length/9)|0):0);
+      const col=(this.fillColliderTris.length/9)|0;
+      console.log(
+        `Fill mesh collider (${mode}): ${col} tris`+(vis>col?` (${vis} visual)`:'')+
+        `, r≈${nr.toFixed(3)} mm, skin ${skin.toFixed(3)} mm`+
+        (mode==='shell'?`, max interior ${(meta.maxInteriorMm||25).toFixed(1)} mm`:'')+
+        (meta.boundaryEdges>0?` — ${meta.boundaryEdges} open boundary edges`:'')
+      );
     }
     // spawn particles (capacity allocated; only initialCount active)
     this.capacityCount=Math.max(0,capacityCount|0);
@@ -2037,16 +3028,44 @@ class SyringeSimulator {
     const r  = this.tmpl.nominalRadius||0.3;
     const spacing = r*2.1;
     const slots=[];
+    if(sp._airwayVolume){
+      this.spawnSlots=sp.buildSpawnSlots(capacity, spacing, r);
+      this.spawnCursor=0;
+      console.log(`Airway tree: ${this.spawnSlots.length} interior spawn slots (capacity ${capacity}).`);
+      return;
+    }
     if(sp._boxVolume){
-      if(this.fillVolumeTris && this.fillVolumeTris.length>=9){
-        const meshSlots=_fillBuildSpawnSlotsFromClosedMesh(this.fillVolumeTris, capacity, spacing, r);
+      const spawnTris=this.fillColliderTris||this.fillVolumeTris;
+      const preSlots=(typeof gFillSpawnSlots!=='undefined'&&gFillSpawnSlots&&gFillSpawnSlots.length)?gFillSpawnSlots:null;
+      if(preSlots&&preSlots.length){
+        const want=Math.min(capacity, preSlots.length);
+        this.spawnSlots=preSlots.slice(0,want);
+        this.spawnCursor=0;
+        console.log(`Fill mesh: ${want} precomputed spawn slots.`);
+        return;
+      }
+      if(spawnTris && spawnTris.length>=9){
+        const meta=(typeof gFillMeshMeta!=='undefined'&&gFillMeshMeta)?gFillMeshMeta:null;
+        const mode=meta&&meta.mode==='shell'?'shell':'volume';
+        let meshSlots=[];
+        if(mode==='shell'&&this.fillMeshCollider){
+          meshSlots=_fillBuildSpawnSlotsFromShellMesh(
+            spawnTris, capacity, spacing, r, this.fillMeshCollider,
+            this.fillMeshCollider.interiorSign, this.fillMeshCollider.maxInteriorMm);
+        }else{
+          meshSlots=_fillBuildSpawnSlotsFromClosedMesh(spawnTris, capacity, spacing, r);
+        }
         if(meshSlots.length){
           this.spawnSlots=meshSlots;
           this.spawnCursor=0;
-          console.log(`Fill mesh: ${meshSlots.length} interior spawn slots (capacity ${capacity}).`);
+          console.log(`Fill mesh (${mode}): ${meshSlots.length} spawn slots (capacity ${capacity}).`);
           return;
         }
-        console.warn('Fill mesh produced no interior points — falling back to full box grid. Check mesh is closed/watertight.');
+        console.warn(
+          mode==='shell'
+            ? 'Fill mesh (shell): no interior-band spawn points — try prepare_fill_volume.py or a smaller particle.'
+            : 'Fill mesh produced no interior points — falling back to full box grid. Check mesh is closed/watertight.'
+        );
       }
       const minX=sp.centerX-sp.halfX+r,maxX=sp.centerX+sp.halfX-r;
       const minY=sp.centerY-sp.halfY+r,maxY=sp.centerY+sp.halfY-r;
@@ -2101,11 +3120,13 @@ class SyringeSimulator {
     this.spawnCursor=0;
   }
 
-  /** Box volume: always spawn at top center (just under the lid) so Drop doesn’t use deeper grid cells inside the pile. */
+  /** Box / airway: spawn at top center (open trunk top or box lid). */
   _volumeDropSlot(){
     const b=this.syringe;
     const r=this.tmpl.nominalRadius||0.3;
     const lift=Number.isFinite(this.volumeDropHeightMm)?this.volumeDropHeightMm:0;
+    if(b._airwayVolume)
+      return b.getDropSlot(r, lift);
     return[
       b.centerX,
       b.centerY+b.halfY-r+lift,
@@ -2146,10 +3167,10 @@ class SyringeSimulator {
     const init=Math.max(0, Math.min(cap, initialActive|0));
     console.log(`Allocating ${cap} particles (initial active: ${init})…`);
     for(let pi=0;pi<cap;pi++){
-      const slot=this.spawnSlots[pi] || (this.syringe._boxVolume
-        ? (()=>{const rr=this.tmpl.nominalRadius||0.3,t=this.syringe;
-          return [t.centerX,t.centerY+t.halfY-rr,t.centerZ];})()
-        : [0, this.syringe._barrelTop-(this.tmpl.nominalRadius||0.3), 0]);
+      const slot=this.spawnSlots[pi] || (
+        (this.syringe._boxVolume||this.syringe._airwayVolume)
+          ? this._volumeDropSlot()
+          : [0, this.syringe._barrelTop-(this.tmpl.nominalRadius||0.3), 0]);
       const p=new GelParticle(this.tmpl,slot[0],slot[1],slot[2],pi);
       p.baseEdgeCompliance=5; p.baseVolCompliance=0;
       p.edgeCompliance=p.baseEdgeCompliance;
@@ -2168,8 +3189,8 @@ class SyringeSimulator {
     for(let k=0;k<add;k++){
       if(this.spawnCursor>=this.particles.length)break;
       const p=this.particles[this.spawnCursor];
-      const slot=this.syringe._boxVolume
-        ? this._volumeDropSlot()
+      const slot=(this.syringe._boxVolume||this.syringe._airwayVolume)
+        ? (this.spawnSlots[this.spawnCursor] || this._volumeDropSlot())
         : (this.spawnSlots[this.spawnCursor] || this.spawnSlots[this.spawnSlots.length-1]);
       if(slot)this._resetParticleToSlot(p, slot);
       else p.active=true;
@@ -2329,7 +3350,7 @@ class SyringeSimulator {
 
   /** Geometric porosity proxy for box mode: void ≈ V_box − Σ(sphere nominal); ignores overlap (syringe: NaN). */
   _porositySnapshot(){
-    if(!this.syringe||!this.syringe._boxVolume){
+    if(!this.syringe||(!this.syringe._boxVolume&&!this.syringe._airwayVolume)){
       return{containerVolMm3:NaN,solidNominalMm3:NaN,voidMm3:NaN,porosityFraction:NaN};
     }
     const b=this.syringe;
@@ -2845,6 +3866,21 @@ class SyringeSimulator {
             if(this.syringe.constrainVertex(p.pos,p.prevPos,k,this.wallFriction))p.inWallContact=true;
           }
         }
+      }else if(this.syringe._airwayVolume){
+        for(let rep=0;rep<2;rep++){
+          for(const p of this.particles){
+            if(!p.active)continue;
+            if(this.syringe.constrainParticleRigid(p.pos,p.prevPos,p.numTetVerts,p.invMass,this.wallFriction,p.boundingRadius))
+              p.inWallContact=true;
+          }
+          for(const p of this.particles){
+            if(!p.active)continue;
+            for(let k=0;k<p.numTetVerts;k++){
+              if(p.invMass[k]===0)continue;
+              if(this.syringe.constrainVertex(p.pos,p.prevPos,k,this.wallFriction))p.inWallContact=true;
+            }
+          }
+        }
       }
       for(const p of this.particles){
         if(!p.active)continue;
@@ -2930,6 +3966,7 @@ class SyringeSimulator {
       meanMaxEdgeStrain:meanStrainCnt>0?meanStrainSum/meanStrainCnt:0};
     this.simTime+=dt;
     this._updateSettleAfterStep();
+    if(gAirwayPlayback.mode==='baking') _airwayBakeOnStep();
   }
 
   timerWallDurationMs(){
@@ -2976,6 +4013,7 @@ class SyringeSimulator {
       }}}
 
   getContactStats(){
+    if(this._playbackStatsOverride) return this._playbackStatsOverride;
     const n=this.particles.filter(p=>p.active).length;
     const m=this._lastMetrics;
     const pairs=m.p2pUniquePairs|0;
@@ -3526,6 +4564,8 @@ class SyringeSimulator {
 let gRenderer, gScene, gCamera, gCamCtrl, gSimulator, gParticleTemplate;
 let gParticleTemplateBase=null;
 let gNominalRadiusMm=0.3;
+/** Optional overrides for applyAirwayUiDefaults() from syringeGelParticles.config.json "airway". */
+let gAirwayUiOverrides=null;
 let gPaused=true, gFrameIdx=0;
 /** When true, skip WebGL render (and orbit/pick updates) to reduce GPU/CPU load. */
 let gPerfSkipDraw=false;
@@ -3533,6 +4573,16 @@ let gPerfSkipDraw=false;
 let gPerfDeadlineMs=null;
 /** Physics timestep multiplier while gPerfSkipDraw (see onPerfSimMulChange). */
 let gPerfSimMul=1;
+/** Bronchial-tree bake + smooth playback (mode: off | baking | playing). */
+const AIRWAY_BAKE_FRAME_CAP=5400;
+const AIRWAY_BAKE_SIM_CAP_S=AIRWAY_BAKE_FRAME_CAP/60;
+let gAirwayPlayback={mode:'off',frames:[],frameIdx:0,playhead:0,maxSimS:45,playFps:60,
+  _asyncBaking:false,_bakeAbort:false,_bakeWallStartMs:null,_bakeSimStart:0,
+  _lastPlayMs:0,_savedPerfSkip:false,_normCounter:0};
+/** Offline 4K encode from baked frames (blocks UI briefly). */
+let gVideoExport={active:false};
+const VIDEO_EXPORT_4K_W=3840;
+const VIDEO_EXPORT_4K_H=2400; // 16:10
 let gRaycaster=null,gPointer=null,gPickedParticle=-1;
 let gTuningOverrides={}; // loaded from config.json (optional)
 let gPickMode='inspect'; // 'inspect' | 'lock'
@@ -3541,8 +4591,19 @@ let gPickMarker=null;
 let gVolumeOutline=null;
 /** Triangle soup from “fill volume” OBJ: 9 floats per triangle (ax..cz), world mm. Box mode only. */
 let gFillVolumeTris=null;
+/** Low-poly soup for spawn + collision (derived on load). */
+let gFillColliderTris=null;
+/** Optional [[x,y,z],...] from prepare_fill_volume.py --spawn-json (fast load). */
+let gFillSpawnSlots=null;
+/** { mode, interiorSign, maxInteriorMm, boundaryEdges } from _fillAnalyzeMesh on load. */
+let gFillMeshMeta=null;
 /** Optional semi-transparent preview mesh for gFillVolumeTris. */
 let gFillMeshPreview=null;
+/** Camera auto-orbit around the viewer's look-at point when orbit was enabled. */
+let gContainerOrbitEnabled=false;
+let gContainerOrbitState=null;
+let gContainerOrbitLastMs=0;
+const _ORBIT_Y_AXIS=new THREE.Vector3(0,1,0);
 
 // ═══════════════════════════════════════════════════════════════
 // 7b.  ASSET LIBRARY POPULATION (assets/*.json + default sphere)
@@ -3753,13 +4814,21 @@ function _focusTarget(x,y,z, keepDistance=true){
 /** Show wireframe box from sidebar volume fields when paused; hides while sim is running. */
 function syncVolumeOutlinePreview(){
   if(!gVolumeOutline)return;
-  const volMode=document.getElementById('selContainerMode')?.value==='volume';
-  const show=gPaused && volMode && !gPerfSkipDraw;
+  const mv=document.getElementById('selContainerMode')?.value||'syringe';
+  const volMode=mv==='volume';
+  const airwayMode=mv==='airway';
+  const show=gPaused && (volMode||airwayMode) && !gPerfSkipDraw;
   gVolumeOutline.visible=show;
   if(!show)return;
-  const vb=readVolumeBoxParams();
-  gVolumeOutline.scale.set(vb.widthMm,vb.heightMm,vb.depthMm);
-  gVolumeOutline.position.set(vb.centerX_mm,vb.centerY_mm,vb.centerZ_mm);
+  if(airwayMode&&gSimulator&&gSimulator.syringe&&gSimulator.syringe._airwayVolume){
+    const b=gSimulator.syringe;
+    gVolumeOutline.scale.set(b.halfX*2,b.halfY*2,b.halfZ*2);
+    gVolumeOutline.position.set(b.centerX,b.centerY,b.centerZ);
+  }else{
+    const vb=readVolumeBoxParams();
+    gVolumeOutline.scale.set(vb.widthMm,vb.heightMm,vb.depthMm);
+    gVolumeOutline.position.set(vb.centerX_mm,vb.centerY_mm,vb.centerZ_mm);
+  }
   syncFillMeshPreviewVisibility();
 }
 
@@ -3785,7 +4854,8 @@ function rebuildFillMeshPreview(tris){
   geom.setAttribute('position',new THREE.BufferAttribute(tris,3));
   geom.computeVertexNormals();
   const mat=new THREE.MeshPhongMaterial({
-    color:0x7eb8e0,transparent:true,opacity:0.24,side:THREE.DoubleSide,
+    color:0x7eb8e0,transparent:true,opacity:0.28,side:THREE.DoubleSide,
+    flatShading:false,shininess:24,specular:0x335566,
     depthWrite:false,depthTest:true});
   gFillMeshPreview=new THREE.Mesh(geom,mat);
   gScene.add(gFillMeshPreview);
@@ -3825,14 +4895,28 @@ function loadFillVolumeObj(evt){
         return;
       }
       const nTri=(soup.length/9)|0;
-      if(nTri>20000)
-        console.warn(`Fill mesh: ${nTri} triangles — startup sampling may take a moment.`);
+      const prep=_fillPrepareLoadedSoup(soup);
       gFillVolumeTris=soup;
+      gFillColliderTris=prep.colliderSoup;
+      gFillMeshMeta=prep.meta;
+      gFillSpawnSlots=null;
       if(document.getElementById('chkFillMeshAutofit')?.checked!==false)
         applyFillMeshAutoFitBox(_fillMeshAabb(soup));
       rebuildFillMeshPreview(soup);
       syncVolumeOutlinePreview();
-      onRestart();
+      const m=gFillMeshMeta;
+      if(m&&m.colliderTris<m.visualTris)
+        console.log(`Fill mesh: using ${m.colliderTris} collision tris (${m.visualTris} in preview).`);
+      if(m&&m.mode==='shell'){
+        console.warn(
+          `Fill mesh: open shell (${m.boundaryEdges} boundary edges) — shell containment. `+
+          `For faster load: python V3/uploads/prepare_fill_volume.py in.obj out.obj --spawn-json slots.json`
+        );
+      }
+      setTimeout(()=>{
+        try{onRestart();}
+        catch(err){alert('Restart after fill mesh failed: '+err);}
+      },0);
     }catch(err){
       alert('Could not read fill OBJ: '+err);
     }
@@ -3840,11 +4924,50 @@ function loadFillVolumeObj(evt){
   reader.readAsText(file);
 }
 
+function loadFillSpawnJson(evt){
+  const file=evt.target?.files?.[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    try{
+      const data=JSON.parse(e.target.result);
+      const raw=Array.isArray(data)?data:(data&&data.slots);
+      if(!Array.isArray(raw)||!raw.length){
+        alert('Spawn JSON needs a "slots" array of [x,y,z] positions (mm).');
+        return;
+      }
+      const slots=[];
+      for(let i=0;i<raw.length;i++){
+        const p=raw[i];
+        if(Array.isArray(p)&&p.length>=3&&Number.isFinite(+p[0]))
+          slots.push([+p[0],+p[1],+p[2]]);
+      }
+      if(!slots.length){
+        alert('No valid [x,y,z] entries in spawn JSON.');
+        return;
+      }
+      gFillSpawnSlots=slots;
+      if(data&&data.maxInteriorMm!=null&&gFillMeshMeta)
+        gFillMeshMeta.maxInteriorMm=+data.maxInteriorMm;
+      console.log(`Fill spawn JSON: ${slots.length} positions loaded.`);
+      setTimeout(()=>{try{onRestart();}catch(err){alert('Restart failed: '+err);}},0);
+    }catch(err){
+      alert('Could not read spawn JSON: '+err);
+    }
+  };
+  reader.readAsText(file);
+}
+
 function clearFillVolumeObj(){
   gFillVolumeTris=null;
+  gFillColliderTris=null;
+  gFillSpawnSlots=null;
+  gFillMeshMeta=null;
   disposeFillMeshPreview();
   const inp=document.getElementById('fillVolumeObjFile');
   if(inp)inp.value='';
+  const sp=document.getElementById('fillSpawnJsonFile');
+  if(sp)sp.value='';
   syncVolumeOutlinePreview();
   onRestart();
 }
@@ -3853,7 +4976,7 @@ function focusNeedleTip(){ _focusTarget(0,0,0,true); }
 function focusBarrel(){
   if(!gSimulator||!gSimulator.syringe)return;
   const sp=gSimulator.syringe;
-  if(sp._boxVolume){
+  if(sp._boxVolume||sp._airwayVolume){
     focusVolumeBox();
     return;
   }
@@ -3865,7 +4988,7 @@ function focusBarrel(){
 function focusVolumeBox(){
   if(!gCamCtrl||!gCamera)return;
   let cx,cy,cz,w,h,d;
-  if(gSimulator&&gSimulator.syringe&&gSimulator.syringe._boxVolume){
+  if(gSimulator&&gSimulator.syringe&&(gSimulator.syringe._boxVolume||gSimulator.syringe._airwayVolume)){
     const b=gSimulator.syringe;
     cx=b.centerX; cy=b.centerY; cz=b.centerZ;
     w=b.halfX*2; h=b.halfY*2; d=b.halfZ*2;
@@ -3881,6 +5004,102 @@ function focusVolumeBox(){
   gCamera.position.set(cx+dir.x*dist, cy+dir.y*dist, cz+dir.z*dist);
   gCamCtrl.update();
 }
+
+/** Center + framing for invisible box / bronchial tree (sidebar or live sim). */
+function _containerOrbitCenter(){
+  if(gSimulator&&gSimulator.syringe&&(gSimulator.syringe._boxVolume||gSimulator.syringe._airwayVolume)){
+    const b=gSimulator.syringe;
+    return{cx:b.centerX,cy:b.centerY,cz:b.centerZ,
+      w:b.halfX*2,h:b.halfY*2,d:b.halfZ*2};
+  }
+  const vb=readVolumeBoxParams();
+  return{cx:vb.centerX_mm,cy:vb.centerY_mm,cz:vb.centerZ_mm,
+    w:vb.widthMm,h:vb.heightMm,d:vb.depthMm};
+}
+
+function _isContainerOrbitContentMode(){
+  const mv=document.getElementById('selContainerMode')?.value||'syringe';
+  return mv==='volume'||mv==='airway';
+}
+
+function _beginContainerOrbit(){
+  if(!gCamCtrl||!gCamera) return;
+  let pivot;
+  if(_isContainerOrbitContentMode()){
+    const c=_containerOrbitCenter();
+    pivot=new THREE.Vector3(c.cx,c.cy,c.cz);
+  }else{
+    pivot=gCamCtrl.target.clone();
+  }
+  let offset=gCamera.position.clone().sub(pivot);
+  if(offset.lengthSq()<1e-4){
+    const c=_containerOrbitCenter();
+    const diag=Math.sqrt(c.w*c.w+c.h*c.h+c.d*c.d);
+    offset.set(0.82,0.5,0.95).normalize().multiplyScalar(Math.max(6,diag*1.25));
+  }
+  const speedRaw=+document.getElementById('pContainerOrbitDegS')?.value;
+  const degPerSec=Number.isFinite(speedRaw)?Math.max(1,Math.min(180,speedRaw)):18;
+  gContainerOrbitState={
+    pivot,
+    baseOffset:offset.clone(),
+    azimuth:0,
+    degPerSec,
+  };
+  gContainerOrbitLastMs=performance.now();
+  gCamCtrl.autoRotate=false;
+  gCamCtrl.enableRotate=false;
+  gCamCtrl.enablePan=false;
+  gCamCtrl.target.copy(pivot);
+}
+
+function _stopContainerOrbit(){
+  gContainerOrbitState=null;
+  if(gCamCtrl){
+    gCamCtrl.autoRotate=false;
+    gCamCtrl.enableRotate=true;
+    gCamCtrl.enablePan=true;
+  }
+}
+
+function _stepContainerOrbit(){
+  if(!gContainerOrbitState||!gCamCtrl||!gCamera) return;
+  const now=performance.now();
+  const dt=Math.min(0.05, (now-(gContainerOrbitLastMs||now))/1000);
+  gContainerOrbitLastMs=now;
+  const st=gContainerOrbitState;
+  const speedRaw=+document.getElementById('pContainerOrbitDegS')?.value;
+  if(Number.isFinite(speedRaw)) st.degPerSec=Math.max(1,Math.min(180,speedRaw));
+  st.azimuth+=st.degPerSec*dt*(Math.PI/180);
+  const off=st.baseOffset.clone().applyAxisAngle(_ORBIT_Y_AXIS, st.azimuth);
+  gCamera.position.copy(st.pivot).add(off);
+  gCamCtrl.target.copy(st.pivot);
+  gCamera.lookAt(st.pivot);
+}
+
+function _applyContainerOrbitMode(){
+  if(!gCamCtrl) return;
+  const mode=document.getElementById('selContainerOrbitMode')?.value||'off';
+  gContainerOrbitEnabled=(mode==='orbit');
+  if(gContainerOrbitEnabled) _beginContainerOrbit();
+  else _stopContainerOrbit();
+}
+
+function onContainerOrbitModeChange(){
+  const mode=document.getElementById('selContainerOrbitMode')?.value||'off';
+  if(mode==='orbit'){
+    gContainerOrbitEnabled=true;
+    if(!gContainerOrbitState) _beginContainerOrbit();
+    else{
+      const speedRaw=+document.getElementById('pContainerOrbitDegS')?.value;
+      if(Number.isFinite(speedRaw))
+        gContainerOrbitState.degPerSec=Math.max(1,Math.min(180,speedRaw));
+    }
+  }else{
+    gContainerOrbitEnabled=false;
+    _stopContainerOrbit();
+  }
+}
+
 function focusPicked(){
   if(!gSimulator||gPickedParticle<0)return;
   const p=gSimulator.particles[gPickedParticle];
@@ -4020,11 +5239,30 @@ function readVolumeDropHeightMm(){
   return Number.isFinite(v)?Math.max(0,v):0;
 }
 
+function readAirwayParams(){
+  const g=id=>{
+    const el=document.getElementById(id);
+    if(!el)return NaN;
+    const v=+el.value;
+    return Number.isFinite(v)?v:NaN;
+  };
+  return{
+    trunkRadiusMm:Math.max(1, g('pAirTrunkR')||2),
+    trunkLengthMm:Math.max(4, g('pAirTrunkLen')||7),
+    branchRadiusMm:Math.max(0.8, g('pAirBranchR')||2),
+    branchLengthMm:Math.max(4, g('pAirBranchLen')||5),
+    branchSpreadMm:Math.max(2, g('pAirSpread')||2),
+    carinaY_mm:Math.max(4, g('pAirCarinaY')||17),
+  };
+}
+
 function readSyringeParams(){
   const modeEl=document.getElementById('selContainerMode');
-  const containerMode=(modeEl&&modeEl.value==='volume')?'volume':'syringe';
+  const mv=modeEl?modeEl.value:'syringe';
+  const containerMode=(mv==='volume')?'volume':(mv==='airway'?'airway':'syringe');
   return{
     containerMode,
+    airway:readAirwayParams(),
     volumeBox:readVolumeBoxParams(),
     volumeDropHeightMm:readVolumeDropHeightMm(),
     barrelDiam  :+document.getElementById('pBarrelDiam').value,
@@ -4061,6 +5299,7 @@ function initSimulation(){
   document.getElementById('pGravity').value
     && (gSimulator && (gSimulator.gravity[1]=-Math.abs(+document.getElementById('pGravity').value)));
   gSimulator=new SyringeSimulator(gParticleTemplate,sp,capacity,initial,gScene);
+  _airwayBakeReset();
   gSimulator.volumeDropHeightMm=readVolumeDropHeightMm();
   gSimulator.timerExportMode=!!document.getElementById('chkTimerExport')?.checked;
   gSimulator.timerWallDurationS=Math.max(0.25,+document.getElementById('pTimerCaptureS')?.value||60);
@@ -4123,7 +5362,13 @@ function initSimulation(){
 // 9.  UI HANDLERS
 // ═══════════════════════════════════════════════════════════════
 function onRun(){
+  const wasPaused=gPaused;
+  if(gAirwayPlayback.mode==='playing') _airwayBakeReset();
   gPaused=!gPaused;
+  if(!gPaused&&wasPaused&&_airwayBakeEnabled()&&gAirwayPlayback.mode==='off'&&!gAirwayPlayback.frames.length&&!gAirwayPlayback._asyncBaking){
+    onAirwayBake();
+    return;
+  }
   document.getElementById('btnRun').textContent=gPaused?'Run':'Stop';
   const pb=document.getElementById('btnPause');
   if(pb)pb.textContent=gPaused?'Resume':'Pause';
@@ -4151,11 +5396,13 @@ function onPauseToggle(){
 }
 function onRestart(){
   gPaused=true;
+  _airwayBakeReset();
   document.getElementById('btnRun').textContent='Run';
   const pb=document.getElementById('btnPause');
   if(pb)pb.textContent='Resume';
   gFrameIdx=0;
-  initSimulation();}
+  initSimulation();
+  _applyContainerOrbitMode();}
 function onEdgeCChange(v){
   const num=+v;
   document.getElementById('lblEdgeC').textContent=(Number.isFinite(num)?num:0).toFixed(3);
@@ -4357,6 +5604,10 @@ async function loadUIConfig(){
       setNum('pTaperH',     cfg.syringe.taperH);
     }
 
+    if(cfg.airway && typeof cfg.airway==='object'){
+      gAirwayUiOverrides=Object.assign({}, gAirwayUiOverrides, cfg.airway);
+    }
+
     // Particles
     if(cfg.particles){
       setNum('pCount',     cfg.particles.maxParticles);
@@ -4397,8 +5648,11 @@ async function loadUIConfig(){
         const sel=document.getElementById('selContainerMode');
         if(sel){
           const m=String(cfg.physics.containerMode).toLowerCase();
-          sel.value=(m==='volume'||m==='box')?'volume':'syringe';
+          sel.value=(m==='volume'||m==='box')?'volume':(m==='airway'?'airway':'syringe');
         }
+      }
+      if(cfg.physics.airway_mm && typeof cfg.physics.airway_mm==='object'){
+        gAirwayUiOverrides=Object.assign({}, gAirwayUiOverrides, cfg.physics.airway_mm);
       }
       if(cfg.physics.volumeBox_mm && typeof cfg.physics.volumeBox_mm==='object'){
         const vb=cfg.physics.volumeBox_mm;
@@ -4497,6 +5751,10 @@ async function loadUIConfig(){
     onWallMuChange(document.getElementById('sWallMu')?.value ?? 65);
     onStressGainChange(document.getElementById('sStressGain')?.value ?? 120);
 
+    if(document.getElementById('selContainerMode')?.value==='airway'){
+      applyAirwayUiDefaults(gAirwayUiOverrides);
+    }
+
     // Optional hardening overrides in particles block (if present).
     // Use percent inputs to match the existing sliders.
     if(cfg.particles){
@@ -4584,16 +5842,71 @@ function onVolDropHeightInput(){
   if(gSimulator) gSimulator.volumeDropHeightMm=readVolumeDropHeightMm();
 }
 
+/** Bronchial-tree mode only — does not change syringe / box defaults. */
+const AIRWAY_UI_DEFAULTS={
+  trunkRadiusMm:2, trunkLengthMm:7, branchRadiusMm:2, branchLengthMm:5,
+  branchSpreadMm:2, carinaY_mm:17,
+  maxParticles:300, initialDrop:10, dropMore:1, radiusMm:1.02,
+};
+
+function applyAirwayUiDefaults(overrides){
+  const d=Object.assign({}, AIRWAY_UI_DEFAULTS, overrides||{});
+  const set=(id,v)=>{
+    const el=document.getElementById(id);
+    if(!el) return;
+    const n=+v;
+    if(!Number.isFinite(n)) return;
+    el.value=String(n);
+  };
+  set('pAirTrunkR', d.trunkRadiusMm);
+  set('pAirTrunkLen', d.trunkLengthMm);
+  set('pAirBranchR', d.branchRadiusMm);
+  set('pAirBranchLen', d.branchLengthMm);
+  set('pAirSpread', d.branchSpreadMm);
+  set('pAirCarinaY', d.carinaY_mm);
+  set('pCount', d.maxParticles);
+  set('pInitCount', d.initialDrop);
+  set('pDropCount', d.dropMore);
+  set('sRadius', d.radiusMm);
+  gNominalRadiusMm=d.radiusMm;
+  const lbl=document.getElementById('lblNomRadius');
+  if(lbl) lbl.textContent=d.radiusMm.toFixed(3);
+}
+
+function _syncExport4kVideoButton(){
+  const btn=document.getElementById('btnExport4kVideo');
+  if(!btn) return;
+  const airway=(document.getElementById('selContainerMode')?.value==='airway');
+  const n=gAirwayPlayback?.frames?.length||0;
+  const can=airway&&n>0&&!gVideoExport.active;
+  btn.disabled=!can;
+  if(gVideoExport.active){
+    btn.title='4K export in progress…';
+  }else if(!airway){
+    btn.title='Set Container → Bronchial tree (Y-tubes), run Pre-compute & play, then export.';
+  }else if(n===0){
+    btn.title='Pre-compute & play first (needs baked frames). Same controls under Container → Bronchial tree.';
+  }else{
+    btn.title=`Export ${n} baked frames as 3840×2160 WebM at Playback fps. Convert to MP4 with ffmpeg/VLC if needed.`;
+  }
+}
+
 function onContainerModeChange(fromUser){
-  const vol=document.getElementById('selContainerMode')?.value==='volume';
+  const mv=document.getElementById('selContainerMode')?.value||'syringe';
+  const vol=mv==='volume';
+  const airway=mv==='airway';
   const ds=document.getElementById('detailsSyringeMm');
   const wd=document.getElementById('wrapVolumeDims');
+  const ad=document.getElementById('wrapAirwayDims');
   const ex=document.getElementById('wrapSyringePhysicsExtras');
-  if(ds) ds.style.display=vol?'none':'';
+  if(ds) ds.style.display=(vol||airway)?'none':'';
   if(wd) wd.style.display=vol?'block':'none';
-  if(ex) ex.style.display=vol?'none':'';
-  // Rebuild scene graph: old Syringe meshes stay until initSimulation disposes them.
+  if(ad) ad.style.display=airway?'block':'none';
+  if(ex) ex.style.display=(vol||airway)?'none':'';
+  if(airway) applyAirwayUiDefaults(gAirwayUiOverrides);
+  _syncExport4kVideoButton();
   if(fromUser) onRestart();
+  else _applyContainerOrbitMode();
 }
 
 function onExtrLockDelayChange(v){
@@ -4610,6 +5923,7 @@ function onDropMore(){
     console.log('No remaining capacity to drop.');
   }else{
     console.log(`Dropped ${added} more particles.`);
+    if(_airwayBakeEnabled()) _airwayBakeReset();
   }
 }
 
@@ -4716,11 +6030,584 @@ function exportMetricsCSV(){
 
 function _download(content,filename,type){
   const blob=new Blob([content],{type});
+  _downloadBlob(blob,filename);}
+
+function _downloadBlob(blob,filename){
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');
   a.href=url;a.download=filename;
   document.body.appendChild(a);a.click();
   document.body.removeChild(a);URL.revokeObjectURL(url);}
+
+function _videoExportMimeType(){
+  if(typeof MediaRecorder==='undefined') return null;
+  for(const m of ['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm']){
+    if(MediaRecorder.isTypeSupported(m)) return m;
+  }
+  return null;
+}
+
+function _saveRendererViewport(){
+  const wrap=document.getElementById('canvasWrap');
+  return{
+    w:wrap?.clientWidth||gRenderer.domElement.width,
+    h:wrap?.clientHeight||gRenderer.domElement.height,
+    pr:gRenderer.getPixelRatio(),
+    aspect:gCamera.aspect,
+  };
+}
+
+function _restoreRendererViewport(saved){
+  if(!saved||!gRenderer||!gCamera) return;
+  const wrap=document.getElementById('canvasWrap');
+  gRenderer.setPixelRatio(saved.pr);
+  const w=wrap?.clientWidth||saved.w;
+  const h=wrap?.clientHeight||saved.h;
+  gRenderer.setSize(w,h,false);
+  gCamera.aspect=w/h;
+  gCamera.updateProjectionMatrix();
+}
+
+function _rendererSetExportSize(w,h){
+  gRenderer.setPixelRatio(1);
+  gRenderer.setSize(w,h,false);
+  gCamera.aspect=w/h;
+  gCamera.updateProjectionMatrix();
+}
+
+function _sleepMs(ms){
+  return new Promise(r=>setTimeout(r,ms));
+}
+
+function _airwayBakeEnabled(){
+  return (document.getElementById('selContainerMode')?.value==='airway') &&
+    !!document.getElementById('chkAirwayBake')?.checked;
+}
+
+function _setAirwayBakeLabel(t){
+  const el=document.getElementById('lblAirwayBake');
+  if(el) el.textContent=t;
+}
+
+function _airwayBakeTargetSimS(pb){
+  return Math.min(pb?.maxSimS??45, AIRWAY_BAKE_SIM_CAP_S);
+}
+
+function _formatBakeEta(sec){
+  if(!Number.isFinite(sec)||sec<0) return '—';
+  if(sec<1) return '<1 s';
+  if(sec<60) return `${Math.ceil(sec)} s`;
+  const m=Math.floor(sec/60);
+  const s=Math.ceil(sec%60);
+  return s>0 ? `${m}m ${s}s` : `${m}m`;
+}
+
+function _airwayBakeProgressShow(show){
+  const w=document.getElementById('wrapAirwayBakeProgress');
+  if(w) w.classList.toggle('is-active', !!show);
+  if(!show){
+    const fill=document.getElementById('airwayBakeProgressFill');
+    const bar=document.getElementById('airwayBakeProgressBar');
+    if(fill) fill.style.width='0%';
+    if(bar) bar.setAttribute('aria-valuenow','0');
+    const lblPct=document.getElementById('lblAirwayBakePct');
+    const lblEta=document.getElementById('lblAirwayBakeEta');
+    if(lblPct) lblPct.textContent='0%';
+    if(lblEta) lblEta.textContent='ETA —';
+  }
+}
+
+function _airwayBakeElapsedSimS(pb){
+  if(!gSimulator) return 0;
+  return Math.max(0, gSimulator.simTime-(pb?._bakeSimStart||0));
+}
+
+function _airwayBakeProgressUpdate(pb){
+  if(!pb||!gSimulator) return;
+  const target=_airwayBakeTargetSimS(pb);
+  const simDone=_airwayBakeElapsedSimS(pb);
+  const pct=target>0 ? Math.min(100, Math.max(0, (simDone/target)*100)) : 0;
+  const fill=document.getElementById('airwayBakeProgressFill');
+  const bar=document.getElementById('airwayBakeProgressBar');
+  const lblPct=document.getElementById('lblAirwayBakePct');
+  const lblEta=document.getElementById('lblAirwayBakeEta');
+  if(fill) fill.style.width=pct.toFixed(1)+'%';
+  if(bar) bar.setAttribute('aria-valuenow', String(Math.round(pct)));
+  if(lblPct) lblPct.textContent=`${Math.round(pct)}% · sim ${simDone.toFixed(1)}/${target.toFixed(0)} s`;
+  let etaStr='Estimating…';
+  if(pb._bakeWallStartMs!=null){
+    const wallS=(performance.now()-pb._bakeWallStartMs)/1000;
+    if(wallS>=0.35&&simDone>=0.08){
+      const rate=simDone/wallS;
+      const remain=Math.max(0, target-simDone);
+      etaStr='ETA '+_formatBakeEta(remain/rate);
+    }
+  }
+  const st=gSimulator.settleState;
+  if(st?.settled&&simDone>=2&&pct<99)
+    etaStr+=' · may finish early when settled';
+  if(lblEta) lblEta.textContent=etaStr;
+}
+
+function _airwayFramePos(fr){
+  return (fr instanceof Float32Array) ? fr : fr?.pos;
+}
+
+function _airwayFrameCol(fr){
+  return (fr instanceof Float32Array) ? null : fr?.col;
+}
+
+function _airwayBakeCaptureFrame(){
+  const sim=gSimulator;
+  sim._updateColors();
+  const m=sim._lastMetrics;
+  const st=sim.settleState;
+  return {
+    pos: new Float32Array(sim.allPositions),
+    col: new Float32Array(sim.allColors),
+    simTime: sim.simTime,
+    dispensed: sim.dispensed,
+    spawnCursor: sim.spawnCursor|0,
+    particlesDroppedViaUi: sim.particlesDroppedViaUi|0,
+    needleInletBlocked: !!sim.syringe?.needleInletCapActive,
+    metrics: {
+      p2pUniquePairs: m.p2pUniquePairs|0,
+      p2pSumOverlapMm: m.p2pSumOverlapMm,
+      p2pEstContactAreaMm2: m.p2pEstContactAreaMm2,
+      p2pForceProxy: m.p2pForceProxy,
+      p2pForcePerPairMean: m.p2pForcePerPairMean,
+      maxPenetrationMm: m.maxPenetrationMm,
+      meanCmSpeedMmS: m.meanCmSpeedMmS,
+      meanMaxEdgeStrain: m.meanMaxEdgeStrain,
+    },
+    settle: {
+      settled: !!st.settled,
+      timeToSettle: st.timeToSettle,
+      etaCountdownSim: st.etaCountdownSim,
+      predictedSettleAtSim: st.predictedSettleAtSim,
+      stableFrames: st.stableFrames|0,
+    },
+  };
+}
+
+function _airwayInterpSnapshot(f0,f1,t){
+  if(!f1||t<=0) return f0;
+  if(t>=1) return f1;
+  const l=(a,b)=>a+(b-a)*t;
+  const m0=f0.metrics,m1=f1.metrics;
+  return {
+    simTime: l(f0.simTime,f1.simTime),
+    dispensed: Math.round(l(f0.dispensed,f1.dispensed)),
+    spawnCursor: f1.spawnCursor,
+    particlesDroppedViaUi: f0.particlesDroppedViaUi,
+    needleInletBlocked: t>=0.5?f1.needleInletBlocked:f0.needleInletBlocked,
+    metrics: {
+      p2pUniquePairs: Math.round(l(m0.p2pUniquePairs,m1.p2pUniquePairs)),
+      p2pSumOverlapMm: l(m0.p2pSumOverlapMm,m1.p2pSumOverlapMm),
+      p2pEstContactAreaMm2: l(m0.p2pEstContactAreaMm2,m1.p2pEstContactAreaMm2),
+      p2pForceProxy: l(m0.p2pForceProxy,m1.p2pForceProxy),
+      p2pForcePerPairMean: l(m0.p2pForcePerPairMean,m1.p2pForcePerPairMean),
+      maxPenetrationMm: l(m0.maxPenetrationMm,m1.maxPenetrationMm),
+      meanCmSpeedMmS: l(m0.meanCmSpeedMmS,m1.meanCmSpeedMmS),
+      meanMaxEdgeStrain: l(m0.meanMaxEdgeStrain,m1.meanMaxEdgeStrain),
+    },
+    settle: t<0.5?{...f0.settle}:{...f1.settle},
+  };
+}
+
+function _airwayStatsFromSnapshot(snap){
+  const m=snap.metrics;
+  const pairs=m.p2pUniquePairs|0;
+  const st=snap.settle;
+  const nActive=gSimulator?.particles?.filter(p=>p.active).length??0;
+  let settleLabel='no';
+  if(st.settled&&st.timeToSettle!=null)
+    settleLabel=`yes / ${st.timeToSettle.toFixed(2)}`;
+  else if(st.etaCountdownSim!=null)
+    settleLabel=`… ${st.etaCountdownSim.toFixed(2)} left`;
+  const timeToSettleS=st.settled&&st.timeToSettle!=null ? st.timeToSettle : null;
+  return {
+    totalContacts: pairs,
+    maxPenetration: m.maxPenetrationMm,
+    avgContacts: nActive>0?(pairs*2/nActive):0,
+    dispensed: snap.dispensed,
+    p2pArea: m.p2pEstContactAreaMm2,
+    p2pForceProxy: m.p2pForceProxy,
+    particlesDroppedViaUi: snap.particlesDroppedViaUi,
+    particlesReleasedTotal: snap.spawnCursor,
+    settleLabel,
+    timeToSettleS,
+    settleEtaSimS: st.etaCountdownSim,
+    predictedSettleAtSim: st.predictedSettleAtSim,
+    needleInletBlocked: snap.needleInletBlocked,
+  };
+}
+
+function _airwayApplySnapshotToSim(snap){
+  if(!gSimulator||!snap) return;
+  const sim=gSimulator;
+  sim.simTime=snap.simTime;
+  sim.dispensed=snap.dispensed;
+  sim._lastMetrics={...snap.metrics};
+  const st=sim.settleState;
+  const s=snap.settle;
+  st.settled=s.settled;
+  st.timeToSettle=s.timeToSettle;
+  st.etaCountdownSim=s.etaCountdownSim;
+  st.predictedSettleAtSim=s.predictedSettleAtSim;
+  st.stableFrames=s.stableFrames;
+  sim._playbackStatsOverride=_airwayStatsFromSnapshot(snap);
+}
+
+function _airwayClearPlaybackStats(){
+  if(gSimulator) gSimulator._playbackStatsOverride=null;
+}
+
+function _airwayBakeReset(){
+  _airwayClearPlaybackStats();
+  gAirwayPlayback._bakeAbort=true;
+  gAirwayPlayback._asyncBaking=false;
+  gAirwayPlayback.mode='off';
+  gAirwayPlayback.frames=[];
+  gAirwayPlayback.frameIdx=0;
+  gAirwayPlayback.playhead=0;
+  gAirwayPlayback._lastPlayMs=0;
+  gAirwayPlayback._normCounter=0;
+  gAirwayPlayback._bakeWallStartMs=null;
+  gAirwayPlayback._bakeSimStart=0;
+  const bakeBtn=document.getElementById('btnAirwayBake');
+  if(bakeBtn) bakeBtn.disabled=false;
+  const cancelBtn=document.getElementById('btnAirwayBakeCancel');
+  if(cancelBtn) cancelBtn.style.display='none';
+  _airwayBakeProgressShow(false);
+  _setAirwayBakeLabel('Pre-compute runs full physics headless from t=0, then loops smooth playback. Re-bake after Drop.');
+  _syncExport4kVideoButton();
+}
+
+function _airwayReadPlayFps(){
+  return Math.max(15, Math.min(240, +document.getElementById('pAirPlayFps')?.value||60));
+}
+
+function onAirwayBakeCancel(){
+  if(gAirwayPlayback.mode!=='baking'&&!gAirwayPlayback._asyncBaking) return;
+  gAirwayPlayback._bakeAbort=true;
+  _setAirwayBakeLabel('Cancelling pre-compute…');
+}
+
+async function onAirwayBake(){
+  if(!gSimulator||!gSimulator.syringe?._airwayVolume){
+    alert('Switch to Bronchial tree (Y-tubes) mode first.');
+    return;
+  }
+  if(gAirwayPlayback._asyncBaking) return;
+
+  // Always bake from a fresh t=0 sim (re-baking from mid-sim instantly hit maxSimS).
+  gPaused=true;
+  gFrameIdx=0;
+  initSimulation();
+  _applyContainerOrbitMode();
+
+  const pb=gAirwayPlayback;
+  pb._bakeAbort=false;
+  pb.mode='baking';
+  pb._asyncBaking=true;
+  pb.frames=[];
+  pb.frameIdx=0;
+  pb.playhead=0;
+  pb.maxSimS=Math.max(5,+document.getElementById('pAirBakeMaxS')?.value||45);
+  pb.playFps=_airwayReadPlayFps();
+  pb._savedPerfSkip=gPerfSkipDraw;
+  gPerfSkipDraw=true;
+  const rb=document.getElementById('btnRun');
+  if(rb) rb.textContent='Run';
+  const pbtn=document.getElementById('btnPause');
+  if(pbtn) pbtn.textContent='Resume';
+  const bakeBtn=document.getElementById('btnAirwayBake');
+  if(bakeBtn) bakeBtn.disabled=true;
+  const cancelBtn=document.getElementById('btnAirwayBakeCancel');
+  if(cancelBtn) cancelBtn.style.display='inline-block';
+  pb._bakeWallStartMs=performance.now();
+  pb._bakeSimStart=gSimulator.simTime;
+  _airwayBakeProgressShow(true);
+  _airwayBakeProgressUpdate(pb);
+  _setAirwayBakeLabel('Pre-computing… full-accuracy physics (no drawing)');
+  console.log('Airway pre-compute: recording at 60 Hz sim steps');
+  const BATCH=48;
+  try{
+    while(pb.mode==='baking'&&!pb._bakeAbort){
+      for(let i=0;i<BATCH&&pb.mode==='baking'&&!pb._bakeAbort;i++)
+        gSimulator.simulate(FIXED_DT);
+      if(pb.mode!=='baking'||pb._bakeAbort) break;
+      _airwayBakeProgressUpdate(pb);
+      await new Promise(r=>setTimeout(r,0));
+    }
+    if(pb._bakeAbort&&pb.mode!=='playing'){
+      pb.mode='off';
+      pb.frames=[];
+      gPerfSkipDraw=pb._savedPerfSkip;
+      _airwayBakeProgressShow(false);
+      _setAirwayBakeLabel('Pre-compute cancelled.');
+    }
+  }finally{
+    pb._asyncBaking=false;
+    if(bakeBtn) bakeBtn.disabled=false;
+    if(cancelBtn) cancelBtn.style.display='none';
+    if(pb.mode==='baking'){
+      gPerfSkipDraw=pb._savedPerfSkip;
+      pb.mode='off';
+      _airwayBakeProgressShow(false);
+      _setAirwayBakeLabel('Pre-compute stopped (no frames).');
+    }
+  }
+}
+
+function _airwayBakeOnStep(){
+  const pb=gAirwayPlayback;
+  if(!gSimulator||pb.mode!=='baking') return;
+  pb.frames.push(_airwayBakeCaptureFrame());
+  const n=pb.frames.length;
+  const elapsed=_airwayBakeElapsedSimS(pb);
+  if(elapsed>=pb.maxSimS){
+    _airwayBakeFinish(`Baked ${n} frames (${elapsed.toFixed(1)} s sim). Looping playback.`);
+    return;
+  }
+  if(n>=AIRWAY_BAKE_FRAME_CAP){
+    _airwayBakeFinish(`Baked ${n} frames (cap). Looping playback.`);
+    return;
+  }
+  const st=gSimulator.settleState;
+  if(st&&st.settled&&elapsed>=2){
+    _airwayBakeFinish(`Settled at ${elapsed.toFixed(1)} s — ${n} frames. Looping playback.`);
+    return;
+  }
+  if(n%90===0) _airwayBakeProgressUpdate(pb);
+}
+
+function _airwayBakeFinish(msg){
+  const pb=gAirwayPlayback;
+  _airwayBakeProgressShow(false);
+  if(!pb.frames.length){
+    pb.mode='off';
+    gPerfSkipDraw=pb._savedPerfSkip;
+    const perfChk=document.getElementById('chkPerfMode');
+    if(perfChk) perfChk.checked=gPerfSkipDraw;
+    _setAirwayBakeLabel('Bake produced no frames.');
+    return;
+  }
+  const fill=document.getElementById('airwayBakeProgressFill');
+  const bar=document.getElementById('airwayBakeProgressBar');
+  if(fill) fill.style.width='100%';
+  if(bar) bar.setAttribute('aria-valuenow','100');
+  pb.mode='playing';
+  pb.frameIdx=0;
+  pb.playhead=0;
+  pb.playFps=_airwayReadPlayFps();
+  pb._lastPlayMs=performance.now();
+  pb._normCounter=0;
+  gPaused=true;
+  gPerfSkipDraw=false;
+  gPerfDeadlineMs=null;
+  const perfChk=document.getElementById('chkPerfMode');
+  if(perfChk) perfChk.checked=false;
+  const rb=document.getElementById('btnRun');
+  if(rb) rb.textContent='Run';
+  const pbtn=document.getElementById('btnPause');
+  if(pbtn) pbtn.textContent='Resume';
+  const f0=pb.frames[0];
+  if(f0&&!_airwayFrameCol(f0))
+    _setAirwayBakeLabel((msg||'Playback looping')+` · re-bake for colors & stats`);
+  else
+    _setAirwayBakeLabel((msg||'Playback looping')+` · ${pb.playFps|0} fps · Run = live physics`);
+  if(f0&&f0.metrics) _airwayApplySnapshotToSim(f0);
+  _syncExport4kVideoButton();
+  console.log(msg);
+}
+
+function _airwayApplyFrameDiscrete(idx){
+  const pb=gAirwayPlayback;
+  const fr=pb.frames[idx];
+  if(!fr||!gSimulator) return;
+  const pos=_airwayFramePos(fr);
+  const col=_airwayFrameCol(fr);
+  if(pos) gSimulator.allPositions.set(pos);
+  if(col) gSimulator.allColors.set(col);
+  const geo=gSimulator.particleMesh.geometry;
+  geo.attributes.position.needsUpdate=true;
+  if(col) geo.attributes.color.needsUpdate=true;
+  geo.computeVertexNormals();
+  if(fr.metrics) _airwayApplySnapshotToSim(fr);
+}
+
+async function onExportAirwayVideo4K(){
+  if(gVideoExport.active) return;
+  const pb=gAirwayPlayback;
+  if(!pb.frames.length){
+    alert('No baked frames yet. In Bronchial tree mode, run Pre-compute & play (or Run with pre-compute enabled), then export.');
+    return;
+  }
+  if(!gSimulator||!gScene||!gCamera){
+    alert('Simulation not ready.');
+    return;
+  }
+  const mime=_videoExportMimeType();
+  if(!mime){
+    alert('This browser cannot encode video (MediaRecorder unsupported). Try Chrome or Edge.');
+    return;
+  }
+  const btn=document.getElementById('btnExport4kVideo');
+  const n=pb.frames.length;
+  const fps=Math.max(15, pb.playFps||_airwayReadPlayFps());
+  const frameMs=1000/fps;
+
+  gVideoExport.active=true;
+  _syncExport4kVideoButton();
+  if(btn) btn.textContent='Exporting…';
+  // Pause live physics/playback while we run the export loop.
+  gPaused=true;
+  const rb=document.getElementById('btnRun');
+  if(rb) rb.textContent='Run';
+  const pb2=document.getElementById('btnPause');
+  if(pb2) pb2.textContent='Resume';
+
+  // ── Offscreen canvas + renderer ──────────────────────────────
+  // Never added to the DOM, so the visible viewport is undisturbed.
+  const offCanvas=document.createElement('canvas');
+  offCanvas.width=VIDEO_EXPORT_4K_W;
+  offCanvas.height=VIDEO_EXPORT_4K_H;
+  const offRend=new THREE.WebGLRenderer({canvas:offCanvas, antialias:true, preserveDrawingBuffer:true});
+  offRend.shadowMap.enabled=true;
+  offRend.shadowMap.type=THREE.PCFSoftShadowMap;
+  offRend.setPixelRatio(1);
+  offRend.setSize(VIDEO_EXPORT_4K_W, VIDEO_EXPORT_4K_H, false);
+
+  // Clone the current camera; set aspect ratio to match 16:10 export resolution.
+  const expCam=new THREE.PerspectiveCamera(
+    gCamera.fov, VIDEO_EXPORT_4K_W/VIDEO_EXPORT_4K_H, gCamera.near, gCamera.far);
+  expCam.position.copy(gCamera.position);
+  expCam.quaternion.copy(gCamera.quaternion);
+  expCam.updateMatrixWorld();
+
+  // ── Orbit state snapshot ─────────────────────────────────────
+  // If the orbit is active, we advance it by exactly 1/fps s per frame
+  // so the exported video matches what the viewer sees during playback.
+  const orbitSrc=gContainerOrbitState;
+  let orbitPivot=null, orbitBase=null, orbitDPS=0, orbitAz=0;
+  if(orbitSrc){
+    orbitPivot=orbitSrc.pivot.clone();
+    orbitBase=orbitSrc.baseOffset.clone();
+    orbitDPS=orbitSrc.degPerSec||18;
+    orbitAz=orbitSrc.azimuth||0;
+  }
+
+  // ── MediaRecorder ─────────────────────────────────────────────
+  // captureStream(fps) embeds the correct fps into the WebM container so
+  // every player knows the intended playback speed.  requestFrame() stamps
+  // each rendered canvas snapshot into the stream at the right moment.
+  const stream=offCanvas.captureStream(fps);
+  const track=stream.getVideoTracks()[0];
+  const chunks=[];
+  const recorder=new MediaRecorder(stream,{mimeType:mime, videoBitsPerSecond:60000000});
+  recorder.ondataavailable=e=>{if(e.data&&e.data.size>0) chunks.push(e.data);};
+  const stopped=new Promise(resolve=>{recorder.onstop=resolve;});
+  recorder.start();
+  const t0=performance.now();
+
+  // Let the encoder pipeline warm up with one blank render before we loop.
+  offRend.render(gScene, expCam);
+  if(track?.requestFrame) track.requestFrame();
+  await _sleepMs(frameMs);
+
+  try{
+    for(let i=0;i<n;i++){
+      // Apply baked simulation state (positions + colors).
+      _airwayApplyFrameDiscrete(i);
+
+      // Advance orbit by one frame's worth of rotation.
+      if(orbitPivot){
+        orbitAz+=orbitDPS*(1/fps)*(Math.PI/180);
+        const off=orbitBase.clone().applyAxisAngle(_ORBIT_Y_AXIS, orbitAz);
+        expCam.position.copy(orbitPivot).add(off);
+        expCam.lookAt(orbitPivot);
+        expCam.updateMatrixWorld();
+      }
+
+      offRend.render(gScene, expCam);
+      // Stamp this exact canvas state as a video frame.
+      if(track?.requestFrame) track.requestFrame();
+
+      // Sleep so wall-clock timestamps between requestFrame() calls equal
+      // 1/fps seconds — that is what the MediaRecorder uses to build the
+      // WebM frame durations, giving correct playback speed in any player.
+      await _sleepMs(frameMs);
+
+      // Yield to the UI thread periodically so the page stays responsive.
+      if(i%20===0){
+        const pct=((i+1)/n*100)|0;
+        _setAirwayBakeLabel(`4K export ${pct}% (${i+1}/${n}) · offscreen · ${fps} fps`);
+        await new Promise(r=>requestAnimationFrame(r));
+      }
+    }
+    // Extra sleep so the encoder has time to flush the very last frame.
+    await _sleepMs(frameMs*3);
+    recorder.stop();
+    await stopped;
+    const ext=mime.includes('webm')?'webm':'mp4';
+    const blob=new Blob(chunks,{type:mime.split(';')[0]});
+    const durS=(n/fps).toFixed(1);
+    const wStr=`${VIDEO_EXPORT_4K_W}x${VIDEO_EXPORT_4K_H}`;
+    _downloadBlob(blob,`bronchial_bake_${n}f_${fps}fps_${wStr}_${Date.now()}.${ext}`);
+    console.log(`4K export: ${n} frames · ${durS} s @ ${fps} fps · ${(blob.size/1e6).toFixed(1)} MB`);
+    _setAirwayBakeLabel(`Exported ${n}-frame ${wStr} WebM · ${durS} s @ ${fps} fps.`);
+  }catch(err){
+    console.error(err);
+    alert('4K export failed: '+err);
+    _setAirwayBakeLabel('4K export failed — see console.');
+  }finally{
+    try{if(recorder.state==='recording') recorder.stop();}catch(_e){}
+    offRend.dispose();
+    gVideoExport.active=false;
+    if(btn) btn.textContent='Export 4K video';
+    _syncExport4kVideoButton();
+    console.log(`Export wall time: ${((performance.now()-t0)/1000).toFixed(0)} s`);
+  }
+}
+
+function _airwayPlaybackStep(){
+  const pb=gAirwayPlayback;
+  if(gVideoExport.active) return;
+  if(pb.mode!=='playing'||!pb.frames.length||!gSimulator) return;
+  const now=performance.now();
+  if(!pb._lastPlayMs) pb._lastPlayMs=now;
+  const fps=Math.max(15, pb.playFps||_airwayReadPlayFps());
+  pb.playhead+=(now-pb._lastPlayMs)/1000*fps;
+  pb._lastPlayMs=now;
+  while(pb.playhead>=1){
+    pb.playhead-=1;
+    pb.frameIdx++;
+    if(pb.frameIdx>=pb.frames.length-1) pb.frameIdx=0;
+  }
+  const i0=pb.frameIdx;
+  const i1=Math.min(i0+1, pb.frames.length-1);
+  const a=pb.playhead;
+  const f0=pb.frames[i0], f1=pb.frames[i1];
+  const p0=_airwayFramePos(f0), p1=_airwayFramePos(f1);
+  const c0=_airwayFrameCol(f0), c1=_airwayFrameCol(f1);
+  const out=gSimulator.allPositions;
+  const cols=gSimulator.allColors;
+  const ia=1-a;
+  for(let k=0;k<out.length;k++) out[k]=p0[k]*ia+p1[k]*a;
+  if(c0&&c1){
+    for(let k=0;k<cols.length;k++) cols[k]=c0[k]*ia+c1[k]*a;
+  }
+  if(f0?.metrics){
+    const snap=_airwayInterpSnapshot(f0,f1,a);
+    _airwayApplySnapshotToSim(snap);
+  }
+  const geo=gSimulator.particleMesh.geometry;
+  geo.attributes.position.needsUpdate=true;
+  if(c0&&c1) geo.attributes.color.needsUpdate=true;
+  if((++pb._normCounter)%3===0) geo.computeVertexNormals();
+}
 
 // ═══════════════════════════════════════════════════════════════
 // 10.  MAIN LOOP
@@ -4739,6 +6626,7 @@ let _physicsAcc = 0;
 let _renderMsEMA = 0;
 
 function _stepPhysics(dt){
+  if(gAirwayPlayback.mode==='playing') return;
   if(!gSimulator) return;
   // Break long dt into fixed steps for stability and consistent behavior.
   dt = Math.max(0, Math.min(MAX_STEP_DT, dt));
@@ -4747,7 +6635,7 @@ function _stepPhysics(dt){
   _physicsAcc = Math.min(_physicsAcc, MAX_CATCHUP_SEC);
   while(_physicsAcc >= FIXED_DT){
     gSimulator.simulate(FIXED_DT);
-    gSimulator.pushMetricsRow(gFrameIdx);
+    if(gAirwayPlayback.mode!=='baking') gSimulator.pushMetricsRow(gFrameIdx);
     gFrameIdx++;
     _physicsAcc -= FIXED_DT;
     if(gSimulator._autoPauseAfterSettle){
@@ -4785,6 +6673,7 @@ function _physicsTick(){
   let dt = (now - _lastPhysicsMs) / 1000;
   _lastPhysicsMs = now;
   if(!gPaused && gSimulator){
+    if(gAirwayPlayback.mode==='baking'&&gAirwayPlayback._asyncBaking) return;
     if(gPerfSkipDraw && gPerfSimMul > 1) dt *= gPerfSimMul;
     _stepPhysics(dt);
   }
@@ -4858,8 +6747,12 @@ function _renderLoop(){
     gSimulator.updateInspector(gPickedParticle);
     updatePickedVisual();
   }
+  if(gAirwayPlayback.mode==='playing'&&!gVideoExport.active){
+    _airwayPlaybackStep();
+  }
   if(!skipDraw){
-    gCamCtrl.update();
+    if(gContainerOrbitState) _stepContainerOrbit();
+    else gCamCtrl.update();
     gRenderer.render(gScene,gCamera);
   }
 
@@ -4910,6 +6803,7 @@ function onPerfSimMulChange(v){
   await loadUIConfig();
   onContainerModeChange();
   initSimulation();
+  _syncExport4kVideoButton();
   onResize();
   onPerfSimMulChange(document.getElementById('sPerfSimMul')?.value ?? 2);
   // Physics timer continues (best-effort) in background tabs.
