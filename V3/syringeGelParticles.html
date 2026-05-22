@@ -110,7 +110,7 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
   <button class="btn"        onclick="exportPLYColors()" title="Exports particles with vertex colors (stress/contact gradient)">Export PLY (colors)</button>
   <button class="btn"        onclick="exportMetricsCSV()" title="CSV: P2P contacts, contact area, force stats, porosity (box), motion &amp; strain, settle flags. Timer mode logs for a wall-clock window after Run / Drop.">Export metrics CSV</button>
   <button class="btn" id="btnExport4kVideo" onclick="onExportAirwayVideo4K()" disabled
-          title="Bronchial tree: pre-compute first, then export all baked frames as 3840×2160 WebM.">Export 4K video</button>
+          title="Bronchial tree: pre-compute first, then export 3× baked loop as 3840×2400 WebM.">Export 4K video</button>
   <label>Library:
     <select id="particleLibrary" onchange="onSelectLibrary(this.value)" style="width:auto">
       <option value="__default__">Default sphere</option>
@@ -4571,6 +4571,8 @@ let gAirwayPlayback={mode:'off',frames:[],frameIdx:0,playhead:0,maxSimS:45,playF
 let gVideoExport={active:false};
 const VIDEO_EXPORT_4K_W=3840;
 const VIDEO_EXPORT_4K_H=2400; // 16:10
+/** Baked playback cycles in 4K export (drop → settle each time). */
+const VIDEO_EXPORT_LOOPS=3;
 let gRaycaster=null,gPointer=null,gPickedParticle=-1;
 let gTuningOverrides={}; // loaded from config.json (optional)
 let gPickMode='inspect'; // 'inspect' | 'lock'
@@ -5875,7 +5877,7 @@ function _syncExport4kVideoButton(){
   }else if(n===0){
     btn.title='Pre-compute & play first (needs baked frames). Same controls under Container → Bronchial tree.';
   }else{
-    btn.title=`Export ${n} baked frames as 3840×2160 WebM at Playback fps. Convert to MP4 with ffmpeg/VLC if needed.`;
+    btn.title=`Export ${VIDEO_EXPORT_LOOPS}× baked loop (${n} frames/loop) as 3840×2400 WebM at Playback fps. Convert to MP4 with ffmpeg/VLC if needed.`;
   }
 }
 
@@ -6412,18 +6414,34 @@ function _airwayBakeFinish(msg){
 }
 
 function _airwayApplyFrameDiscrete(idx){
+  _airwayApplyFrameBlend(idx, 0);
+}
+
+/** Interpolate baked frames i0→i1 (same blending as live playback). */
+function _airwayApplyFrameBlend(i0, alpha, normCounterRef){
   const pb=gAirwayPlayback;
-  const fr=pb.frames[idx];
-  if(!fr||!gSimulator) return;
-  const pos=_airwayFramePos(fr);
-  const col=_airwayFrameCol(fr);
-  if(pos) gSimulator.allPositions.set(pos);
-  if(col) gSimulator.allColors.set(col);
+  if(!pb.frames.length||!gSimulator) return;
+  const i1=Math.min(i0+1, pb.frames.length-1);
+  const a=Math.max(0, Math.min(1, alpha));
+  const f0=pb.frames[i0], f1=pb.frames[i1];
+  const p0=_airwayFramePos(f0), p1=_airwayFramePos(f1);
+  const c0=_airwayFrameCol(f0), c1=_airwayFrameCol(f1);
+  const out=gSimulator.allPositions;
+  const cols=gSimulator.allColors;
+  const ia=1-a;
+  for(let k=0;k<out.length;k++) out[k]=p0[k]*ia+p1[k]*a;
+  if(c0&&c1){
+    for(let k=0;k<cols.length;k++) cols[k]=c0[k]*ia+c1[k]*a;
+  }
+  if(f0?.metrics){
+    const snap=_airwayInterpSnapshot(f0,f1,a);
+    _airwayApplySnapshotToSim(snap);
+  }
   const geo=gSimulator.particleMesh.geometry;
   geo.attributes.position.needsUpdate=true;
-  if(col) geo.attributes.color.needsUpdate=true;
-  geo.computeVertexNormals();
-  if(fr.metrics) _airwayApplySnapshotToSim(fr);
+  if(c0&&c1) geo.attributes.color.needsUpdate=true;
+  const ctr=normCounterRef||pb;
+  if((++ctr._normCounter)%3===0) geo.computeVertexNormals();
 }
 
 async function onExportAirwayVideo4K(){
@@ -6446,6 +6464,8 @@ async function onExportAirwayVideo4K(){
   const n=pb.frames.length;
   const fps=Math.max(15, pb.playFps||_airwayReadPlayFps());
   const frameMs=1000/fps;
+  const framesPerLoop=Math.max(1, n-1);
+  const totalOutFrames=framesPerLoop*VIDEO_EXPORT_LOOPS;
 
   gVideoExport.active=true;
   _syncExport4kVideoButton();
@@ -6497,55 +6517,83 @@ async function onExportAirwayVideo4K(){
   const recorder=new MediaRecorder(stream,{mimeType:mime, videoBitsPerSecond:60000000});
   recorder.ondataavailable=e=>{if(e.data&&e.data.size>0) chunks.push(e.data);};
   const stopped=new Promise(resolve=>{recorder.onstop=resolve;});
-  recorder.start();
   const t0=performance.now();
+  let frameIdx=0, playhead=0;
+  const exportNorm={_normCounter:0};
 
-  // Let the encoder pipeline warm up with one blank render before we loop.
-  offRend.render(gScene, expCam);
-  if(track?.requestFrame) track.requestFrame();
-  await _sleepMs(frameMs);
+  const advanceOrbit=()=>{
+    if(!orbitPivot) return;
+    orbitAz+=orbitDPS*(1/fps)*(Math.PI/180);
+    const off=orbitBase.clone().applyAxisAngle(_ORBIT_Y_AXIS, orbitAz);
+    expCam.position.copy(orbitPivot).add(off);
+    expCam.lookAt(orbitPivot);
+    expCam.updateMatrixWorld();
+  };
+
+  /** One playback tick; returns true when the baked loop wraps (drop restarts). */
+  const exportTick=()=>{
+    _airwayApplyFrameBlend(frameIdx, playhead, exportNorm);
+    advanceOrbit();
+    offRend.render(gScene, expCam);
+    playhead+=1;
+    let wrapped=false;
+    while(playhead>=1){
+      playhead-=1;
+      frameIdx++;
+      if(frameIdx>=n-1){
+        frameIdx=0;
+        wrapped=true;
+      }
+    }
+    return wrapped;
+  };
 
   try{
-    for(let i=0;i<n;i++){
-      // Apply baked simulation state (positions + colors).
-      _airwayApplyFrameDiscrete(i);
+    // Warm up GPU + encoder on real baked state (avoids a blank-frame jump into frame 0).
+    _airwayApplyFrameBlend(0, 0, exportNorm);
+    advanceOrbit();
+    offRend.render(gScene, expCam);
+    const warmupSteps=Math.min(24, framesPerLoop);
+    for(let w=0;w<warmupSteps;w++){
+      exportTick();
+      await _sleepMs(frameMs*0.5);
+    }
+    frameIdx=0;
+    playhead=0;
+    exportNorm._normCounter=0;
+    _airwayApplyFrameBlend(0, 0, exportNorm);
+    advanceOrbit();
+    offRend.render(gScene, expCam);
 
-      // Advance orbit by one frame's worth of rotation.
-      if(orbitPivot){
-        orbitAz+=orbitDPS*(1/fps)*(Math.PI/180);
-        const off=orbitBase.clone().applyAxisAngle(_ORBIT_Y_AXIS, orbitAz);
-        expCam.position.copy(orbitPivot).add(off);
-        expCam.lookAt(orbitPivot);
-        expCam.updateMatrixWorld();
-      }
+    recorder.start();
+    await _sleepMs(frameMs);
 
-      offRend.render(gScene, expCam);
-      // Stamp this exact canvas state as a video frame.
+    for(let f=0;f<totalOutFrames;f++){
+      exportTick();
       if(track?.requestFrame) track.requestFrame();
-
-      // Sleep so wall-clock timestamps between requestFrame() calls equal
-      // 1/fps seconds — that is what the MediaRecorder uses to build the
-      // WebM frame durations, giving correct playback speed in any player.
       await _sleepMs(frameMs);
 
-      // Yield to the UI thread periodically so the page stays responsive.
-      if(i%20===0){
-        const pct=((i+1)/n*100)|0;
-        _setAirwayBakeLabel(`4K export ${pct}% (${i+1}/${n}) · offscreen · ${fps} fps`);
+      if(f%20===0){
+        const pct=((f+1)/totalOutFrames*100)|0;
+        _setAirwayBakeLabel(
+          `4K export ${pct}% (${f+1}/${totalOutFrames}) · ${VIDEO_EXPORT_LOOPS} loops · ${fps} fps`);
         await new Promise(r=>requestAnimationFrame(r));
       }
     }
-    // Extra sleep so the encoder has time to flush the very last frame.
     await _sleepMs(frameMs*3);
     recorder.stop();
     await stopped;
     const ext=mime.includes('webm')?'webm':'mp4';
     const blob=new Blob(chunks,{type:mime.split(';')[0]});
-    const durS=(n/fps).toFixed(1);
+    const durS=(totalOutFrames/fps).toFixed(1);
     const wStr=`${VIDEO_EXPORT_4K_W}x${VIDEO_EXPORT_4K_H}`;
-    _downloadBlob(blob,`bronchial_bake_${n}f_${fps}fps_${wStr}_${Date.now()}.${ext}`);
-    console.log(`4K export: ${n} frames · ${durS} s @ ${fps} fps · ${(blob.size/1e6).toFixed(1)} MB`);
-    _setAirwayBakeLabel(`Exported ${n}-frame ${wStr} WebM · ${durS} s @ ${fps} fps.`);
+    _downloadBlob(blob,
+      `bronchial_bake_${VIDEO_EXPORT_LOOPS}x${n}f_${fps}fps_${wStr}_${Date.now()}.${ext}`);
+    console.log(
+      `4K export: ${VIDEO_EXPORT_LOOPS} loops · ${totalOutFrames} frames · ${durS} s @ ${fps} fps · `+
+      `${(blob.size/1e6).toFixed(1)} MB`);
+    _setAirwayBakeLabel(
+      `Exported ${VIDEO_EXPORT_LOOPS}× loop (${totalOutFrames} frames) ${wStr} WebM · ${durS} s @ ${fps} fps.`);
   }catch(err){
     console.error(err);
     alert('4K export failed: '+err);
@@ -6574,27 +6622,7 @@ function _airwayPlaybackStep(){
     pb.frameIdx++;
     if(pb.frameIdx>=pb.frames.length-1) pb.frameIdx=0;
   }
-  const i0=pb.frameIdx;
-  const i1=Math.min(i0+1, pb.frames.length-1);
-  const a=pb.playhead;
-  const f0=pb.frames[i0], f1=pb.frames[i1];
-  const p0=_airwayFramePos(f0), p1=_airwayFramePos(f1);
-  const c0=_airwayFrameCol(f0), c1=_airwayFrameCol(f1);
-  const out=gSimulator.allPositions;
-  const cols=gSimulator.allColors;
-  const ia=1-a;
-  for(let k=0;k<out.length;k++) out[k]=p0[k]*ia+p1[k]*a;
-  if(c0&&c1){
-    for(let k=0;k<cols.length;k++) cols[k]=c0[k]*ia+c1[k]*a;
-  }
-  if(f0?.metrics){
-    const snap=_airwayInterpSnapshot(f0,f1,a);
-    _airwayApplySnapshotToSim(snap);
-  }
-  const geo=gSimulator.particleMesh.geometry;
-  geo.attributes.position.needsUpdate=true;
-  if(c0&&c1) geo.attributes.color.needsUpdate=true;
-  if((++pb._normCounter)%3===0) geo.computeVertexNormals();
+  _airwayApplyFrameBlend(pb.frameIdx, pb.playhead);
 }
 
 // ═══════════════════════════════════════════════════════════════
