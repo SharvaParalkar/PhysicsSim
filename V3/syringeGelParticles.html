@@ -28,6 +28,10 @@
     - The OBJ is also used as an inner wall: the particle’s centroid is kept in as a sphere (nominal radius),
       with one rigid shift per solve so the soft body doesn’t “ragdoll” against per-vertex projections.
 
+  Invisible box fill sequence (specialized):
+    - Particles → “Box fill sequence”: keeps your box dims / initial & drop counts; pre-computes each drop
+      until settled, pauses, drops more on the same spawn grid until ~half full, then exports one 4K WebM.
+
   MIT License — based on Matthias Müller "Ten Minute Physics" code patterns.
 -->
 <html lang="en">
@@ -92,6 +96,7 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
 .airway-bake-progress-track{height:8px;background:#232840;border-radius:4px;overflow:hidden;border:1px solid #334}
 .airway-bake-progress-fill{height:100%;width:0%;background:linear-gradient(90deg,#2e5c9e,#4a8fd4);transition:width .12s ease}
 .airway-bake-progress-meta{display:flex;justify-content:space-between;gap:8px;margin-top:4px;font-size:10px;color:#7a9abd}
+.box-fill-sequence-panel{margin-top:8px;padding-top:8px;border-top:1px solid #334}
 </style>
 </head>
 <body>
@@ -110,7 +115,7 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
   <button class="btn"        onclick="exportPLYColors()" title="Exports particles with vertex colors (stress/contact gradient)">Export PLY (colors)</button>
   <button class="btn"        onclick="exportMetricsCSV()" title="CSV: P2P contacts, contact area, force stats, porosity (box), motion &amp; strain, settle flags. Timer mode logs for a wall-clock window after Run / Drop.">Export metrics CSV</button>
   <button class="btn" id="btnExport4kVideo" onclick="onExportAirwayVideo4K()" disabled
-          title="Bronchial tree: pre-compute first, then export 3× baked loop as 3840×2400 WebM.">Export 4K video</button>
+          title="Pre-compute first (bronchial tree or box fill sequence), then export 3840×2400 WebM.">Export 4K video</button>
   <label>Library:
     <select id="particleLibrary" onchange="onSelectLibrary(this.value)" style="width:auto">
       <option value="__default__">Default sphere</option>
@@ -139,6 +144,7 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
         <option value="syringe" selected>Syringe (visible)</option>
         <option value="airway">Bronchial tree (Y-tubes)</option>
         <option value="volume">Invisible box volume</option>
+        <option value="volume_fill">Invisible box fill sequence</option>
       </select></div>
     <div id="wrapContainerOrbit">
     <div class="row"><label>Orbit camera</label>
@@ -151,7 +157,7 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
       <input type="number" id="pContainerOrbitDegS" value="18" min="1" max="180" step="1"
              oninput="onContainerOrbitModeChange()"></div>
     <div class="row"><label></label>
-      <span style="font-size:11px;color:#7a9abd">Works in <b>Invisible box volume</b> and <b>Bronchial tree</b>. Keeps your current camera angle; only the camera moves.</span></div>
+      <span style="font-size:11px;color:#7a9abd">Works in <b>Invisible box</b> / <b>fill sequence</b> and <b>Bronchial tree</b>. Keeps your current camera angle; only the camera moves.</span></div>
     </div>
     <div class="row"><label>Auto-fit box to mesh</label>
       <input type="checkbox" id="chkFillMeshAutofit" checked
@@ -180,6 +186,46 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
       <input type="number" id="pVolDropH" value="0" min="0" max="200" step="0.5"
              oninput="onVolDropHeightInput()"
              title="Extra height above the box inner top for Drop / spawns (mm). Timer mode defaults this to 20 mm."></div>
+    <div id="wrapBoxFillSequence" class="box-fill-sequence-panel" style="display:none">
+    <div class="row"><label></label>
+      <span style="font-size:11px;color:#7a9abd"><b>Box fill sequence</b> — pre-compute repeated Drop-more cycles (same spawn grid) until the box is ~half full, then export one 4K video.</span></div>
+    <div class="row"><label>Target fill</label>
+      <input type="number" id="pBoxFillTarget" value="0.5" min="0.1" max="0.95" step="0.05"
+             title="Stop when nominal solid volume / box volume reaches this fraction (porosity proxy)."></div>
+    <div class="row"><label>Pause between drops (s)</label>
+      <input type="number" id="pBoxFillPauseS" value="3" min="0" max="600" step="0.5"
+             title="Hold the last baked frame this many seconds before the next Drop-more in playback and 4K export."></div>
+    <div class="row"><label>Pre-compute on Run</label>
+      <input type="checkbox" id="chkBoxFillBake" checked
+             title="When on, Run starts the full fill-sequence bake (same as the button below)."></div>
+    <div class="row"><label>Bake max / segment (sim s)</label>
+      <input type="number" id="pBoxFillBakeMaxS" value="45" min="5" max="300" step="5"
+             title="Max simulated time per drop batch before moving on (also stops early when settled)."></div>
+    <div class="row"><label>Playback fps</label>
+      <input type="number" id="pBoxFillPlayFps" value="60" min="15" max="240" step="1"
+             title="Replay and 4K export frame rate after pre-compute."></div>
+    <div class="row"><label>Auto 4K export</label>
+      <input type="checkbox" id="chkBoxFillAuto4k" checked
+             title="When the sequence finishes baking, encode one full 3840×2400 WebM automatically."></div>
+    <div class="row"><label></label>
+      <button type="button" class="btn green" id="btnBoxFillBake" onclick="onBoxFillSequenceBake()"
+              title="Initial drop → settle → pause → Drop more (same slots) → … until target fill; optional 4K export">Pre-compute fill sequence</button>
+      <button type="button" class="btn" id="btnBoxFillBakeCancel" onclick="onBoxFillBakeCancel()" style="display:none;margin-left:6px">Cancel</button></div>
+    <div class="row"><label></label>
+      <span id="lblBoxFillBake" style="font-size:11px;color:#7a9abd">Uses current box size, drop height, Initial drop, and Drop more. Does not change your dimensions.</span></div>
+    <div class="row"><label></label>
+      <div id="wrapBoxFillBakeProgress" class="airway-bake-progress" style="flex:1;min-width:0">
+        <div class="airway-bake-progress-track" id="boxFillBakeProgressBar" role="progressbar"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+             aria-label="Box fill sequence progress">
+          <div class="airway-bake-progress-fill" id="boxFillBakeProgressFill"></div>
+        </div>
+        <div class="airway-bake-progress-meta">
+          <span id="lblBoxFillBakePct">0%</span>
+          <span id="lblBoxFillBakeEta">ETA —</span>
+        </div>
+      </div></div>
+    </div>
     </div>
     <div id="wrapAirwayDims" style="display:none">
     <div class="row"><label>Trunk radius</label>
@@ -254,6 +300,9 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
       <input type="number" id="pDropCount" value="1" min="1" max="2000" step="1" title="How many to add when pressing Drop"></div>
     <div class="row"><label></label>
       <button class="btn" id="btnDropMore" onclick="onDropMore()" title="Activate more particles without rebuilding the sim">Drop</button></div>
+    <div class="row"><label>Box fill sequence</label>
+      <input type="checkbox" id="chkBoxFillSequence" onchange="onBoxFillSequenceModeChange(this.checked)"
+             title="Same as Container → Invisible box fill sequence. Pre-compute repeated Drop-more until ~half full, then optional 4K export."></div>
     <div class="row"><label>Timer export mode</label>
       <input type="checkbox" id="chkTimerExport" onchange="onTimerExportModeChange(this.checked)"
              title="After each Drop: log for 60 s wall-clock time (settle auto-pause off), then pause and auto-download CSV. Defaults to invisible box and 20 mm drop height."></div>
@@ -3011,13 +3060,56 @@ class SyringeSimulator {
     if(elR)elR.textContent=p.boundingRadius.toFixed(3);
   }
 
+  _effectiveSpawnRadiusMm(){
+    const r=(typeof gNominalRadiusMm==='number'&&gNominalRadiusMm>0)
+      ? gNominalRadiusMm : (this.tmpl.nominalRadius||0.3);
+    return Math.max(0.05, r);
+  }
+
+  /** One spawn position per particle index (same grid as initial drop); never the single lid point. */
+  _resolveSpawnSlot(pi){
+    const idx=pi|0;
+    if(idx<0) return null;
+    if(this.spawnSlots[idx]&&this.spawnSlots[idx].length>=3)
+      return this.spawnSlots[idx];
+    if(this.syringe._boxVolume||this.syringe._airwayVolume){
+      this._ensureSpawnSlotsLength(Math.max(this.capacityCount, idx+1));
+      if(this.spawnSlots[idx]) return this.spawnSlots[idx];
+    }
+    if(this.syringe._boxVolume||this.syringe._airwayVolume)
+      return this._volumeDropSlot();
+    return this.spawnSlots[this.spawnSlots.length-1]||null;
+  }
+
+  _ensureSpawnSlotsLength(minLen){
+    const want=Math.max(1, minLen|0);
+    if(this.spawnSlots.length>=want) return;
+    const r=this._effectiveSpawnRadiusMm();
+    if(this.syringe._boxVolume){
+      const grid=_generateBoxVolumeGridSlots(this.syringe, want, r);
+      const out=this.spawnSlots.slice();
+      for(let i=0;i<want;i++){
+        if(!out[i]||out[i].length<3) out[i]=grid[i]||grid[grid.length-1];
+      }
+      this.spawnSlots=out;
+      return;
+    }
+    if(this.syringe._airwayVolume){
+      const spacing=r*2.1;
+      const extra=this.syringe.buildSpawnSlots(want, spacing, r);
+      for(let i=this.spawnSlots.length;i<want;i++)
+        this.spawnSlots[i]=extra[i]||extra[extra.length-1];
+    }
+  }
+
   _buildSpawnSlots(capacity){
     const sp = this.syringe;
-    const r  = this.tmpl.nominalRadius||0.3;
+    const cap=Math.max(0, capacity|0);
+    const r=this._effectiveSpawnRadiusMm();
     const spacing = r*2.1;
     const slots=[];
     if(sp._airwayVolume){
-      this.spawnSlots=sp.buildSpawnSlots(capacity, spacing, r);
+      this.spawnSlots=sp.buildSpawnSlots(cap, spacing, r);
       this.spawnCursor=0;
       console.log(`Airway tree: ${this.spawnSlots.length} interior spawn slots (capacity ${capacity}).`);
       return;
@@ -3026,10 +3118,10 @@ class SyringeSimulator {
       const spawnTris=this.fillColliderTris||this.fillVolumeTris;
       const preSlots=(typeof gFillSpawnSlots!=='undefined'&&gFillSpawnSlots&&gFillSpawnSlots.length)?gFillSpawnSlots:null;
       if(preSlots&&preSlots.length){
-        const want=Math.min(capacity, preSlots.length);
-        this.spawnSlots=preSlots.slice(0,want);
+        const merged=_padBoxSpawnSlotsToCapacity(preSlots.slice(), cap, sp, r);
+        this.spawnSlots=merged;
         this.spawnCursor=0;
-        console.log(`Fill mesh: ${want} precomputed spawn slots.`);
+        console.log(`Fill mesh: ${preSlots.length} precomputed spawn slots, padded to ${merged.length}.`);
         return;
       }
       if(spawnTris && spawnTris.length>=9){
@@ -3038,15 +3130,15 @@ class SyringeSimulator {
         let meshSlots=[];
         if(mode==='shell'&&this.fillMeshCollider){
           meshSlots=_fillBuildSpawnSlotsFromShellMesh(
-            spawnTris, capacity, spacing, r, this.fillMeshCollider,
+            spawnTris, cap, spacing, r, this.fillMeshCollider,
             this.fillMeshCollider.interiorSign, this.fillMeshCollider.maxInteriorMm);
         }else{
-          meshSlots=_fillBuildSpawnSlotsFromClosedMesh(spawnTris, capacity, spacing, r);
+          meshSlots=_fillBuildSpawnSlotsFromClosedMesh(spawnTris, cap, spacing, r);
         }
         if(meshSlots.length){
-          this.spawnSlots=meshSlots;
+          this.spawnSlots=_padBoxSpawnSlotsToCapacity(meshSlots.slice(), cap, sp, r);
           this.spawnCursor=0;
-          console.log(`Fill mesh (${mode}): ${meshSlots.length} spawn slots (capacity ${capacity}).`);
+          console.log(`Fill mesh (${mode}): ${meshSlots.length} spawn slots, padded to ${this.spawnSlots.length}.`);
           return;
         }
         console.warn(
@@ -3055,30 +3147,9 @@ class SyringeSimulator {
             : 'Fill mesh produced no interior points — falling back to full box grid. Check mesh is closed/watertight.'
         );
       }
-      const minX=sp.centerX-sp.halfX+r,maxX=sp.centerX+sp.halfX-r;
-      const minY=sp.centerY-sp.halfY+r,maxY=sp.centerY+sp.halfY-r;
-      const minZ=sp.centerZ-sp.halfZ+r,maxZ=sp.centerZ+sp.halfZ-r;
-      if(minX<=maxX && minY<=maxY && minZ<=maxZ){
-        const spanX=maxX-minX,spanY=maxY-minY,spanZ=maxZ-minZ;
-        const nx=Math.max(1,Math.floor(spanX/spacing));
-        const ny=Math.max(1,Math.floor(spanY/spacing));
-        const nz=Math.max(1,Math.floor(spanZ/spacing));
-        outerBox:
-        for(let iy=ny-1;iy>=0;iy--){
-          const cy=minY+(iy+0.5)*spanY/ny;
-          for(let ix=0;ix<nx;ix++){
-            const cx=minX+(ix+0.5)*spanX/nx;
-            for(let iz=0;iz<nz;iz++){
-              const cz=minZ+(iz+0.5)*spanZ/nz;
-              slots.push([cx,cy,cz]);
-              if(slots.length>=capacity)break outerBox;
-            }
-          }
-        }
-        slots.sort((a,b)=>b[1]-a[1]);
-      }
-      this.spawnSlots=slots;
+      this.spawnSlots=_generateBoxVolumeGridSlots(sp, cap, r);
       this.spawnCursor=0;
+      console.log(`Box grid: ${this.spawnSlots.length} spawn slots (capacity ${cap}, r=${r.toFixed(3)} mm).`);
       return;
     }
     // Fill from just below the barrel roof down into the taper.
@@ -3155,7 +3226,7 @@ class SyringeSimulator {
     const init=Math.max(0, Math.min(cap, initialActive|0));
     console.log(`Allocating ${cap} particles (initial active: ${init})…`);
     for(let pi=0;pi<cap;pi++){
-      const slot=this.spawnSlots[pi] || (
+      const slot=this._resolveSpawnSlot(pi) || (
         (this.syringe._boxVolume||this.syringe._airwayVolume)
           ? this._volumeDropSlot()
           : [0, this.syringe._barrelTop-(this.tmpl.nominalRadius||0.3), 0]);
@@ -3173,12 +3244,14 @@ class SyringeSimulator {
   dropMore(n){
     const add=Math.max(0,n|0);
     if(add<=0)return 0;
+    if(this.syringe._boxVolume||this.syringe._airwayVolume)
+      this._ensureSpawnSlotsLength(this.spawnCursor+add);
     let spawned=0;
     for(let k=0;k<add;k++){
       if(this.spawnCursor>=this.particles.length)break;
       const p=this.particles[this.spawnCursor];
       const slot=(this.syringe._boxVolume||this.syringe._airwayVolume)
-        ? (this.spawnSlots[this.spawnCursor] || this._volumeDropSlot())
+        ? this._resolveSpawnSlot(this.spawnCursor)
         : (this.spawnSlots[this.spawnCursor] || this.spawnSlots[this.spawnSlots.length-1]);
       if(slot)this._resetParticleToSlot(p, slot);
       else p.active=true;
@@ -3334,6 +3407,13 @@ class SyringeSimulator {
     }
     if(uniquePairs===0){fpMin=0;fpMax=0;fpSumSq=0;}
     return{uniquePairs,sumOverlap,sumArea,sumForceProxy,maxPen,fpMin,fpMax,fpSumSq};
+  }
+
+  /** Nominal solid / container volume in box or airway mode (0..1); NaN in syringe mode. */
+  _fillFraction(){
+    const p=this._porositySnapshot();
+    if(!Number.isFinite(p.porosityFraction)) return NaN;
+    return Math.max(0, Math.min(1, 1-p.porosityFraction));
   }
 
   /** Geometric porosity proxy for box mode: void ≈ V_box − Σ(sphere nominal); ignores overlap (syringe: NaN). */
@@ -4554,6 +4634,7 @@ let gParticleTemplateBase=null;
 let gNominalRadiusMm=0.3;
 /** Optional overrides for applyAirwayUiDefaults() from syringeGelParticles.config.json "airway". */
 let gAirwayUiOverrides=null;
+let gBoxFillUiOverrides=null;
 let gPaused=true, gFrameIdx=0;
 /** When true, skip WebGL render (and orbit/pick updates) to reduce GPU/CPU load. */
 let gPerfSkipDraw=false;
@@ -4566,13 +4647,17 @@ const AIRWAY_BAKE_FRAME_CAP=5400;
 const AIRWAY_BAKE_SIM_CAP_S=AIRWAY_BAKE_FRAME_CAP/60;
 let gAirwayPlayback={mode:'off',frames:[],frameIdx:0,playhead:0,maxSimS:45,playFps:60,
   _asyncBaking:false,_bakeAbort:false,_bakeWallStartMs:null,_bakeSimStart:0,
-  _lastPlayMs:0,_savedPerfSkip:false,_normCounter:0};
+  _lastPlayMs:0,_savedPerfSkip:false,_normCounter:0,
+  /** When true, settle ends a segment instead of finishing the whole bake (box fill sequence). */
+  _multiSegmentBake:false,_segmentDone:false,_boxFillSegmentIdx:0};
 /** Offline 4K encode from baked frames (blocks UI briefly). */
 let gVideoExport={active:false};
 const VIDEO_EXPORT_4K_W=3840;
 const VIDEO_EXPORT_4K_H=2400; // 16:10
-/** Baked playback cycles in 4K export (drop → settle each time). */
+/** Baked playback cycles in 4K export (bronchial tree: 3× loop; box fill sequence: 1× full timeline). */
 const VIDEO_EXPORT_LOOPS=3;
+/** Box fill sequence orchestration (multi-segment bake + optional 4K). */
+let gBoxFillSequence={active:false,targetFill:0.5,pauseS:3,autoExport4k:true};
 let gRaycaster=null,gPointer=null,gPickedParticle=-1;
 let gTuningOverrides={}; // loaded from config.json (optional)
 let gPickMode='inspect'; // 'inspect' | 'lock'
@@ -4804,8 +4889,8 @@ function _focusTarget(x,y,z, keepDistance=true){
 /** Show wireframe box from sidebar volume fields when paused; hides while sim is running. */
 function syncVolumeOutlinePreview(){
   if(!gVolumeOutline)return;
-  const mv=document.getElementById('selContainerMode')?.value||'syringe';
-  const volMode=mv==='volume';
+  const mv=_containerModeRaw();
+  const volMode=_isVolumeContainerMode();
   const airwayMode=mv==='airway';
   const show=gPaused && (volMode||airwayMode) && !gPerfSkipDraw;
   gVolumeOutline.visible=show;
@@ -4824,7 +4909,7 @@ function syncVolumeOutlinePreview(){
 
 function syncFillMeshPreviewVisibility(){
   if(!gFillMeshPreview)return;
-  const volMode=document.getElementById('selContainerMode')?.value==='volume';
+  const volMode=_isVolumeContainerMode();
   const want=!!(document.getElementById('chkFillMeshShow')?.checked);
   gFillMeshPreview.visible=volMode && want && !gPerfSkipDraw;
 }
@@ -5008,8 +5093,8 @@ function _containerOrbitCenter(){
 }
 
 function _isContainerOrbitContentMode(){
-  const mv=document.getElementById('selContainerMode')?.value||'syringe';
-  return mv==='volume'||mv==='airway';
+  const mv=_containerModeRaw();
+  return _isVolumeContainerMode()||mv==='airway';
 }
 
 function _beginContainerOrbit(){
@@ -5206,6 +5291,60 @@ function _filamentGuideRadiusFromUi(){
   return nor+m;
 }
 
+/** Top-down box lattice (same layout for initial drop and every Drop more). */
+function _boxGridSlotsAtSpacing(box, rMm, spacing){
+  const sp=box;
+  const r=Math.max(0.05, rMm||0.3);
+  const slots=[];
+  const minX=sp.centerX-sp.halfX+r,maxX=sp.centerX+sp.halfX-r;
+  const minY=sp.centerY-sp.halfY+r,maxY=sp.centerY+sp.halfY-r;
+  const minZ=sp.centerZ-sp.halfZ+r,maxZ=sp.centerZ+sp.halfZ-r;
+  if(minX>maxX||minY>maxY||minZ>maxZ) return slots;
+  const spanX=maxX-minX,spanY=maxY-minY,spanZ=maxZ-minZ;
+  const nx=Math.max(1,Math.floor(spanX/spacing));
+  const ny=Math.max(1,Math.floor(spanY/spacing));
+  const nz=Math.max(1,Math.floor(spanZ/spacing));
+  for(let iy=ny-1;iy>=0;iy--){
+    const cy=minY+(iy+0.5)*spanY/ny;
+    for(let ix=0;ix<nx;ix++){
+      const cx=minX+(ix+0.5)*spanX/nx;
+      for(let iz=0;iz<nz;iz++){
+        const cz=minZ+(iz+0.5)*spanZ/nz;
+        slots.push([cx,cy,cz]);
+      }
+    }
+  }
+  slots.sort((a,b)=>b[1]-a[1]);
+  return slots;
+}
+
+function _generateBoxVolumeGridSlots(box, capacity, rMm){
+  const want=Math.max(1, capacity|0);
+  let spacing=Math.max(0.08, (rMm||0.3)*2.1);
+  let slots=[];
+  for(let t=0;t<10&&slots.length<want;t++){
+    slots=_boxGridSlotsAtSpacing(box, rMm, spacing);
+    if(slots.length>=want) break;
+    spacing*=0.82;
+  }
+  if(slots.length<want&&slots.length>0){
+    for(let i=slots.length;i<want;i++)
+      slots.push([slots[i%slots.length][0], slots[i%slots.length][1], slots[i%slots.length][2]]);
+  }
+  return slots.slice(0, want);
+}
+
+function _padBoxSpawnSlotsToCapacity(partial, capacity, box, rMm){
+  const want=Math.max(1, capacity|0);
+  const grid=_generateBoxVolumeGridSlots(box, want, rMm);
+  const out=new Array(want);
+  for(let i=0;i<want;i++){
+    const p=partial[i];
+    out[i]=(p&&p.length>=3) ? [p[0],p[1],p[2]] : grid[i];
+  }
+  return out;
+}
+
 function readVolumeBoxParams(){
   const g=id=>{
     const el=document.getElementById(id);
@@ -5246,10 +5385,18 @@ function readAirwayParams(){
   };
 }
 
+function _containerModeRaw(){
+  return document.getElementById('selContainerMode')?.value||'syringe';
+}
+
+function _isVolumeContainerMode(){
+  const mv=_containerModeRaw();
+  return mv==='volume'||mv==='volume_fill';
+}
+
 function readSyringeParams(){
-  const modeEl=document.getElementById('selContainerMode');
-  const mv=modeEl?modeEl.value:'syringe';
-  const containerMode=(mv==='volume')?'volume':(mv==='airway'?'airway':'syringe');
+  const mv=_containerModeRaw();
+  const containerMode=_isVolumeContainerMode()?'volume':(mv==='airway'?'airway':'syringe');
   return{
     containerMode,
     airway:readAirwayParams(),
@@ -5355,6 +5502,10 @@ function onRun(){
   const wasPaused=gPaused;
   if(gAirwayPlayback.mode==='playing') _airwayBakeReset();
   gPaused=!gPaused;
+  if(!gPaused&&wasPaused&&_boxFillBakeEnabled()&&gAirwayPlayback.mode==='off'&&!gAirwayPlayback.frames.length&&!gAirwayPlayback._asyncBaking){
+    onBoxFillSequenceBake();
+    return;
+  }
   if(!gPaused&&wasPaused&&_airwayBakeEnabled()&&gAirwayPlayback.mode==='off'&&!gAirwayPlayback.frames.length&&!gAirwayPlayback._asyncBaking){
     onAirwayBake();
     return;
@@ -5638,7 +5789,9 @@ async function loadUIConfig(){
         const sel=document.getElementById('selContainerMode');
         if(sel){
           const m=String(cfg.physics.containerMode).toLowerCase();
-          sel.value=(m==='volume'||m==='box')?'volume':(m==='airway'?'airway':'syringe');
+          const ml=m.toLowerCase();
+          sel.value=(ml==='volume_fill'||ml==='box_fill'||ml==='fill_sequence')?'volume_fill'
+            :(ml==='volume'||ml==='box')?'volume':(ml==='airway'?'airway':'syringe');
         }
       }
       if(cfg.physics.airway_mm && typeof cfg.physics.airway_mm==='object'){
@@ -5789,8 +5942,69 @@ function onFilamentGuideMarginChange(){
   gSimulator.syringe.filamentGuideRadius=_filamentGuideRadiusFromUi();
 }
 
+function _boxFillSequenceEnabled(){
+  const mv=_containerModeRaw();
+  if(mv==='volume_fill') return true;
+  return mv==='volume' && !!document.getElementById('chkBoxFillSequence')?.checked;
+}
+
+function _boxFillBakeEnabled(){
+  return _boxFillSequenceEnabled() &&
+    !!document.getElementById('chkBoxFillBake')?.checked;
+}
+
+function _readBoxFillTarget(){
+  return Math.max(0.1, Math.min(0.95, +document.getElementById('pBoxFillTarget')?.value||0.5));
+}
+
+function _readBoxFillPauseS(){
+  return Math.max(0, +document.getElementById('pBoxFillPauseS')?.value||3);
+}
+
+function _readBoxFillBakeMaxS(){
+  return Math.max(5, +document.getElementById('pBoxFillBakeMaxS')?.value||45);
+}
+
+function _readBoxFillPlayFps(){
+  return Math.max(15, Math.min(240, +document.getElementById('pBoxFillPlayFps')?.value||60));
+}
+
+function _syncBoxFillSequenceUi(){
+  const on=_boxFillSequenceEnabled();
+  const wrap=document.getElementById('wrapBoxFillSequence');
+  if(wrap) wrap.style.display=on?'block':'none';
+  gBoxFillSequence.active=on;
+  gBoxFillSequence.targetFill=_readBoxFillTarget();
+  gBoxFillSequence.pauseS=_readBoxFillPauseS();
+  gBoxFillSequence.autoExport4k=!!document.getElementById('chkBoxFillAuto4k')?.checked;
+  _syncExport4kVideoButton();
+}
+
+function onBoxFillSequenceModeChange(on){
+  const sel=document.getElementById('selContainerMode');
+  if(on){
+    const timer=document.getElementById('chkTimerExport');
+    if(timer&&timer.checked){
+      timer.checked=false;
+      onTimerExportModeChange(false);
+    }
+    if(sel) sel.value='volume_fill';
+    applyBoxFillUiDefaults(gBoxFillUiOverrides);
+    onContainerModeChange(true);
+    focusVolumeBox();
+  }else{
+    if(sel&&sel.value==='volume_fill') sel.value='volume';
+    onContainerModeChange(true);
+  }
+}
+
 function onTimerExportModeChange(on){
   if(on){
+    const boxFill=document.getElementById('chkBoxFillSequence');
+    if(boxFill&&boxFill.checked){
+      boxFill.checked=false;
+      onBoxFillSequenceModeChange(false);
+    }
     const sel=document.getElementById('selContainerMode');
     if(sel) sel.value='volume';
     const vh=document.getElementById('pVolH');
@@ -5839,6 +6053,70 @@ const AIRWAY_UI_DEFAULTS={
   maxParticles:300, initialDrop:10, dropMore:1, radiusMm:1.02,
 };
 
+/** Invisible box fill sequence — fixed environment from reference setup. */
+const BOX_FILL_UI_DEFAULTS={
+  widthMm:8, heightMm:5, depthMm:1,
+  centerX_mm:0, centerY_mm:10, centerZ_mm:0,
+  volumeDropHeightMm:0,
+  maxParticles:300, initialDrop:50, dropMore:50,
+  radiusMm:0.3, softness:50, edgeCompliance:0.515, volCompliance:13,
+  hardStrainPct:18, hardFactorPct:15, particleLock:false,
+  targetFill:0.5, pauseS:3, bakeMaxS:10, playFps:60,
+};
+
+function applyBoxFillUiDefaults(overrides){
+  const d=Object.assign({}, BOX_FILL_UI_DEFAULTS, overrides||{});
+  const set=(id,v)=>{
+    const el=document.getElementById(id);
+    if(!el) return;
+    if(typeof v==='boolean'){ el.checked=!!v; return; }
+    const n=+v;
+    if(!Number.isFinite(n)) return;
+    el.value=String(n);
+  };
+  set('pVolW', d.widthMm);
+  set('pVolH', d.heightMm);
+  set('pVolD', d.depthMm);
+  set('pVolCx', d.centerX_mm);
+  set('pVolCy', d.centerY_mm);
+  set('pVolCz', d.centerZ_mm);
+  set('pVolDropH', d.volumeDropHeightMm);
+  set('pCount', d.maxParticles);
+  set('pInitCount', d.initialDrop);
+  set('pDropCount', d.dropMore);
+  set('pBoxFillTarget', d.targetFill);
+  set('pBoxFillPauseS', d.pauseS);
+  set('pBoxFillBakeMaxS', d.bakeMaxS);
+  set('pBoxFillPlayFps', d.playFps);
+  set('chkBoxFillBake', true);
+  set('chkBoxFillAuto4k', true);
+  set('chkTimerExport', false);
+  set('chkParticleLock', d.particleLock);
+  set('sRadius', d.radiusMm);
+  gNominalRadiusMm=d.radiusMm;
+  const lblR=document.getElementById('lblNomRadius');
+  if(lblR) lblR.textContent=d.radiusMm.toFixed(3);
+  set('sSoftness', d.softness);
+  const lblS=document.getElementById('lblSoftness');
+  if(lblS) lblS.textContent=(d.softness/100).toFixed(2);
+  set('sEdgeC', d.edgeCompliance);
+  const lblE=document.getElementById('lblEdgeC');
+  if(lblE) lblE.textContent=d.edgeCompliance.toFixed(3);
+  set('sVolC', d.volCompliance);
+  const lblV=document.getElementById('lblVolC');
+  if(lblV) lblV.textContent=String(d.volCompliance);
+  set('sHardStrain', d.hardStrainPct);
+  const lblHs=document.getElementById('lblHardStrain');
+  if(lblHs) lblHs.textContent=d.hardStrainPct.toFixed(0)+'%';
+  set('sHardFactor', d.hardFactorPct);
+  const lblHf=document.getElementById('lblHardFactor');
+  if(lblHf) lblHf.textContent=d.hardFactorPct.toFixed(0)+'%';
+  if(gParticleTemplateBase){
+    gParticleTemplate=_buildScaledTemplateFromBase(gParticleTemplateBase, d.radiusMm);
+  }
+  syncVolumeOutlinePreview();
+}
+
 function applyAirwayUiDefaults(overrides){
   const d=Object.assign({}, AIRWAY_UI_DEFAULTS, overrides||{});
   const set=(id,v)=>{
@@ -5863,37 +6141,55 @@ function applyAirwayUiDefaults(overrides){
   if(lbl) lbl.textContent=d.radiusMm.toFixed(3);
 }
 
+function _videoExportLoopCount(){
+  return _boxFillSequenceEnabled() ? 1 : VIDEO_EXPORT_LOOPS;
+}
+
 function _syncExport4kVideoButton(){
   const btn=document.getElementById('btnExport4kVideo');
   if(!btn) return;
   const airway=(document.getElementById('selContainerMode')?.value==='airway');
+  const boxFill=_boxFillSequenceEnabled();
   const n=gAirwayPlayback?.frames?.length||0;
-  const can=airway&&n>0&&!gVideoExport.active;
+  const can=(airway||boxFill)&&n>0&&!gVideoExport.active;
   btn.disabled=!can;
+  const loops=_videoExportLoopCount();
   if(gVideoExport.active){
     btn.title='4K export in progress…';
-  }else if(!airway){
-    btn.title='Set Container → Bronchial tree (Y-tubes), run Pre-compute & play, then export.';
+  }else if(!airway&&!boxFill){
+    btn.title='Enable Box fill sequence (invisible box) or Bronchial tree, pre-compute, then export.';
   }else if(n===0){
-    btn.title='Pre-compute & play first (needs baked frames). Same controls under Container → Bronchial tree.';
+    btn.title=boxFill
+      ? 'Run Pre-compute fill sequence first (Container → Invisible box volume).'
+      : 'Pre-compute & play first (needs baked frames). Same controls under Container → Bronchial tree.';
   }else{
-    btn.title=`Export ${VIDEO_EXPORT_LOOPS}× baked loop (${n} frames/loop) as 3840×2400 WebM at Playback fps. Convert to MP4 with ffmpeg/VLC if needed.`;
+    const loopDesc=loops===1 ? 'full sequence' : `${loops}× baked loop`;
+    btn.title=`Export ${loopDesc} (${n} frames) as 3840×2400 WebM at Playback fps. Convert to MP4 with ffmpeg/VLC if needed.`;
   }
 }
 
 function onContainerModeChange(fromUser){
-  const mv=document.getElementById('selContainerMode')?.value||'syringe';
-  const vol=mv==='volume';
+  const mv=_containerModeRaw();
+  const vol=_isVolumeContainerMode();
+  const boxFill=mv==='volume_fill';
   const airway=mv==='airway';
   const ds=document.getElementById('detailsSyringeMm');
   const wd=document.getElementById('wrapVolumeDims');
   const ad=document.getElementById('wrapAirwayDims');
   const ex=document.getElementById('wrapSyringePhysicsExtras');
+  const chkBoxFill=document.getElementById('chkBoxFillSequence');
   if(ds) ds.style.display=(vol||airway)?'none':'';
   if(wd) wd.style.display=vol?'block':'none';
   if(ad) ad.style.display=airway?'block':'none';
   if(ex) ex.style.display=(vol||airway)?'none':'';
   if(airway) applyAirwayUiDefaults(gAirwayUiOverrides);
+  if(boxFill) applyBoxFillUiDefaults(gBoxFillUiOverrides);
+  if(chkBoxFill){
+    if(boxFill) chkBoxFill.checked=true;
+    else if(mv==='volume') chkBoxFill.checked=false;
+    else if(!vol) chkBoxFill.checked=false;
+  }
+  _syncBoxFillSequenceUi();
   _syncExport4kVideoButton();
   if(fromUser) onRestart();
   else _applyContainerOrbitMode();
@@ -5913,7 +6209,7 @@ function onDropMore(){
     console.log('No remaining capacity to drop.');
   }else{
     console.log(`Dropped ${added} more particles.`);
-    if(_airwayBakeEnabled()) _airwayBakeReset();
+    if(_airwayBakeEnabled()||_boxFillBakeEnabled()) _airwayBakeReset();
   }
 }
 
@@ -6070,6 +6366,7 @@ function _sleepMs(ms){
 }
 
 function _airwayBakeEnabled(){
+  if(_boxFillSequenceEnabled()) return false;
   return (document.getElementById('selContainerMode')?.value==='airway') &&
     !!document.getElementById('chkAirwayBake')?.checked;
 }
@@ -6253,10 +6550,219 @@ function _airwayClearPlaybackStats(){
   if(gSimulator) gSimulator._playbackStatsOverride=null;
 }
 
+function _setBoxFillBakeLabel(t){
+  const el=document.getElementById('lblBoxFillBake');
+  if(el) el.textContent=t;
+}
+
+function _boxFillBakeProgressShow(show){
+  const w=document.getElementById('wrapBoxFillBakeProgress');
+  if(!w) return;
+  w.classList.toggle('is-active', !!show);
+  if(!show){
+    const fill=document.getElementById('boxFillBakeProgressFill');
+    const bar=document.getElementById('boxFillBakeProgressBar');
+    if(fill) fill.style.width='0%';
+    if(bar) bar.setAttribute('aria-valuenow','0');
+    const lblPct=document.getElementById('lblBoxFillBakePct');
+    const lblEta=document.getElementById('lblBoxFillBakeEta');
+    if(lblPct) lblPct.textContent='0%';
+    if(lblEta) lblEta.textContent='ETA —';
+  }
+}
+
+function _boxFillBakeProgressUpdate(pb, segmentIdx, targetFill){
+  if(!pb||pb.mode!=='baking') return;
+  const target=_airwayBakeTargetSimS(pb);
+  const simDone=_airwayBakeElapsedSimS(pb);
+  const pct=target>0 ? Math.min(100, (simDone/target)*100) : 0;
+  const fill=document.getElementById('boxFillBakeProgressFill');
+  const bar=document.getElementById('boxFillBakeProgressBar');
+  const lblPct=document.getElementById('lblBoxFillBakePct');
+  const lblEta=document.getElementById('lblBoxFillBakeEta');
+  const frac=gSimulator ? gSimulator._fillFraction() : NaN;
+  const fracStr=Number.isFinite(frac) ? ` · fill ${(frac*100).toFixed(0)}% / ${(targetFill*100).toFixed(0)}%` : '';
+  if(fill) fill.style.width=pct.toFixed(1)+'%';
+  if(bar) bar.setAttribute('aria-valuenow', String(Math.round(pct)));
+  if(lblPct) lblPct.textContent=`Drop ${segmentIdx+1} · ${pct.toFixed(0)}%${fracStr}`;
+  if(lblEta&&pb._bakeWallStartMs!=null){
+    const wallS=(performance.now()-pb._bakeWallStartMs)/1000;
+    const rate=simDone>0.05?simDone/wallS:0;
+    let etaStr='ETA —';
+    if(rate>1e-6){
+      const remain=Math.max(0, target-simDone);
+      etaStr='ETA '+_formatBakeEta(remain/rate);
+    }
+    const st=gSimulator?.settleState;
+    if(st?.settled&&simDone>=2&&pct<99) etaStr+=' · settling';
+    if(lblEta) lblEta.textContent=etaStr;
+  }
+}
+
+function _boxFillBakeAppendHoldFrames(count){
+  const pb=gAirwayPlayback;
+  if(!pb.frames.length||count<=0) return;
+  const last=pb.frames[pb.frames.length-1];
+  for(let i=0;i<count;i++){
+    pb.frames.push({
+      pos: new Float32Array(last.pos),
+      col: new Float32Array(last.col),
+      simTime: last.simTime,
+      dispensed: last.dispensed,
+      spawnCursor: last.spawnCursor|0,
+      particlesDroppedViaUi: last.particlesDroppedViaUi|0,
+      needleInletBlocked: !!last.needleInletBlocked,
+      metrics: last.metrics ? {...last.metrics} : null,
+      settle: last.settle ? {...last.settle} : null,
+      hold: true,
+    });
+  }
+}
+
+function onBoxFillBakeCancel(){
+  if(gAirwayPlayback.mode!=='baking'&&!gAirwayPlayback._asyncBaking) return;
+  gAirwayPlayback._bakeAbort=true;
+  _setBoxFillBakeLabel('Cancelling box fill sequence…');
+}
+
+async function _boxFillBakeSegment(pb, segmentIdx, targetFill){
+  pb._segmentDone=false;
+  pb._boxFillSegmentIdx=segmentIdx;
+  pb._bakeSimStart=gSimulator.simTime;
+  const BATCH=48;
+  while(pb.mode==='baking'&&!pb._bakeAbort&&!pb._segmentDone){
+    for(let i=0;i<BATCH&&pb.mode==='baking'&&!pb._bakeAbort&&!pb._segmentDone;i++)
+      gSimulator.simulate(FIXED_DT);
+    if(pb.mode!=='baking'||pb._bakeAbort) break;
+    _boxFillBakeProgressUpdate(pb, segmentIdx, targetFill);
+    await new Promise(r=>setTimeout(r,0));
+  }
+}
+
+async function onBoxFillSequenceBake(){
+  if(!_boxFillSequenceEnabled()){
+    alert('Enable Particles → Box fill sequence and Container → Invisible box volume first.');
+    return;
+  }
+  if(gAirwayPlayback._asyncBaking) return;
+
+  gBoxFillSequence.targetFill=_readBoxFillTarget();
+  gBoxFillSequence.pauseS=_readBoxFillPauseS();
+  gBoxFillSequence.autoExport4k=!!document.getElementById('chkBoxFillAuto4k')?.checked;
+
+  gPaused=true;
+  gFrameIdx=0;
+  initSimulation();
+  _applyContainerOrbitMode();
+
+  const pb=gAirwayPlayback;
+  pb._bakeAbort=false;
+  pb._multiSegmentBake=true;
+  pb._segmentDone=false;
+  pb._boxFillSegmentIdx=0;
+  pb.mode='baking';
+  pb._asyncBaking=true;
+  pb.frames=[];
+  pb.frameIdx=0;
+  pb.playhead=0;
+  pb.maxSimS=_readBoxFillBakeMaxS();
+  pb.playFps=_readBoxFillPlayFps();
+  pb._savedPerfSkip=gPerfSkipDraw;
+  gPerfSkipDraw=true;
+  const rb=document.getElementById('btnRun');
+  if(rb) rb.textContent='Run';
+  const pbtn=document.getElementById('btnPause');
+  if(pbtn) pbtn.textContent='Resume';
+  const bakeBtn=document.getElementById('btnBoxFillBake');
+  if(bakeBtn) bakeBtn.disabled=true;
+  const cancelBtn=document.getElementById('btnBoxFillBakeCancel');
+  if(cancelBtn) cancelBtn.style.display='inline-block';
+  pb._bakeWallStartMs=performance.now();
+  _boxFillBakeProgressShow(true);
+  _setBoxFillBakeLabel('Pre-computing fill sequence (segment 1)…');
+  console.log('Box fill sequence: multi-segment bake at 60 Hz');
+
+  const targetFill=gBoxFillSequence.targetFill;
+  const pauseS=gBoxFillSequence.pauseS;
+  const dropN=Math.max(1,+document.getElementById('pDropCount')?.value|0);
+  const holdFrames=Math.max(0, Math.round(pauseS*60));
+  let segmentIdx=0;
+  let doneReason='';
+
+  try{
+    while(pb.mode==='baking'&&!pb._bakeAbort){
+      await _boxFillBakeSegment(pb, segmentIdx, targetFill);
+      if(pb._bakeAbort) break;
+
+      const frac=gSimulator._fillFraction();
+      const n=pb.frames.length;
+      console.log(`Box fill segment ${segmentIdx+1}: ${n} frames, fill≈${Number.isFinite(frac)?(frac*100).toFixed(1)+'%':'?'}`);
+
+      if(Number.isFinite(frac)&&frac>=targetFill){
+        doneReason=`target fill ${(frac*100).toFixed(0)}%`;
+        break;
+      }
+      if(gSimulator.spawnCursor>=gSimulator.particles.length){
+        doneReason='spawn slots exhausted';
+        break;
+      }
+
+      _boxFillBakeAppendHoldFrames(holdFrames);
+      const added=gSimulator.dropMore(dropN);
+      if(added<=0){
+        doneReason='no particles left to drop';
+        break;
+      }
+      segmentIdx++;
+      gSimulator._resetSettle();
+      _setBoxFillBakeLabel(`Pre-computing fill sequence (segment ${segmentIdx+1})…`);
+    }
+
+    if(pb._bakeAbort&&pb.mode!=='playing'){
+      pb.mode='off';
+      pb.frames=[];
+      gPerfSkipDraw=pb._savedPerfSkip;
+      _boxFillBakeProgressShow(false);
+      _setBoxFillBakeLabel('Box fill sequence cancelled.');
+    }else if(pb.frames.length){
+      const frac=gSimulator._fillFraction();
+      const msg=`Box fill: ${segmentIdx+1} drop batch(es), ${pb.frames.length} frames`+
+        (Number.isFinite(frac)?`, fill ${(frac*100).toFixed(0)}%`:'')+
+        (doneReason?` (${doneReason})`:'')+'. Looping playback.';
+      _airwayBakeFinish(msg);
+      _boxFillBakeProgressShow(false);
+      _setBoxFillBakeLabel(msg+' · Run = live physics');
+      if(gBoxFillSequence.autoExport4k){
+        await onExportAirwayVideo4K();
+      }
+    }else{
+      pb.mode='off';
+      gPerfSkipDraw=pb._savedPerfSkip;
+      _boxFillBakeProgressShow(false);
+      _setBoxFillBakeLabel('Box fill sequence produced no frames.');
+    }
+  }finally{
+    pb._asyncBaking=false;
+    pb._multiSegmentBake=false;
+    pb._segmentDone=false;
+    if(bakeBtn) bakeBtn.disabled=false;
+    if(cancelBtn) cancelBtn.style.display='none';
+    if(pb.mode==='baking'){
+      gPerfSkipDraw=pb._savedPerfSkip;
+      pb.mode='off';
+      _boxFillBakeProgressShow(false);
+    }
+    _syncExport4kVideoButton();
+  }
+}
+
 function _airwayBakeReset(){
   _airwayClearPlaybackStats();
   gAirwayPlayback._bakeAbort=true;
   gAirwayPlayback._asyncBaking=false;
+  gAirwayPlayback._multiSegmentBake=false;
+  gAirwayPlayback._segmentDone=false;
+  gAirwayPlayback._boxFillSegmentIdx=0;
   gAirwayPlayback.mode='off';
   gAirwayPlayback.frames=[];
   gAirwayPlayback.frameIdx=0;
@@ -6269,8 +6775,14 @@ function _airwayBakeReset(){
   if(bakeBtn) bakeBtn.disabled=false;
   const cancelBtn=document.getElementById('btnAirwayBakeCancel');
   if(cancelBtn) cancelBtn.style.display='none';
+  const boxBakeBtn=document.getElementById('btnBoxFillBake');
+  if(boxBakeBtn) boxBakeBtn.disabled=false;
+  const boxCancelBtn=document.getElementById('btnBoxFillBakeCancel');
+  if(boxCancelBtn) boxCancelBtn.style.display='none';
   _airwayBakeProgressShow(false);
+  _boxFillBakeProgressShow(false);
   _setAirwayBakeLabel('Pre-compute runs full physics headless from t=0, then loops smooth playback. Re-bake after Drop.');
+  _setBoxFillBakeLabel('Uses current box size, drop height, Initial drop, and Drop more. Does not change your dimensions.');
   _syncExport4kVideoButton();
 }
 
@@ -6358,24 +6870,36 @@ function _airwayBakeOnStep(){
   const n=pb.frames.length;
   const elapsed=_airwayBakeElapsedSimS(pb);
   if(elapsed>=pb.maxSimS){
+    if(pb._multiSegmentBake){ pb._segmentDone=true; return; }
     _airwayBakeFinish(`Baked ${n} frames (${elapsed.toFixed(1)} s sim). Looping playback.`);
     return;
   }
   if(n>=AIRWAY_BAKE_FRAME_CAP){
+    if(pb._multiSegmentBake){ pb._segmentDone=true; return; }
     _airwayBakeFinish(`Baked ${n} frames (cap). Looping playback.`);
     return;
   }
   const st=gSimulator.settleState;
   if(st&&st.settled&&elapsed>=2){
+    if(pb._multiSegmentBake){
+      pb._segmentDone=true;
+      return;
+    }
     _airwayBakeFinish(`Settled at ${elapsed.toFixed(1)} s — ${n} frames. Looping playback.`);
     return;
   }
-  if(n%90===0) _airwayBakeProgressUpdate(pb);
+  if(n%90===0){
+    if(pb._multiSegmentBake)
+      _boxFillBakeProgressUpdate(pb, pb._boxFillSegmentIdx|0, gBoxFillSequence.targetFill);
+    else
+      _airwayBakeProgressUpdate(pb);
+  }
 }
 
 function _airwayBakeFinish(msg){
   const pb=gAirwayPlayback;
   _airwayBakeProgressShow(false);
+  _boxFillBakeProgressShow(false);
   if(!pb.frames.length){
     pb.mode='off';
     gPerfSkipDraw=pb._savedPerfSkip;
@@ -6391,7 +6915,7 @@ function _airwayBakeFinish(msg){
   pb.mode='playing';
   pb.frameIdx=0;
   pb.playhead=0;
-  pb.playFps=_airwayReadPlayFps();
+  pb.playFps=_boxFillSequenceEnabled() ? _readBoxFillPlayFps() : _airwayReadPlayFps();
   pb._lastPlayMs=performance.now();
   pb._normCounter=0;
   gPaused=true;
@@ -6404,10 +6928,11 @@ function _airwayBakeFinish(msg){
   const pbtn=document.getElementById('btnPause');
   if(pbtn) pbtn.textContent='Resume';
   const f0=pb.frames[0];
+  const setLbl=_boxFillSequenceEnabled()?_setBoxFillBakeLabel:_setAirwayBakeLabel;
   if(f0&&!_airwayFrameCol(f0))
-    _setAirwayBakeLabel((msg||'Playback looping')+` · re-bake for colors & stats`);
+    setLbl((msg||'Playback looping')+` · re-bake for colors & stats`);
   else
-    _setAirwayBakeLabel((msg||'Playback looping')+` · ${pb.playFps|0} fps · Run = live physics`);
+    setLbl((msg||'Playback looping')+` · ${pb.playFps|0} fps · Run = live physics`);
   if(f0&&f0.metrics) _airwayApplySnapshotToSim(f0);
   _syncExport4kVideoButton();
   console.log(msg);
@@ -6448,7 +6973,10 @@ async function onExportAirwayVideo4K(){
   if(gVideoExport.active) return;
   const pb=gAirwayPlayback;
   if(!pb.frames.length){
-    alert('No baked frames yet. In Bronchial tree mode, run Pre-compute & play (or Run with pre-compute enabled), then export.');
+    const boxFill=_boxFillSequenceEnabled();
+    alert(boxFill
+      ? 'No baked frames yet. Run Pre-compute fill sequence (or Run with pre-compute enabled), then export.'
+      : 'No baked frames yet. In Bronchial tree mode, run Pre-compute & play (or Run with pre-compute enabled), then export.');
     return;
   }
   if(!gSimulator||!gScene||!gCamera){
@@ -6465,7 +6993,8 @@ async function onExportAirwayVideo4K(){
   const fps=Math.max(15, pb.playFps||_airwayReadPlayFps());
   const frameMs=1000/fps;
   const framesPerLoop=Math.max(1, n-1);
-  const totalOutFrames=framesPerLoop*VIDEO_EXPORT_LOOPS;
+  const exportLoops=_videoExportLoopCount();
+  const totalOutFrames=framesPerLoop*exportLoops;
 
   gVideoExport.active=true;
   _syncExport4kVideoButton();
@@ -6575,8 +7104,9 @@ async function onExportAirwayVideo4K(){
 
       if(f%20===0){
         const pct=((f+1)/totalOutFrames*100)|0;
-        _setAirwayBakeLabel(
-          `4K export ${pct}% (${f+1}/${totalOutFrames}) · ${VIDEO_EXPORT_LOOPS} loops · ${fps} fps`);
+        const loopLbl=exportLoops===1?'sequence':`${exportLoops} loops`;
+        const lblFn=_boxFillSequenceEnabled()?_setBoxFillBakeLabel:_setAirwayBakeLabel;
+        lblFn(`4K export ${pct}% (${f+1}/${totalOutFrames}) · ${loopLbl} · ${fps} fps`);
         await new Promise(r=>requestAnimationFrame(r));
       }
     }
@@ -6587,13 +7117,17 @@ async function onExportAirwayVideo4K(){
     const blob=new Blob(chunks,{type:mime.split(';')[0]});
     const durS=(totalOutFrames/fps).toFixed(1);
     const wStr=`${VIDEO_EXPORT_4K_W}x${VIDEO_EXPORT_4K_H}`;
+    const namePrefix=_boxFillSequenceEnabled()?'box_fill_sequence':'bronchial_bake';
     _downloadBlob(blob,
-      `bronchial_bake_${VIDEO_EXPORT_LOOPS}x${n}f_${fps}fps_${wStr}_${Date.now()}.${ext}`);
+      `${namePrefix}_${exportLoops}x${n}f_${fps}fps_${wStr}_${Date.now()}.${ext}`);
     console.log(
-      `4K export: ${VIDEO_EXPORT_LOOPS} loops · ${totalOutFrames} frames · ${durS} s @ ${fps} fps · `+
+      `4K export: ${exportLoops} loop(s) · ${totalOutFrames} frames · ${durS} s @ ${fps} fps · `+
       `${(blob.size/1e6).toFixed(1)} MB`);
-    _setAirwayBakeLabel(
-      `Exported ${VIDEO_EXPORT_LOOPS}× loop (${totalOutFrames} frames) ${wStr} WebM · ${durS} s @ ${fps} fps.`);
+    const doneMsg=exportLoops===1
+      ? `Exported full sequence (${totalOutFrames} frames) ${wStr} WebM · ${durS} s @ ${fps} fps.`
+      : `Exported ${exportLoops}× loop (${totalOutFrames} frames) ${wStr} WebM · ${durS} s @ ${fps} fps.`;
+    if(_boxFillSequenceEnabled()) _setBoxFillBakeLabel(doneMsg);
+    else _setAirwayBakeLabel(doneMsg);
   }catch(err){
     console.error(err);
     alert('4K export failed: '+err);
@@ -6818,6 +7352,7 @@ function onPerfSimMulChange(v){
   await populateAssetLibrary();
   await loadUIConfig();
   onContainerModeChange();
+  _syncBoxFillSequenceUi();
   initSimulation();
   _syncExport4kVideoButton();
   onResize();
