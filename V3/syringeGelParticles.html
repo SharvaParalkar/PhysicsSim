@@ -1604,6 +1604,71 @@ function _airwaySmoothShellGeo(tree){
   return geo;
 }
 
+/** Weld triangle-soup vertices so the outline shell can be smoothed cleanly. */
+function _airwayOutlineGeometry(srcGeo, weldTolMm=1e-4){
+  const pos=srcGeo?.getAttribute?.('position');
+  if(!pos||pos.count<3) return null;
+  const tol=Math.max(1e-6, +weldTolMm||1e-4);
+  const invTol=1/tol;
+  const verts=[];
+  const idx=[];
+  const map=new Map();
+  for(let i=0;i<pos.count;i++){
+    const x=pos.getX(i), y=pos.getY(i), z=pos.getZ(i);
+    const key=
+      Math.round(x*invTol)+','+
+      Math.round(y*invTol)+','+
+      Math.round(z*invTol);
+    let vi=map.get(key);
+    if(vi==null){
+      vi=verts.length/3;
+      map.set(key,vi);
+      verts.push(x,y,z);
+    }
+    idx.push(vi);
+  }
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.Float32BufferAttribute(verts,3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * Build a slightly inflated backface shell so the airway silhouette reads as a
+ * crisp drafted outline instead of only a soft transparent surface.
+ */
+function _airwayOutlineMesh(srcGeo, thicknessMm=0.18){
+  const geo=_airwayOutlineGeometry(srcGeo);
+  if(!geo) return null;
+  const pos=geo.getAttribute('position');
+  const norm=geo.getAttribute('normal');
+  if(!pos||!norm||pos.count!==norm.count) return null;
+  for(let i=0;i<pos.count;i++){
+    pos.setXYZ(
+      i,
+      pos.getX(i)+norm.getX(i)*thicknessMm,
+      pos.getY(i)+norm.getY(i)*thicknessMm,
+      pos.getZ(i)+norm.getZ(i)*thicknessMm
+    );
+  }
+  pos.needsUpdate=true;
+  geo.computeBoundingSphere();
+  geo.computeBoundingBox();
+  const mat=new THREE.MeshBasicMaterial({
+    color:0x111111,
+    side:THREE.BackSide,
+    transparent:true,
+    opacity:0.96,
+    depthTest:true,
+    depthWrite:false,
+  });
+  const mesh=new THREE.Mesh(geo,mat);
+  mesh.name='airway_outline';
+  mesh.renderOrder=0;
+  return mesh;
+}
+
 /**
  * Branch outlet (t=1): block particles that move past the open end along the centerline tangent.
  * Without this, closest-point-on-curve only finds the rim and gel can leak out the bottom.
@@ -1960,6 +2025,11 @@ class AirwayTree{
       side:THREE.FrontSide,depthWrite:true,depthTest:true,
       shininess:45,specular:0x88aacc});
     if(geo){
+      const outlineMesh=_airwayOutlineMesh(geo, Math.max(0.12, this.trunkROut*0.03));
+      if(outlineMesh){
+        scene.add(outlineMesh);
+        this.meshes.push({name:'airway_outline',mesh:outlineMesh});
+      }
       const mesh=new THREE.Mesh(geo,shellMat);
       mesh.name='airway_shell';
       mesh.renderOrder=1;
