@@ -145,6 +145,7 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
         <option value="airway">Bronchial tree (Y-tubes)</option>
         <option value="volume">Invisible box volume</option>
         <option value="volume_fill">Invisible box fill sequence</option>
+        <option value="nanoindent">Nanoindentation</option>
       </select></div>
     <div id="wrapContainerOrbit">
     <div class="row"><label>Orbit camera</label>
@@ -466,11 +467,110 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
       <select id="selColorMode" onchange="onColorModeChange(this.value)">
         <option value="contact">Contacts</option>
         <option value="stress" selected>Stress / strain</option>
+        <option value="modulus">Modulus map</option>
       </select></div>
     <div class="row"><label>Stress gain</label>
       <input type="range" id="sStressGain" min="10" max="400" value="47"
              oninput="onStressGainChange(this.value)" title="Higher = more contrast in stress heatmap"></div>
     <div class="row"><label></label><span id="lblStressGain" class="statVal">0.47</span></div>
+    <div id="rowNanoindent" style="display:none">
+      <div class="row" style="margin-top:6px;border-top:1px solid #2a3140;padding-top:8px">
+        <label style="color:#7ecfff;font-weight:600;font-size:12px;letter-spacing:.04em">NANOINDENTATION</label></div>
+
+      <!-- ── Shape library ── -->
+      <div class="row"><label title="Select the microgel geometry to study">Particle shape</label>
+        <select id="selNanoShape" onchange="onNanoShapeChange(this.value)" style="width:auto">
+          <option value="__sphere__">Sphere (procedural)</option>
+          <option value="Cube600M_hires.json">Cube</option>
+          <option value="Cyl600M_hires.json">Cylinder</option>
+          <option value="Hex600M_hires.json">Hexagon</option>
+          <option value="Tri600M_hires.json">Triangle prism</option>
+          <option value="Star600M_hires.json">Star (5-arm)</option>
+        </select></div>
+
+      <!-- Mesh resolution only applies to the procedural sphere -->
+      <div class="row" id="rowNanoDivs"><label title="Icosphere subdivision level (sphere mode only)">Mesh resolution</label>
+        <select id="pNanoDivs" onchange="onNanoDivsChange(this.value)" style="width:auto">
+          <option value="2">Low (320 tris)</option>
+          <option value="3" selected>Medium (1280 tris)</option>
+          <option value="4">High (5120 tris)</option>
+        </select></div>
+
+      <div class="row"><label>Indenter radius (mm)</label>
+        <input type="number" id="pIndenterR" value="0.02" min="0.005" max="0.1" step="0.005"></div>
+      <div class="row"><label>Max depth (mm)</label>
+        <input type="number" id="pIndentDepth" value="0.005" min="0.001" max="0.05" step="0.001"></div>
+      <div class="row"><label>Depth steps</label>
+        <input type="number" id="pIndentSteps" value="16" min="2" max="64" step="1"
+               title="Number of depth increments per indentation. More steps = smoother force curve and longer animation."></div>
+      <div class="row"><label></label>
+        <button class="btn green" id="btnSweepAll" onclick="onRunIndentSweep()">Sweep all vertices</button></div>
+      <div class="row"><label></label>
+        <span id="lblSweepProgress" style="font-size:11px;color:#7a9abd">Click the particle surface to indent at that point. Bottom vertices are substrate-pinned for accurate modulus.</span></div>
+
+      <!-- ── Post-sweep actions ── -->
+      <div class="row" style="margin-top:4px;gap:4px">
+        <label></label>
+        <button class="btn" onclick="nanoExportCSV()"
+                title="Download per-vertex E values with face/edge/corner labels as CSV"
+                style="font-size:10px;padding:3px 8px;background:#1a2a3a;border:1px solid #3a5a7a;color:#7ecfff">Export CSV</button>
+        <button class="btn" onclick="nanoSaveResults()"
+                title="Save region statistics for this shape to the comparison table"
+                style="font-size:10px;padding:3px 8px;background:#1a2a3a;border:1px solid #3a5a7a;color:#7ecfff">Save Results</button>
+      </div>
+
+      <!-- ── Modulus calibration ── -->
+      <div style="margin-top:6px;border-top:1px solid #1e2d3e;padding-top:6px">
+        <div style="color:#aaccee;font-weight:600;font-size:10px;margin-bottom:4px"
+             title="Map simulated E values to absolute Pa using a known reference material">MODULUS CALIBRATION</div>
+        <div style="font-size:9px;color:#667;margin-bottom:4px;line-height:1.5">
+          Literature value for 12.5 wt% GelMA: <b style="color:#aac">~25 kPa</b>.
+          Do <em>not</em> use bulk-assembly G&prime; (60–250 Pa) — that is the jammed-network modulus, not the individual particle modulus.
+        </div>
+        <!-- Sensitivity presets -->
+        <div style="display:flex;gap:4px;margin-bottom:5px;flex-wrap:wrap">
+          <span style="font-size:10px;color:#7a9abd;align-self:center">Presets:</span>
+          <button onclick="document.getElementById('pNanoRefE').value=10"
+                  title="Low bound — conservative estimate for 10 wt% GelMA"
+                  style="font-size:10px;padding:2px 7px;background:#1a2030;border:1px solid #3a5a7a;color:#88aacc;border-radius:3px;cursor:pointer">10 kPa</button>
+          <button onclick="document.getElementById('pNanoRefE').value=25"
+                  title="Recommended — mid-range for 12.5 wt% GelMA (literature)"
+                  style="font-size:10px;padding:2px 7px;background:#1a2a3a;border:1px solid #4a7a9a;color:#7ecfff;border-radius:3px;cursor:pointer;font-weight:600">25 kPa &#x2605;</button>
+          <button onclick="document.getElementById('pNanoRefE').value=50"
+                  title="High bound — stiffer crosslinking or 15 wt% GelMA"
+                  style="font-size:10px;padding:2px 7px;background:#1a2030;border:1px solid #3a5a7a;color:#88aacc;border-radius:3px;cursor:pointer">50 kPa</button>
+        </div>
+        <div class="row" style="align-items:center;gap:4px;flex-wrap:wrap">
+          <label style="flex:none" title="Real Young's modulus of the individual microgel (not the jammed-assembly G')">Reference E</label>
+          <input type="number" id="pNanoRefE" value="25" min="0.001" max="1000" step="0.5"
+                 style="width:60px" title="Young's modulus in kPa — recommended 25 kPa for 12.5 wt% GelMA">
+          <span style="font-size:10px;color:#7a9abd">kPa</span>
+          <button onclick="nanoRunCalibration()"
+                  title="Run a sweep on the current particle, then use its mean E to compute a Pa conversion factor"
+                  style="font-size:10px;padding:3px 8px;background:#1a2a3a;border:1px solid #4a7a5a;color:#7eff99;border-radius:3px;cursor:pointer">
+            Calibrate from sweep</button>
+          <button onclick="nanoClearCalibration()"
+                  title="Remove calibration — display simulation units again"
+                  style="font-size:10px;padding:3px 6px;background:#1a2030;border:1px solid #3a4a5a;color:#667;border-radius:3px;cursor:pointer">
+            Clear</button>
+        </div>
+        <div id="nanoCalibStatus" style="font-size:10px;color:#556;margin-top:3px;line-height:1.5">
+          No calibration set — values shown in simulation units.
+        </div>
+      </div>
+
+      <!-- ── Region stats for current sweep ── -->
+      <div id="nanoRegionStats" style="margin-top:6px;font-size:10px;line-height:1.7;color:#99aacc;display:none">
+        <div style="color:#7ecfff;font-weight:600;margin-bottom:2px" id="nanoRegionStatsTitle">Region statistics (simulation units)</div>
+        <div id="nanoRegionStatsBody"></div>
+      </div>
+
+      <!-- ── Multi-shape comparison table ── -->
+      <div id="nanoComparisonWrap" style="margin-top:8px;display:none">
+        <div style="color:#7ecfff;font-weight:600;font-size:11px;margin-bottom:4px">Geometry comparison</div>
+        <div id="nanoComparisonPanel"></div>
+      </div>
+    </div>
     </div>
   </details>
 
@@ -691,6 +791,85 @@ function buildSphereTetTemplate(radius){
     surfTriIds:new Int32Array(surfTriIds),
     numVerts:13,numTets:20,numEdges:edgeIds.length/2,numSurfTris:20,
     hasSkinning:false,nominalRadius:radius}}
+
+// ─────────────────────────────────────────────────────────────
+// buildHighResSphereTemplate — subdivided icosphere for
+// nanoindentation mode.  subdivisions=3 → 643 verts / 1280 tets.
+// ─────────────────────────────────────────────────────────────
+function buildHighResSphereTemplate(radius, subdivisions) {
+  subdivisions = Math.max(0, Math.min(4, (subdivisions|0) || 3));
+  const phi = (1 + Math.sqrt(5)) * 0.5;
+  const nm  = Math.sqrt(1 + phi * phi);
+  const n1 = 1/nm, ph = phi/nm;
+  // 12 icosahedron vertices on unit sphere
+  let verts = [
+    [0, n1, ph],  [0, -n1, ph],  [0, n1, -ph],  [0, -n1, -ph],
+    [n1, ph, 0],  [-n1, ph, 0],  [n1, -ph, 0],  [-n1, -ph, 0],
+    [ph, 0, n1],  [-ph, 0, n1],  [ph, 0, -n1],  [-ph, 0, -n1]
+  ];
+  let faces = [
+    [0,8,4],[0,4,5],[0,5,9],[0,9,1],[0,1,8],
+    [3,11,2],[3,2,10],[3,10,6],[3,6,7],[3,7,11],
+    [1,9,7],[9,11,7],[9,5,11],[5,2,11],[5,4,2],
+    [4,10,2],[4,8,10],[8,6,10],[8,1,6],[1,7,6]
+  ];
+  const midCache = new Map();
+  function getMid(a, b) {
+    const key = a < b ? a * 100000 + b : b * 100000 + a;
+    if (midCache.has(key)) return midCache.get(key);
+    const va = verts[a], vb = verts[b];
+    const mx = (va[0]+vb[0])*0.5, my = (va[1]+vb[1])*0.5, mz = (va[2]+vb[2])*0.5;
+    const ml = Math.sqrt(mx*mx + my*my + mz*mz);
+    const idx = verts.length;
+    verts.push([mx/ml, my/ml, mz/ml]);
+    midCache.set(key, idx);
+    return idx;
+  }
+  for (let s = 0; s < subdivisions; s++) {
+    const nf = [];
+    for (const [a, b, c] of faces) {
+      const ab = getMid(a, b), bc = getMid(b, c), ca = getMid(c, a);
+      nf.push([a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]);
+    }
+    faces = nf;
+  }
+  const nSurf = verts.length;
+  const flatVerts = [];
+  for (const [x, y, z] of verts) flatVerts.push(x * radius, y * radius, z * radius);
+  const centerIdx = nSurf;
+  flatVerts.push(0, 0, 0);
+
+  const tetIds = [], surfTriIds = [];
+  for (const [a, b, c] of faces) {
+    const ax = flatVerts[3*a], ay = flatVerts[3*a+1], az = flatVerts[3*a+2];
+    const bx = flatVerts[3*b], by = flatVerts[3*b+1], bz = flatVerts[3*b+2];
+    const cx = flatVerts[3*c], cy = flatVerts[3*c+1], cz = flatVerts[3*c+2];
+    const vol = ax*(by*cz-bz*cy) + ay*(bz*cx-bx*cz) + az*(bx*cy-by*cx);
+    if (vol > 0) { tetIds.push(centerIdx,a,b,c); surfTriIds.push(a,b,c); }
+    else         { tetIds.push(centerIdx,a,c,b); surfTriIds.push(a,c,b); }
+  }
+  const eSet = new Set();
+  for (let t = 0; t < tetIds.length; t += 4) {
+    const ids = [tetIds[t], tetIds[t+1], tetIds[t+2], tetIds[t+3]];
+    for (let i = 0; i < 4; i++) for (let j = i+1; j < 4; j++) {
+      const ea = ids[i], eb = ids[j];
+      eSet.add(ea < eb ? ea*100000+eb : eb*100000+ea);
+    }
+  }
+  const edgeIds = [];
+  for (const k of eSet) edgeIds.push(Math.floor(k/100000), k%100000);
+  const N = centerIdx + 1;
+  return {
+    verts: new Float32Array(flatVerts),
+    tetIds: new Int32Array(tetIds),
+    edgeIds: new Int32Array(edgeIds),
+    surfTriIds: new Int32Array(surfTriIds),
+    numVerts: N, numTets: tetIds.length/4,
+    numEdges: edgeIds.length/2, numSurfTris: surfTriIds.length/3,
+    hasSkinning: false, nominalRadius: radius,
+    _isHighRes: true, _subdivisions: subdivisions
+  };
+}
 
 // ═══════════════════════════════════════════════════════════════
 // 4.  GEL PARTICLE  (XPBD soft-body, pattern from demo 10 & 12)
@@ -1241,6 +1420,81 @@ class BoxVolume {
   }
 }
 
+// ================================================================
+// INDENTER  — virtual nanoindentation probe
+// A rigid sphere that descends along a surface normal and records
+// the reaction force at each step. Uses the same constrainVertex
+// pattern as Syringe.
+// ================================================================
+class Indenter {
+  constructor(radiusMm) {
+    this.radius = radiusMm || 0.02;
+    this.x = 0;
+    this.y = 0;
+    this.z = 0;
+    this.active = false;
+    this.forceProxy = 0;
+    this.depth = 0;
+  }
+
+  placAt(surfX, surfY, surfZ, nx, ny, nz) {
+    const offset = this.radius + 0.001;
+    this.x = surfX + nx * offset;
+    this.y = surfY + ny * offset;
+    this.z = surfZ + nz * offset;
+    this.depth = 0;
+    this.forceProxy = 0;
+    this.active = true;
+  }
+
+  stepInward(nx, ny, nz, stepMm) {
+    this.x += nx * stepMm;
+    this.y += ny * stepMm;
+    this.z += nz * stepMm;
+    this.depth += stepMm;
+  }
+
+  constrainVertex(pos, prevPos, i, mu) {
+    const px = pos[3*i]   - this.x;
+    const py = pos[3*i+1] - this.y;
+    const pz = pos[3*i+2] - this.z;
+    const dist = Math.sqrt(px*px + py*py + pz*pz);
+    if (dist >= this.radius || dist < 1e-10) return 0;
+    const pen = this.radius - dist;
+    const inv = 1 / dist;
+    const nx = px * inv;
+    const ny = py * inv;
+    const nz = pz * inv;
+    pos[3*i]   += nx * pen;
+    pos[3*i+1] += ny * pen;
+    pos[3*i+2] += nz * pen;
+    mu = Math.max(0, Math.min(1, mu || 0));
+    if (prevPos && mu > 0) {
+      const vx = pos[3*i]   - prevPos[3*i];
+      const vy = pos[3*i+1] - prevPos[3*i+1];
+      const vz = pos[3*i+2] - prevPos[3*i+2];
+      const vn = vx*nx + vy*ny + vz*nz;
+      const tx = vx - vn*nx;
+      const ty = vy - vn*ny;
+      const tz = vz - vn*nz;
+      prevPos[3*i]   += tx * mu;
+      prevPos[3*i+1] += ty * mu;
+      prevPos[3*i+2] += tz * mu;
+    }
+    return pen;
+  }
+
+  applyToParticle(particle, mu) {
+    let totalPen = 0;
+    for (let i = 0; i < particle.numTetVerts; i++) {
+      if (particle.invMass[i] === 0) continue;
+      totalPen += this.constrainVertex(particle.pos, particle.prevPos, i, mu);
+    }
+    this.forceProxy += totalPen;
+    return totalPen;
+  }
+}
+
 /** Closest point on segment AB to P; returns distance and outward normal from axis. */
 function _capsuleAxisQuery(px,py,pz, ax,ay,az, bx,by,bz){
   const abx=bx-ax, aby=by-ay, abz=bz-az;
@@ -1659,13 +1913,13 @@ function _airwayOutlineMesh(srcGeo, thicknessMm=0.18){
     color:0x111111,
     side:THREE.BackSide,
     transparent:true,
-    opacity:0.96,
+    opacity:1.0,
     depthTest:true,
     depthWrite:false,
   });
   const mesh=new THREE.Mesh(geo,mat);
   mesh.name='airway_outline';
-  mesh.renderOrder=0;
+  mesh.renderOrder=2;
   return mesh;
 }
 
@@ -2021,20 +2275,20 @@ class AirwayTree{
     // FrontSide + depthWrite:true → solid, cohesive appearance with no inner artifacts.
     // Semi-transparent so particles are still faintly visible through the skin.
     const shellMat=new THREE.MeshPhongMaterial({
-      color:0xc8dff0,transparent:true,opacity:0.62,
+      color:0xc8dff0,transparent:true,opacity:0.42,
       side:THREE.FrontSide,depthWrite:true,depthTest:true,
       shininess:45,specular:0x88aacc});
     if(geo){
-      const outlineMesh=_airwayOutlineMesh(geo, Math.max(0.12, this.trunkROut*0.03));
-      if(outlineMesh){
-        scene.add(outlineMesh);
-        this.meshes.push({name:'airway_outline',mesh:outlineMesh});
-      }
       const mesh=new THREE.Mesh(geo,shellMat);
       mesh.name='airway_shell';
       mesh.renderOrder=1;
       scene.add(mesh);
       this.meshes.push({name:'airway_shell',mesh});
+      const outlineMesh=_airwayOutlineMesh(geo, Math.max(0.09, this.trunkROut*0.024));
+      if(outlineMesh){
+        scene.add(outlineMesh);
+        this.meshes.push({name:'airway_outline',mesh:outlineMesh});
+      }
     }
   }
 
@@ -3926,6 +4180,39 @@ class SyringeSimulator {
       return;
     }
 
+    // Modulus heatmap: reads from p._modulusMap[] set by
+    // runIndentationSweep(). Blue = low modulus, Red = high modulus.
+    if (this.colorMode === 'modulus') {
+      let globalMax = 1e-12;
+      for (const p of this.particles) {
+        if (!p.active || !p._modulusMap) continue;
+        for (let i = 0; i < p._modulusMap.length; i++) {
+          if (p._modulusMap[i] > globalMax) globalMax = p._modulusMap[i];
+        }
+      }
+      for (const p of this.particles) {
+        if (!p.active) continue;
+        if (!p._modulusMap) {
+          for (let i = 0; i < p.numVisVerts; i++) {
+            const base = (p.visVertOffset + i) * 3;
+            this.allColors[base]   = 0.4;
+            this.allColors[base+1] = 0.4;
+            this.allColors[base+2] = 0.4;
+          }
+          continue;
+        }
+        for (let i = 0; i < p.numVisVerts; i++) {
+          const t = Math.max(0, Math.min(1, (p._modulusMap[i] || 0) / globalMax));
+          const c = rampBGYR(t);
+          const base = (p.visVertOffset + i) * 3;
+          this.allColors[base]   = c[0];
+          this.allColors[base+1] = c[1];
+          this.allColors[base+2] = c[2];
+        }
+      }
+      return;
+    }
+
     // Contact heatmap (blue -> green -> yellow -> red) based on per-particle contactCount.
     // Blue = little/no contacts, Red = max contacts (relative to current frame).
     let maxC=0;
@@ -4105,6 +4392,227 @@ class SyringeSimulator {
     this.simTime+=dt;
     this._updateSettleAfterStep();
     if(gAirwayPlayback.mode==='baking') _airwayBakeOnStep();
+  }
+
+  // ----------------------------------------------------------------
+  // runIndentationSweep(particleIdx, options)
+  //
+  // Runs a virtual nanoindentation sweep on one particle.
+  // For each surface vertex (or a sampled subset), places the
+  // Indenter at that vertex, runs XPBD substeps while advancing
+  // inward, records force and depth, computes apparent Young's
+  // modulus via the Hertz contact formula, stores the result in
+  // particle._modulusMap[], then switches the color mode to
+  // 'modulus' so the heatmap renders immediately.
+  // ----------------------------------------------------------------
+  async runIndentationSweep(particleIdx, options) {
+    options = options || {};
+    const indenterR  = options.indenterRadiusMm  || 0.02;
+    const maxDepth   = options.maxDepthMm         || 0.005;
+    const depthSteps = options.depthSteps         || 16;
+    const settleSteps= options.settleSteps        || 40;
+    const sampleEvery= options.sampleEvery        || 1;
+    const nu         = options.poissonRatio        || 0.45;
+    const onProgress = options.onProgress         || null;
+    const stepSize   = maxDepth / depthSteps;
+
+    const p = this.particles[particleIdx];
+    if (!p || !p.active) {
+      console.warn('runIndentationSweep: particle not found or inactive');
+      return;
+    }
+
+    const indenter = new Indenter(indenterR);
+    p._modulusMap = new Float32Array(p.numVisVerts);
+    const nuFactor = 1 - nu * nu;
+    const sdt = 0.001;
+
+    const tmpl = gParticleTemplate || gParticleTemplateBase;
+    const classVerts = tmpl ? (tmpl.hasSkinning ? tmpl.visVerts : tmpl.verts) : null;
+    const classTriIds = tmpl ? (tmpl.hasSkinning ? tmpl.visTriIds : tmpl.surfTriIds) : null;
+    const {labels: regionLabels} = (classVerts && classTriIds)
+      ? _nanoClassifyRegions(classVerts, classTriIds, p.numVisVerts)
+      : {labels: null};
+    const surfNormals = (classVerts && classTriIds)
+      ? _nanoOutwardNormals(classVerts, classTriIds, p.numVisVerts, p.center[0], p.center[1], p.center[2])
+      : null;
+
+    // ── Substrate boundary condition ──────────────────────────────
+    // Pin the lowest layer of tet vertices so the particle behaves like a
+    // microgel resting on a rigid, adhesive substrate. Without this the whole
+    // body translates rigidly under the indenter and the measured E is ~0.
+    // We save and restore invMass at the end so the particle's physics state
+    // is fully reset after the sweep.
+    const savedInvMass = new Float32Array(p.invMass);
+    let substrateMinY = Infinity;
+    for (let k = 0; k < p.numTetVerts; k++) {
+      if (p.invMass[k] > 0) substrateMinY = Math.min(substrateMinY, p.pos[3*k+1]);
+    }
+    const substrateTol = (p.nominalRadius || 0.3) * 0.15;
+    let pinnedCount = 0;
+    for (let k = 0; k < p.numTetVerts; k++) {
+      if (p.pos[3*k+1] - substrateMinY < substrateTol) {
+        p.invMass[k] = 0;
+        pinnedCount++;
+      }
+    }
+    if (pinnedCount === 0) {
+      // Fallback: pin the single lowest vertex so the body cannot translate freely
+      let lowestK = 0;
+      for (let k = 1; k < p.numTetVerts; k++) {
+        if (p.pos[3*k+1] < p.pos[3*lowestK+1]) lowestK = k;
+      }
+      p.invMass[lowestK] = 0;
+      pinnedCount = 1;
+    }
+    console.log(`Substrate: pinned ${pinnedCount} bottom vertices (floor Y ≈ ${substrateMinY.toFixed(4)} mm, tol ${substrateTol.toFixed(4)} mm)`);
+
+    // ── Small-strain validity check ────────────────────────────────
+    // Hertz contact theory is valid only for δ/R ≲ 0.2 (linear-elastic regime).
+    const _strainRatio = maxDepth / (p.nominalRadius || 0.3);
+    if (_strainRatio > 0.2) {
+      console.warn(`runIndentationSweep: depth/radius = ${_strainRatio.toFixed(2)} > 0.2 — ` +
+        `consider reducing Max depth to ≤ ${(0.2*(p.nominalRadius||0.3)).toFixed(4)} mm to stay in the Hertz regime.`);
+    }
+
+    let numSites = 0;
+    for (let vi = 0; vi < p.numVisVerts; vi += sampleEvery) {
+      if (regionLabels && regionLabels[vi] === 'interior') continue;
+      numSites++;
+    }
+    if (!numSites) numSites = 1;
+    let siteIdx = 0;
+
+    for (let vi = 0; vi < p.numVisVerts; vi += sampleEvery) {
+      if (regionLabels && regionLabels[vi] === 'interior') continue;
+
+      const b = (p.visVertOffset + vi) * 3;
+      const sx = this.allPositions[b];
+      const sy = this.allPositions[b+1];
+      const sz = this.allPositions[b+2];
+
+      let nx, ny, nz;
+      if (surfNormals) {
+        nx = surfNormals[3*vi];
+        ny = surfNormals[3*vi+1];
+        nz = surfNormals[3*vi+2];
+      }
+      const dx = sx - p.center[0];
+      const dy = sy - p.center[1];
+      const dz = sz - p.center[2];
+      const dl = Math.sqrt(dx*dx + dy*dy + dz*dz);
+      if (dl < 1e-10) continue;
+      if (!surfNormals || !(nx*nx+ny*ny+nz*nz > 0.5)) {
+        nx = dx / dl;
+        ny = dy / dl;
+        nz = dz / dl;
+      }
+
+      // Skip substrate-facing vertices: in AFM the probe approaches from above or
+      // the sides, never from below (the particle rests on the substrate there).
+      if (ny < -0.3) {
+        p._modulusMap[vi] = 0;
+        siteIdx++;
+        if (onProgress) onProgress(siteIdx / numSites, 0);
+        continue;
+      }
+
+      // Clamp effective steps so the probe tip cannot reach the opposite face.
+      // dl ≈ surface-to-centroid distance; the far face is ~2×dl along the inward ray.
+      const maxSafeDepthVi = Math.max(stepSize, dl * 1.9 - indenterR);
+      const effectiveStepsVi = Math.min(depthSteps, Math.floor(maxSafeDepthVi / stepSize));
+
+      const savedPos  = new Float32Array(p.pos);
+      const savedPrev = new Float32Array(p.prevPos);
+      const savedVel  = new Float32Array(p.vel);
+
+      indenter.placAt(sx, sy, sz, nx, ny, nz);
+      indenter.forceProxy = 0;
+      // Show probe at this site
+      if (typeof _positionIndenterMesh === 'function') {
+        _positionIndenterMesh(indenter, indenterR, p.nominalRadius||0.3, nx, ny, nz);
+      }
+
+      let lastForce = 0;
+      let lastDepth = 0;
+
+      for (let step = 0; step < effectiveStepsVi; step++) {
+        indenter.stepInward(-nx, -ny, -nz, stepSize);
+        indenter.forceProxy = 0;
+        for (let sub = 0; sub < settleSteps; sub++) {
+          for (let k = 0; k < p.numTetVerts; k++) {
+            if (p.invMass[k] === 0) continue;
+            p.prevPos[3*k]   = p.pos[3*k];
+            p.prevPos[3*k+1] = p.pos[3*k+1];
+            p.prevPos[3*k+2] = p.pos[3*k+2];
+          }
+          indenter.applyToParticle(p, 0.2);
+          p.solveEdges(sdt);
+          p.solveVolumes(sdt);
+          for (let k = 0; k < p.numTetVerts; k++) {
+            if (p.invMass[k] === 0) continue;
+            p.vel[3*k]   = (p.pos[3*k]   - p.prevPos[3*k])   / sdt;
+            p.vel[3*k+1] = (p.pos[3*k+1] - p.prevPos[3*k+1]) / sdt;
+            p.vel[3*k+2] = (p.pos[3*k+2] - p.prevPos[3*k+2]) / sdt;
+          }
+        }
+        lastForce = indenter.forceProxy;
+        lastDepth = indenter.depth;
+      }
+
+      let Emap = 0;
+      if (lastDepth > 1e-10 && lastForce > 1e-14) {
+        const sqrtR = Math.sqrt(indenterR);
+        const dep32 = Math.pow(lastDepth, 1.5);
+        const Estar  = (3 * lastForce) / (4 * sqrtR * dep32);
+        Emap = Estar * nuFactor;
+      }
+
+      p._modulusMap[vi] = Emap;
+      if (sampleEvery > 1) {
+        const end = Math.min(vi + sampleEvery, p.numVisVerts);
+        for (let fill = vi + 1; fill < end; fill++) {
+          p._modulusMap[fill] = Emap;
+        }
+      }
+
+      p.pos.set(savedPos);
+      p.prevPos.set(savedPrev);
+      p.vel.set(savedVel);
+      p.updateCenter();
+
+      siteIdx++;
+      if (onProgress) onProgress(siteIdx / numSites, Emap);
+
+      // Yield every 5 sites and update visuals so user sees the map build up
+      if (siteIdx % 5 === 0) {
+        p.updateVisMesh(this.allPositions);
+        this.colorMode = 'modulus';
+        this._updateColors();
+        const geo = this.particleMesh.geometry;
+        geo.attributes.position.needsUpdate = true;
+        geo.attributes.color.needsUpdate = true;
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+
+    // Restore invMass — un-pin the substrate-constrained bottom vertices so
+    // normal simulation (gravity, contacts, etc.) works correctly afterwards.
+    p.invMass.set(savedInvMass);
+
+    // Final update
+    if (typeof _positionIndenterMesh === 'function' && window.gIndenterMesh) {
+      window.gIndenterMesh.visible = false;
+    }
+    if (window.gIndenterShaft) window.gIndenterShaft.visible = false;
+    p.updateVisMesh(this.allPositions);
+    this.colorMode = 'modulus';
+    this._updateColors();
+    const geo = this.particleMesh.geometry;
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
+    console.log('Indentation sweep complete on particle', particleIdx,
+      `— modulus map has ${p._modulusMap.length} values (${pinnedCount} substrate vertices were pinned).`);
   }
 
   timerWallDurationMs(){
@@ -4734,6 +5242,10 @@ let gPickMode='inspect'; // 'inspect' | 'lock'
 let gPickMarker=null;
 /** Wireframe preview of invisible box volume while physics is paused (Container → volume mode). */
 let gVolumeOutline=null;
+/** Nanoindentation mode: visual probe tip, shaft, and substrate plane. */
+let gIndenterMesh=null, gIndenterShaft=null, gNanoFloorMesh=null;
+/** True while an async indentation animation is running (blocks re-entry). */
+let gNanoRunning=false;
 /** Triangle soup from “fill volume” OBJ: 9 floats per triangle (ax..cz), world mm. Box mode only. */
 let gFillVolumeTris=null;
 /** Low-poly soup for spawn + collision (derived on load). */
@@ -4907,6 +5419,39 @@ function initThreeScene(){
     gVolumeOutline.visible=false;
     gVolumeOutline.renderOrder=2;
     gScene.add(gVolumeOutline);
+  }
+
+  // ── Nanoindentation probe: sphere tip + cylindrical shaft ──
+  {
+    const tipGeo = new THREE.SphereGeometry(1, 28, 18);
+    const tipMat = new THREE.MeshPhongMaterial({
+      color: 0xccd8ea, shininess: 140, specular: 0x7090b8,
+      side: THREE.FrontSide
+    });
+    gIndenterMesh = new THREE.Mesh(tipGeo, tipMat);
+    gIndenterMesh.visible = false;
+    gIndenterMesh.renderOrder = 5;
+    gScene.add(gIndenterMesh);
+
+    // Shaft: unit cylinder (height 1, radius 1, centered at Y=0)
+    const shaftGeo = new THREE.CylinderGeometry(1, 1, 1, 18, 1, false);
+    const shaftMat = new THREE.MeshPhongMaterial({
+      color: 0x8899bb, shininess: 60, specular: 0x405060
+    });
+    gIndenterShaft = new THREE.Mesh(shaftGeo, shaftMat);
+    gIndenterShaft.visible = false;
+    gScene.add(gIndenterShaft);
+  }
+  // ── Nano substrate floor ──
+  {
+    const floorGeo = new THREE.CylinderGeometry(1, 1, 0.08, 64, 1, false);
+    const floorMat = new THREE.MeshPhongMaterial({
+      color: 0x4a5f70, shininess: 40, specular: 0x283040,
+      transparent: true, opacity: 0.75
+    });
+    gNanoFloorMesh = new THREE.Mesh(floorGeo, floorMat);
+    gNanoFloorMesh.visible = false;
+    gScene.add(gNanoFloorMesh);
   }
 
   window.addEventListener('resize',onResize,false);}
@@ -5290,6 +5835,36 @@ function onPickParticle(ev){
   if(visVertIdx<0)return;
   const pi=gSimulator.getParticleIndexFromVisVert(visVertIdx);
   if(pi<0)return;
+
+  // ── Nanoindentation mode ────────────────────────────────────────
+  if(_containerModeRaw()==='nanoindent'){
+    const p=gSimulator.particles[pi];
+    if(!p||!p.active) return;
+    if(pi!==gPickedParticle){
+      // First click on this particle: select it, init the map.
+      gPickedParticle=pi;
+      if(!p._modulusMap) p._modulusMap=new Float32Array(p.numVisVerts);
+      // Switch to modulus color view.
+      gSimulator.colorMode='modulus';
+      gSimulator._updateColors();
+      gSimulator.particleMesh.geometry.attributes.color.needsUpdate=true;
+      const sel=document.getElementById('selColorMode');
+      if(sel) sel.value='modulus';
+      const lbl=document.getElementById('lblSweepProgress');
+      if(lbl) lbl.textContent='Particle selected. Click its surface to indent at that point.';
+      gSimulator.updateInspector(pi);
+      updatePickedVisual();
+    } else {
+      // Subsequent clicks on the same particle: indent at the clicked vertex.
+      const localVi=visVertIdx-p.visVertOffset;
+      if(localVi>=0 && localVi<p.numVisVerts){
+        _runPointIndent(pi, localVi);
+      }
+    }
+    return;
+  }
+
+  // ── Normal inspect / lock modes ─────────────────────────────────
   // Clicking the same particle again toggles deselect.
   if(pi===gPickedParticle){
     gPickedParticle=-1;
@@ -5306,6 +5881,200 @@ function onPickParticle(ev){
   if(gPickMode==='lock'){
     lockFromPicked();
   }
+}
+
+// Single-point interactive indentation triggered by a surface click.
+// Animates the probe descending and shows live particle deformation before
+// restoring the rest shape.
+async function _runPointIndent(particleIdx, localVisVertIdx){
+  if(!gSimulator) return;
+  if(gNanoRunning) return; // prevent overlapping animations
+  const p=gSimulator.particles[particleIdx];
+  if(!p||!p.active) return;
+
+  const r     =parseFloat(document.getElementById('pIndenterR')?.value)||0.02;
+  const depth =parseFloat(document.getElementById('pIndentDepth')?.value)||0.005;
+  const steps =parseInt(document.getElementById('pIndentSteps')?.value)||8;
+  const lbl   =document.getElementById('lblSweepProgress');
+
+  if(!p._modulusMap) p._modulusMap=new Float32Array(p.numVisVerts);
+  const nuFactor=1-(0.45*0.45);
+  const stepSize=depth/steps;
+  const settleSteps=40;
+  const sdt=0.001;
+
+  const tmpl=gParticleTemplate||gParticleTemplateBase;
+  if(tmpl){
+    const cv=tmpl.hasSkinning?tmpl.visVerts:tmpl.verts;
+    const ct=tmpl.hasSkinning?tmpl.visTriIds:tmpl.surfTriIds;
+    const {labels}= _nanoClassifyRegions(cv, ct, p.numVisVerts);
+    if(labels[localVisVertIdx]==='interior'){
+      if(lbl) lbl.textContent='That point is an interior skinning vertex — click the outer surface.';
+      return;
+    }
+  }
+
+  const b=(p.visVertOffset+localVisVertIdx)*3;
+  const sx=gSimulator.allPositions[b];
+  const sy=gSimulator.allPositions[b+1];
+  const sz=gSimulator.allPositions[b+2];
+  let nx, ny, nz;
+  if(tmpl){
+    const cv=tmpl.hasSkinning?tmpl.visVerts:tmpl.verts;
+    const ct=tmpl.hasSkinning?tmpl.visTriIds:tmpl.surfTriIds;
+    const sn=_nanoOutwardNormals(cv, ct, p.numVisVerts, p.center[0], p.center[1], p.center[2]);
+    nx=sn[3*localVisVertIdx]; ny=sn[3*localVisVertIdx+1]; nz=sn[3*localVisVertIdx+2];
+  }
+  const dx=sx-p.center[0], dy=sy-p.center[1], dz=sz-p.center[2];
+  const dl=Math.sqrt(dx*dx+dy*dy+dz*dz);
+  if(dl<1e-10) return;
+  if(!(nx*nx+ny*ny+nz*nz>0.5)){ nx=dx/dl; ny=dy/dl; nz=dz/dl; }
+
+  // Clamp effective steps so the probe tip cannot reach the opposite face.
+  // dl ≈ surface-to-centroid distance; the far face is ~2×dl away along the inward ray.
+  // Leaving one probe-radius of clearance on the far side prevents the tip sphere
+  // from contacting or exiting through the back of the object.
+  const maxSafeDepth = Math.max(stepSize, dl * 1.9 - r);
+  const effectiveSteps = Math.min(steps, Math.floor(maxSafeDepth / stepSize));
+
+  const savedPos =new Float32Array(p.pos);
+  const savedPrev=new Float32Array(p.prevPos);
+  const savedVel =new Float32Array(p.vel);
+
+  // ── Substrate boundary condition ────────────────────────────────
+  // Pin the lowest layer of vertices before indenting so the particle
+  // behaves like a microgel adhered to a rigid substrate (not a free body).
+  const _savedInvMass=new Float32Array(p.invMass);
+  let _subMinY=Infinity;
+  for(let k=0;k<p.numTetVerts;k++){
+    if(p.invMass[k]>0) _subMinY=Math.min(_subMinY,p.pos[3*k+1]);
+  }
+  const _subTol=(p.nominalRadius||0.3)*0.15;
+  let _pinCt=0;
+  for(let k=0;k<p.numTetVerts;k++){
+    if(p.pos[3*k+1]-_subMinY<_subTol){ p.invMass[k]=0; _pinCt++; }
+  }
+  if(_pinCt===0){
+    let lk=0;
+    for(let k=1;k<p.numTetVerts;k++) if(p.pos[3*k+1]<p.pos[3*lk+1]) lk=k;
+    p.invMass[lk]=0; _pinCt=1;
+  }
+
+  gNanoRunning=true;
+  const wasPaused=gPaused;
+  gPaused=true; // freeze main physics while we animate
+
+  const indenter=new Indenter(r);
+  indenter.placAt(sx,sy,sz,nx,ny,nz);
+  // show probe at initial (touching) position
+  _positionIndenterMesh(indenter, r, p.nominalRadius||gNominalRadiusMm||0.3, nx, ny, nz);
+  if(lbl) lbl.textContent=`Indenting vertex ${localVisVertIdx}…`;
+  await new Promise(res=>setTimeout(res, 20));
+
+  let lastForce=0, lastDepth=0;
+  for(let step=0;step<effectiveSteps;step++){
+    indenter.stepInward(-nx,-ny,-nz,stepSize);
+    indenter.forceProxy=0;
+    for(let sub=0;sub<settleSteps;sub++){
+      for(let k=0;k<p.numTetVerts;k++){
+        if(p.invMass[k]===0) continue;
+        p.prevPos[3*k]  =p.pos[3*k];
+        p.prevPos[3*k+1]=p.pos[3*k+1];
+        p.prevPos[3*k+2]=p.pos[3*k+2];
+      }
+      indenter.applyToParticle(p,0.2);
+      p.solveEdges(sdt);
+      p.solveVolumes(sdt);
+      for(let k=0;k<p.numTetVerts;k++){
+        if(p.invMass[k]===0) continue;
+        p.vel[3*k]  =(p.pos[3*k]  -p.prevPos[3*k])  /sdt;
+        p.vel[3*k+1]=(p.pos[3*k+1]-p.prevPos[3*k+1])/sdt;
+        p.vel[3*k+2]=(p.pos[3*k+2]-p.prevPos[3*k+2])/sdt;
+      }
+    }
+    lastForce=indenter.forceProxy;
+    lastDepth=indenter.depth;
+    // Update visual: move probe + show particle deformation
+    _positionIndenterMesh(indenter, r, p.nominalRadius||gNominalRadiusMm||0.3, nx, ny, nz);
+    p.updateCenter();
+    p.updateVisMesh(gSimulator.allPositions);
+    gSimulator._updateColors();
+    const geo=gSimulator.particleMesh.geometry;
+    geo.attributes.position.needsUpdate=true;
+    geo.attributes.color.needsUpdate=true;
+    // yield so the render loop can paint this frame (~25 ms per step = visually ~40 fps)
+    await new Promise(res=>setTimeout(res,25));
+  }
+
+  let Emap=0;
+  if(lastDepth>1e-10&&lastForce>1e-14){
+    const sqrtR=Math.sqrt(r);
+    const dep32=Math.pow(lastDepth,1.5);
+    Emap=((3*lastForce)/(4*sqrtR*dep32))*nuFactor;
+  }
+  p._modulusMap[localVisVertIdx]=Emap;
+  if(lbl) lbl.textContent=`Vertex ${localVisVertIdx}: E ≈ ${_fmtE(Emap)} — holding deformed shape…`;
+
+  // Hold deformed state so user can see it clearly
+  await new Promise(res=>setTimeout(res,500));
+
+  // Withdraw probe (animate back up — only as many steps as it went in)
+  for(let step=0;step<effectiveSteps;step++){
+    indenter.stepInward(nx,ny,nz,stepSize);
+    _positionIndenterMesh(indenter, r, p.nominalRadius||gNominalRadiusMm||0.3, nx, ny, nz);
+    await new Promise(res=>setTimeout(res,18));
+  }
+  if(gIndenterMesh)  gIndenterMesh.visible=false;
+  if(gIndenterShaft) gIndenterShaft.visible=false;
+
+  // Restore rest shape and un-pin substrate vertices
+  p.invMass.set(_savedInvMass);
+  p.pos.set(savedPos);
+  p.prevPos.set(savedPrev);
+  p.vel.set(savedVel);
+  p.updateCenter();
+  p.updateVisMesh(gSimulator.allPositions);
+
+  gSimulator.colorMode='modulus';
+  gSimulator._updateColors();
+  const finalGeo=gSimulator.particleMesh.geometry;
+  finalGeo.attributes.position.needsUpdate=true;
+  finalGeo.attributes.color.needsUpdate=true;
+  const sel=document.getElementById('selColorMode');
+  if(sel) sel.value='modulus';
+
+  gNanoRunning=false;
+  gPaused=wasPaused;
+  if(lbl) lbl.textContent=`Vertex ${localVisVertIdx}: E ≈ ${_fmtE(Emap)} — click another point to map more.`;
+  nanoUpdateRegionStats(); // refresh region stats after each manual indent
+}
+
+// Position and orient the visual indenter probe for a given Indenter state.
+// nx/ny/nz is the outward surface normal (shaft extends in this direction).
+function _positionIndenterMesh(indenter, tipRadius, particleRadius, nx, ny, nz){
+  if(!gIndenterMesh||!gIndenterShaft) return;
+  const ix=indenter.x, iy=indenter.y, iz=indenter.z;
+  // Tip sphere
+  gIndenterMesh.position.set(ix, iy, iz);
+  gIndenterMesh.scale.setScalar(tipRadius);
+  gIndenterMesh.visible=true;
+  // Shaft: a cylinder extending away from surface along the outward normal.
+  // CylinderGeometry(1,1,1) is height-1 centred at origin; scale to desired size.
+  const shaftLen=Math.max(particleRadius*3, tipRadius*10);
+  const shaftR  =tipRadius*0.5;
+  const cx=ix+(nx||0)*(tipRadius+shaftLen*0.5);
+  const cy=iy+(ny||0)*(tipRadius+shaftLen*0.5);
+  const cz=iz+(nz||0)*(tipRadius+shaftLen*0.5);
+  gIndenterShaft.scale.set(shaftR, shaftLen, shaftR);
+  gIndenterShaft.position.set(cx, cy, cz);
+  // Align cylinder Y axis to the surface normal
+  if(nx!==undefined && (Math.abs(nx)+Math.abs(ny)+Math.abs(nz))>0.5){
+    const up=new THREE.Vector3(0,1,0);
+    const dir=new THREE.Vector3(nx,ny,nz).normalize();
+    const q=new THREE.Quaternion().setFromUnitVectors(up,dir);
+    gIndenterShaft.setRotationFromQuaternion(q);
+  }
+  gIndenterShaft.visible=true;
 }
 
 function onResize(){
@@ -5466,11 +6235,14 @@ function _isVolumeContainerMode(){
 
 function readSyringeParams(){
   const mv=_containerModeRaw();
-  const containerMode=_isVolumeContainerMode()?'volume':(mv==='airway'?'airway':'syringe');
+  const nano=mv==='nanoindent';
+  const containerMode=nano?'volume':_isVolumeContainerMode()?'volume':(mv==='airway'?'airway':'syringe');
+  // In nanoindent mode, use a generous centred box so the particle floats freely.
+  const nanoBox=nano?{widthMm:4,heightMm:4,depthMm:4,centerX_mm:0,centerY_mm:0,centerZ_mm:0}:null;
   return{
     containerMode,
     airway:readAirwayParams(),
-    volumeBox:readVolumeBoxParams(),
+    volumeBox:nanoBox||readVolumeBoxParams(),
     volumeDropHeightMm:readVolumeDropHeightMm(),
     barrelDiam  :+document.getElementById('pBarrelDiam').value,
     barrelLen   :+document.getElementById('pBarrelLen').value,
@@ -5488,12 +6260,35 @@ function readSyringeParams(){
 
 function initSimulation(){
   if(gSimulator){gSimulator.dispose();gSimulator=null}
-  // Default particle if none loaded (scaled to current nominal radius)
-  if(!gParticleTemplate){
-    const r=gNominalRadiusMm||0.3;
-    gParticleTemplateBase=buildSphereTetTemplate(r);
-    gParticleTemplate=gParticleTemplateBase;
+  // Hide indenter visuals from any previous run
+  if(gIndenterMesh)  gIndenterMesh.visible=false;
+  if(gIndenterShaft) gIndenterShaft.visible=false;
+  if(gNanoFloorMesh) gNanoFloorMesh.visible=false;
+  gNanoRunning=false;
+
+  const nanoMode=_containerModeRaw()==='nanoindent';
+  // In nanoindent mode always use a high-res sphere (unless a custom JSON is loaded).
+  // In normal modes use the original low-res icosahedron when no JSON is loaded.
+  const hasCustom = gParticleTemplateBase && gParticleTemplateBase._fromJSON;
+  if (!hasCustom) {
+    const r = gNominalRadiusMm || 0.3;
+    if (nanoMode) {
+      const divs = parseInt(document.getElementById('pNanoDivs')?.value) || 3;
+      // Only rebuild if not already a matching high-res template
+      if (!gParticleTemplate || !gParticleTemplate._isHighRes ||
+          gParticleTemplate._subdivisions !== divs ||
+          Math.abs(gParticleTemplate.nominalRadius - r) > 1e-6) {
+        gParticleTemplateBase = buildHighResSphereTemplate(r, divs);
+        gParticleTemplate = gParticleTemplateBase;
+      }
+    } else {
+      if (!gParticleTemplate) {
+        gParticleTemplateBase = buildSphereTetTemplate(r);
+        gParticleTemplate = gParticleTemplateBase;
+      }
+    }
   }
+
   const sp=readSyringeParams();
   if(gTuningOverrides && typeof gTuningOverrides==='object'){
     const o=gTuningOverrides;
@@ -5501,11 +6296,50 @@ function initSimulation(){
     if(o.filamentGuideRadiusMm!=null&&Number.isFinite(+o.filamentGuideRadiusMm))
       sp.filamentGuideRadiusMm=+o.filamentGuideRadiusMm;
   }
-  const capacity=Math.min(+document.getElementById('pCount').value,1000);
-  const initial=Math.min(+document.getElementById('pInitCount').value,capacity);
+  const capacity=nanoMode?1:Math.min(+document.getElementById('pCount').value,1000);
+  const initial =nanoMode?1:Math.min(+document.getElementById('pInitCount').value,capacity);
   document.getElementById('pGravity').value
     && (gSimulator && (gSimulator.gravity[1]=-Math.abs(+document.getElementById('pGravity').value)));
   gSimulator=new SyringeSimulator(gParticleTemplate,sp,capacity,initial,gScene);
+  if(nanoMode){
+    gSimulator.gravity=[0,0,0];
+    gSimulator.velDampingPerSec=200; // kill any residual motion instantly
+    // Auto-select the single particle and focus camera on it
+    setTimeout(()=>{
+      gPickedParticle=0;
+      updatePickedVisual();
+      const p=gSimulator?.particles[0];
+      if(p && p.active){
+        if(!p._modulusMap) p._modulusMap=new Float32Array(p.numVisVerts);
+        const r=p.nominalRadius||gNominalRadiusMm||0.3;
+        // Camera: position at ~8× radius from particle centre
+        const dist=r*8;
+        gCamCtrl.target.set(p.center[0],p.center[1],p.center[2]);
+        gCamera.position.set(
+          p.center[0]+dist*0.70,
+          p.center[1]+dist*0.45,
+          p.center[2]+dist*0.85);
+        gCamCtrl.update();
+        // Substrate floor: flat disk just below the particle
+        if(gNanoFloorMesh){
+          gNanoFloorMesh.scale.set(r*7, 1, r*7);
+          gNanoFloorMesh.position.set(p.center[0], p.center[1]-r*1.15, p.center[2]);
+          gNanoFloorMesh.visible=true;
+        }
+      }
+      // Switch to stress colour mode so particle looks interesting from the start
+      if(gSimulator){
+        gSimulator.colorMode='stress';
+        gSimulator._updateColors();
+        const geo=gSimulator.particleMesh?.geometry;
+        if(geo){
+          geo.attributes.color.needsUpdate=true;
+        }
+        const sel=document.getElementById('selColorMode');
+        if(sel) sel.value='stress';
+      }
+    }, 80);
+  }
   _airwayBakeReset();
   gSimulator.volumeDropHeightMm=readVolumeDropHeightMm();
   gSimulator.timerExportMode=!!document.getElementById('chkTimerExport')?.checked;
@@ -5514,7 +6348,10 @@ function initSimulation(){
   gSimulator._timerAnchorSim=null;
   gSimulator._timerWallAnchorMs=null;
   gSimulator._timerCaptureDone=false;
-  gSimulator.gravity=[0,-Math.abs(+document.getElementById('pGravity').value),0];
+  // Nanoindent mode uses zero gravity; other modes use the gravity slider.
+  if(!nanoMode){
+    gSimulator.gravity=[0,-Math.abs(+document.getElementById('pGravity').value),0];
+  }
   gSimulator.numSubsteps=Math.max(1,+document.getElementById('pSubsteps').value);
   gSimulator.extrusionCohesionEnabled=document.getElementById('chkExtrCohesion')?.checked ?? true;
   gSimulator.extrusionLockDelayS=Math.max(0.4,Math.min(6,+document.getElementById('pExtrLockDelay')?.value||1.5));
@@ -5715,11 +6552,46 @@ function onWallMuChange(v){
 }
 function onColorModeChange(v){
   if(gSimulator){
-    gSimulator.colorMode=(v==='stress')?'stress':'contact';
+    if(v==='stress'||v==='modulus') gSimulator.colorMode=v;
+    else gSimulator.colorMode='contact';
     gSimulator._updateColors();
     const geo=gSimulator.particleMesh?.geometry;
     if(geo?.attributes?.color)geo.attributes.color.needsUpdate=true;
   }
+  const sel=document.getElementById('selColorMode');
+  if(sel&&sel.value!==v)sel.value=v;
+}
+
+async function onRunIndentSweep(){
+  if(!gSimulator) return;
+  if(gNanoRunning){ alert('An indentation is already running. Please wait.'); return; }
+  const idx=(gPickedParticle>=0)?gPickedParticle:0;
+  const r     =parseFloat(document.getElementById('pIndenterR')?.value)||0.02;
+  const depth =parseFloat(document.getElementById('pIndentDepth')?.value)||0.005;
+  const steps =parseInt(document.getElementById('pIndentSteps')?.value)||8;
+  const lbl   =document.getElementById('lblSweepProgress');
+  const btn   =document.getElementById('btnSweepAll');
+  if(lbl) lbl.textContent='Sweeping all vertices… 0%';
+  if(btn) btn.disabled=true;
+  gNanoRunning=true;
+  const wasPaused=gPaused;
+  gPaused=true; // freeze main sim during sweep
+  await gSimulator.runIndentationSweep(idx,{
+    indenterRadiusMm:r,
+    maxDepthMm:depth,
+    depthSteps:steps,
+    sampleEvery:1,
+    onProgress:(frac,E)=>{
+      if(lbl) lbl.textContent=`Sweeping… ${Math.round(frac*100)}%  (last E ≈ ${_fmtE(E)})`;
+    }
+  });
+  gNanoRunning=false;
+  gPaused=wasPaused;
+  if(btn) btn.disabled=false;
+  if(lbl) lbl.textContent='Sweep complete (substrate-constrained) — modulus map applied. Click individual vertices to re-indent.';
+  const sel=document.getElementById('selColorMode');
+  if(sel) sel.value='modulus';
+  nanoUpdateRegionStats(); // auto-populate region statistics panel
 }
 function onStressGainChange(v){
   const pct=Math.max(10,Math.min(400,+v));
@@ -5751,7 +6623,10 @@ function _buildScaledTemplateFromBase(base, targetRadiusMm){
     numEdges: base.numEdges,
     numSurfTris: base.numSurfTris,
     hasSkinning: base.hasSkinning||false,
-    nominalRadius: r1
+    nominalRadius: r1,
+    _isHighRes: base._isHighRes||false,
+    _subdivisions: base._subdivisions||0,
+    _fromJSON: base._fromJSON||false
   };
   if(base.verts){
     out.verts=new Float32Array(base.verts.length);
@@ -6240,6 +7115,7 @@ function _syncExport4kVideoButton(){
 
 function onContainerModeChange(fromUser){
   const mv=_containerModeRaw();
+  const nano=mv==='nanoindent';
   const vol=_isVolumeContainerMode();
   const boxFill=mv==='volume_fill';
   const airway=mv==='airway';
@@ -6248,10 +7124,17 @@ function onContainerModeChange(fromUser){
   const ad=document.getElementById('wrapAirwayDims');
   const ex=document.getElementById('wrapSyringePhysicsExtras');
   const chkBoxFill=document.getElementById('chkBoxFillSequence');
-  if(ds) ds.style.display=(vol||airway)?'none':'';
+  const ni=document.getElementById('rowNanoindent');
+  // In nanoindent mode hide syringe geometry panel, physics extras, volume dims
+  if(ds) ds.style.display=(vol||airway||nano)?'none':'';
   if(wd) wd.style.display=vol?'block':'none';
   if(ad) ad.style.display=airway?'block':'none';
-  if(ex) ex.style.display=(vol||airway)?'none':'';
+  if(ex) ex.style.display=(vol||airway||nano)?'none':'';
+  if(ni) ni.style.display=nano?'block':'none';
+  // Hide floor mesh when leaving nanoindent mode
+  if(!nano && gNanoFloorMesh) gNanoFloorMesh.visible=false;
+  if(!nano && gIndenterMesh)  gIndenterMesh.visible=false;
+  if(!nano && gIndenterShaft) gIndenterShaft.visible=false;
   if(airway) applyAirwayUiDefaults(gAirwayUiOverrides);
   if(boxFill) applyBoxFillUiDefaults(gBoxFillUiOverrides);
   if(chkBoxFill){
@@ -6263,6 +7146,465 @@ function onContainerModeChange(fromUser){
   _syncExport4kVideoButton();
   if(fromUser) onRestart();
   else _applyContainerOrbitMode();
+}
+
+function onNanoDivsChange(val){
+  // Changing subdivisions in nanoMode rebuilds the template and restarts
+  if(_containerModeRaw()==='nanoindent'){
+    gParticleTemplate=null; // force rebuild
+    gParticleTemplateBase=null;
+    onRestart();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Nanoindentation: shape library, region classification, CSV export, comparison
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Persistent comparison table rows: [{name, face, edge, corner, overall, ts}] */
+let gNanoResults = [];
+
+/**
+ * Calibration state.
+ * factor: multiply E_sim by this to get Pa.  null = uncalibrated.
+ * refE_Pa: the reference Young's modulus the user entered.
+ * refE_sim: the mean simulated E that was measured at calibration time.
+ */
+let gNanoCalib = { factor: null, refE_Pa: null, refE_sim: null, shape: null };
+
+/** Format E: if calibrated return "X.XX kPa", else return exponent notation. */
+function _fmtE(E_sim){
+  if(gNanoCalib.factor !== null){
+    const E_pa = E_sim * gNanoCalib.factor;
+    if(E_pa >= 1e6) return (E_pa/1e6).toFixed(2)+' MPa';
+    if(E_pa >= 1e3) return (E_pa/1e3).toFixed(2)+' kPa';
+    return E_pa.toFixed(1)+' Pa';
+  }
+  return E_sim.toExponential(3);
+}
+function _unitLabel(){ return gNanoCalib.factor !== null ? 'Pa (calibrated)' : 'sim units'; }
+
+/** Run sweep then calibrate factor from mean E vs user-entered reference E. */
+async function nanoRunCalibration(){
+  const refKpa = parseFloat(document.getElementById('pNanoRefE')?.value);
+  if(!refKpa || refKpa <= 0){ alert('Enter a valid reference E (kPa) first.'); return; }
+  const refPa = refKpa * 1e3;
+
+  const statEl = document.getElementById('nanoCalibStatus');
+  if(statEl) statEl.textContent = 'Running sweep for calibration…';
+
+  // Run a full sweep if not already done, otherwise use existing map.
+  if(!gSimulator){ alert('Start the simulation first.'); return; }
+  if(gNanoRunning){ alert('Another indentation is running. Please wait.'); return; }
+
+  const idx = (gPickedParticle >= 0) ? gPickedParticle : 0;
+  const p = gSimulator.particles?.[idx];
+  const hasMap = p && p._modulusMap && p._modulusMap.some(v => v > 0);
+
+  if(!hasMap){
+    // Run sweep automatically
+    await onRunIndentSweep();
+    // Wait until sweep completes
+    while(gNanoRunning) await new Promise(r => setTimeout(r, 200));
+  }
+
+  // Compute mean of non-zero E values
+  const map = gSimulator.particles?.[idx]?._modulusMap;
+  if(!map){ alert('Sweep produced no data.'); return; }
+  const vals = Array.from(map).filter(v => v > 0);
+  if(!vals.length){ alert('No indentation data yet.'); return; }
+  const meanSim = vals.reduce((s,v) => s+v, 0) / vals.length;
+
+  gNanoCalib.factor  = refPa / meanSim;
+  gNanoCalib.refE_Pa = refPa;
+  gNanoCalib.refE_sim = meanSim;
+  const shapeEl = document.getElementById('selNanoShape');
+  gNanoCalib.shape = shapeEl ? (shapeEl.options[shapeEl.selectedIndex]?.text || 'unknown') : 'unknown';
+
+  _updateCalibStatus();
+  nanoUpdateRegionStats();  // re-render with calibrated values
+  _renderNanoComparison();
+}
+
+/** Clear the calibration factor → back to simulation units. */
+function nanoClearCalibration(){
+  gNanoCalib = { factor: null, refE_Pa: null, refE_sim: null, shape: null };
+  _updateCalibStatus();
+  nanoUpdateRegionStats();
+  _renderNanoComparison();
+}
+
+function _updateCalibStatus(){
+  const el = document.getElementById('nanoCalibStatus');
+  if(!el) return;
+  if(gNanoCalib.factor === null){
+    el.style.color = '#556';
+    el.textContent = 'No calibration set — values shown in simulation units.';
+  } else {
+    const k = gNanoCalib.factor;
+    const kStr = k >= 1e6 ? (k/1e6).toExponential(3)+' MPa/sim'
+                : k >= 1e3 ? (k/1e3).toExponential(3)+' kPa/sim'
+                : k.toExponential(3)+' Pa/sim';
+    el.style.color = '#7eff99';
+    el.innerHTML =
+      'Calibrated on <b>'+gNanoCalib.shape+'</b> &mdash; '
+      +'k&nbsp;=&nbsp;'+kStr+'<br>'
+      +'Reference: '+_fmtE(gNanoCalib.refE_sim)+' sim = '
+      +(gNanoCalib.refE_Pa/1e3).toFixed(3)+' kPa (user-entered)';
+  }
+}
+
+/** Load a pre-built hires JSON shape (or revert to procedural sphere). */
+async function onNanoShapeChange(value){
+  const divsRow = document.getElementById('rowNanoDivs');
+  if(divsRow) divsRow.style.display = (value==='__sphere__') ? '' : 'none';
+  if(value === '__sphere__'){
+    gParticleTemplate=null;
+    gParticleTemplateBase=null;
+    onRestart();
+    return;
+  }
+  try{
+    const res = await fetch(resolveAppUrl('assets/'+value), {cache:'no-cache'});
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const data = await res.json();
+    applyParticleTemplateFromJSON(data, value.replace('_hires.json','').replace('600M','').replace('600m',''));
+  }catch(err){
+    alert('Failed to load shape: '+err);
+  }
+}
+
+/**
+ * Returns the current particle's vis-mesh data together with its modulus map.
+ * Works for both skinned (hasSkinning) and surface-only templates.
+ */
+function _nanoGetVisData(){
+  if(!gSimulator) return null;
+  const p = gSimulator.particles ? gSimulator.particles[0] : null;
+  if(!p || !p._modulusMap) return null;
+  const tmpl = gParticleTemplate || gParticleTemplateBase;
+  if(!tmpl) return null;
+  const verts   = tmpl.hasSkinning ? tmpl.visVerts   : tmpl.verts;
+  const triIds  = tmpl.hasSkinning ? tmpl.visTriIds  : tmpl.surfTriIds;
+  return { verts, triIds, modulusMap: p._modulusMap, n: p.numVisVerts };
+}
+
+/** Per-vertex lists of incident triangle normals (unit length). */
+function _nanoBuildAdjFaceNormals(verts, triIds, n){
+  const adjN = [];
+  for(let i=0;i<n;i++) adjN.push([]);
+  const nTris = triIds.length/3;
+  for(let t=0;t<nTris;t++){
+    const i0=triIds[3*t],i1=triIds[3*t+1],i2=triIds[3*t+2];
+    const x0=verts[3*i0],y0=verts[3*i0+1],z0=verts[3*i0+2];
+    const x1=verts[3*i1],y1=verts[3*i1+1],z1=verts[3*i1+2];
+    const x2=verts[3*i2],y2=verts[3*i2+1],z2=verts[3*i2+2];
+    const ax=x1-x0,ay=y1-y0,az=z1-z0;
+    const bx=x2-x0,by=y2-y0,bz=z2-z0;
+    const nx=ay*bz-az*by, ny=az*bx-ax*bz, nz=ax*by-ay*bx;
+    const len=Math.sqrt(nx*nx+ny*ny+nz*nz);
+    if(len<1e-15) continue;
+    const fn=[nx/len,ny/len,nz/len];
+    adjN[i0].push(fn); adjN[i1].push(fn); adjN[i2].push(fn);
+  }
+  return adjN;
+}
+
+/** Count distinct normal directions within angleTolDeg at a vertex. */
+function _nanoCountNormalClusters(ns, angleTolDeg){
+  if(!ns.length) return 0;
+  const cosTol=Math.cos(angleTolDeg*Math.PI/180);
+  const clusters=[];
+  for(const nrm of ns){
+    let merged=false;
+    for(const c of clusters){
+      const dot=c[0]*nrm[0]+c[1]*nrm[1]+c[2]*nrm[2];
+      if(dot>=cosTol){ merged=true; break; }
+    }
+    if(!merged) clusters.push(nrm);
+  }
+  return clusters.length;
+}
+
+/**
+ * Classify each vis-vertex as 'face', 'edge', 'corner', or 'interior'.
+ * Boxy shapes (cube, prism): count how many AABB faces the vertex lies on.
+ * Other shapes: count distinct incident face-normal directions (not percentiles).
+ * Interior skinning control verts are excluded from statistics and sweeps.
+ */
+function _nanoClassifyRegions(verts, triIds, n){
+  const adjN = _nanoBuildAdjFaceNormals(verts, triIds, n);
+
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity,minZ=Infinity,maxZ=-Infinity;
+  for(let i=0;i<n;i++){
+    const x=verts[3*i],y=verts[3*i+1],z=verts[3*i+2];
+    if(x<minX)minX=x; if(x>maxX)maxX=x;
+    if(y<minY)minY=y; if(y>maxY)maxY=y;
+    if(z<minZ)minZ=z; if(z>maxZ)maxZ=z;
+  }
+  const eps=Math.max(1e-4, 0.02*Math.hypot(maxX-minX, maxY-minY, maxZ-minZ));
+
+  const planeCount = (x,y,z)=>{
+    let p=0;
+    if(Math.abs(x-minX)<eps||Math.abs(x-maxX)<eps) p++;
+    if(Math.abs(y-minY)<eps||Math.abs(y-maxY)<eps) p++;
+    if(Math.abs(z-minZ)<eps||Math.abs(z-maxZ)<eps) p++;
+    return p;
+  };
+
+  let onAabbSurf=0;
+  for(let i=0;i<n;i++){
+    if(planeCount(verts[3*i],verts[3*i+1],verts[3*i+2])>=1) onAabbSurf++;
+  }
+  const boxMode = onAabbSurf/n >= 0.85;
+
+  const curv = new Float32Array(n);
+  const labels = new Array(n);
+  for(let v=0;v<n;v++){
+    const ns=adjN[v];
+    if(ns.length){
+      let mx=0,my=0,mz=0;
+      for(const f of ns){mx+=f[0];my+=f[1];mz+=f[2];}
+      mx/=ns.length; my/=ns.length; mz/=ns.length;
+      curv[v] = 1.0 - Math.sqrt(mx*mx+my*my+mz*mz);
+    }
+    const x=verts[3*v],y=verts[3*v+1],z=verts[3*v+2];
+    const planes=planeCount(x,y,z);
+    if(boxMode){
+      if(planes===0) labels[v]='interior';
+      else labels[v]=planes>=3?'corner':planes===2?'edge':'face';
+    }else{
+      const k=_nanoCountNormalClusters(ns, 12);
+      labels[v]=k>=3?'corner':k===2?'edge':'face';
+    }
+  }
+  return {labels, curv, boxMode};
+}
+
+/**
+ * Outward unit normal at each vis-vertex (averaged face normals, oriented
+ * away from the shape centroid). Falls back to radial direction if needed.
+ */
+function _nanoOutwardNormals(verts, triIds, n, cx, cy, cz){
+  const adjN=_nanoBuildAdjFaceNormals(verts, triIds, n);
+  const out=new Float32Array(n*3);
+  for(let v=0;v<n;v++){
+    const ns=adjN[v];
+    const px=verts[3*v],py=verts[3*v+1],pz=verts[3*v+2];
+    let nx=px-cx, ny=py-cy, nz=pz-cz;
+    if(ns.length){
+      let mx=0,my=0,mz=0;
+      for(const f of ns){mx+=f[0];my+=f[1];mz+=f[2];}
+      const len=Math.sqrt(mx*mx+my*my+mz*mz);
+      if(len>1e-10){ nx=mx/len; ny=my/len; nz=mz/len; }
+    }
+    const dx=px-cx, dy=py-cy, dz=pz-cz;
+    if(nx*dx+ny*dy+nz*dz<0){ nx=-nx; ny=-ny; nz=-nz; }
+    const dl=Math.sqrt(nx*nx+ny*ny+nz*nz);
+    if(dl<1e-10) continue;
+    out[3*v]=nx/dl; out[3*v+1]=ny/dl; out[3*v+2]=nz/dl;
+  }
+  return out;
+}
+
+/** Simple stats helper. */
+function _stats(arr){
+  if(!arr.length) return {mean:0,std:0,n:0};
+  const mean = arr.reduce((s,v)=>s+v,0)/arr.length;
+  const std  = Math.sqrt(arr.reduce((s,v)=>s+(v-mean)**2,0)/arr.length);
+  return {mean,std,n:arr.length};
+}
+
+/**
+ * After a sweep, populate the region statistics panel with
+ * mean ± std E per region.
+ */
+function nanoUpdateRegionStats(){
+  const data = _nanoGetVisData();
+  const wrap = document.getElementById('nanoRegionStats');
+  const body = document.getElementById('nanoRegionStatsBody');
+  if(!data||!wrap||!body) return;
+
+  const {verts,triIds,modulusMap,n} = data;
+  const {labels} = _nanoClassifyRegions(verts,triIds,n);
+
+  const byR = {face:[],edge:[],corner:[]};
+  for(let i=0;i<n;i++){
+    const E=modulusMap[i];
+    const region=labels[i];
+    if(E>0 && region!=='interior' && byR[region]) byR[region].push(E);
+  }
+
+  const fmt = s => s.n>0
+    ? `<b>${_fmtE(s.mean)}</b> &plusmn; ${_fmtE(s.std)}&nbsp;(n=${s.n})`
+    : '<span style="color:#556">no data</span>';
+
+  const titleEl = document.getElementById('nanoRegionStatsTitle');
+  if(titleEl) titleEl.textContent = 'Region statistics ('+_unitLabel()+')';
+
+  body.innerHTML =
+    `<div><span style="color:#88bbff">Face&nbsp;&nbsp;&nbsp;&nbsp;</span>${fmt(_stats(byR.face))}</div>`+
+    `<div><span style="color:#ffcc44">Edge&nbsp;&nbsp;&nbsp;&nbsp;</span>${fmt(_stats(byR.edge))}</div>`+
+    `<div><span style="color:#ff6655">Corner&nbsp;</span>${fmt(_stats(byR.corner))}</div>`;
+  wrap.style.display = 'block';
+}
+
+/**
+ * Export the current modulus map as a CSV file with columns:
+ *   vertex_index, x_mm, y_mm, z_mm, E_apparent, region
+ */
+function nanoExportCSV(){
+  const data = _nanoGetVisData();
+  if(!data||!data.modulusMap.some(v=>v>0)){
+    alert('Run a sweep first to build the modulus map.'); return;
+  }
+  const {verts,triIds,modulusMap,n} = data;
+  const {labels} = _nanoClassifyRegions(verts,triIds,n);
+  const shape = document.getElementById('selNanoShape')?.value||'sphere';
+  const shapeName = shape.replace('_hires.json','').replace('600M','').replace('600m','');
+
+  const calibrated = gNanoCalib.factor !== null;
+  const header = calibrated
+    ? 'vertex_index,x_mm,y_mm,z_mm,E_sim,E_Pa,region'
+    : 'vertex_index,x_mm,y_mm,z_mm,E_sim,region';
+  const rows = [header];
+  for(let i=0;i<n;i++){
+    const E=modulusMap[i];
+    const region=labels[i];
+    if(!E || region==='interior') continue;
+    const base = `${i},${verts[3*i].toFixed(4)},${verts[3*i+1].toFixed(4)},${verts[3*i+2].toFixed(4)},${E.toExponential(6)}`;
+    rows.push(calibrated
+      ? `${base},${(E*gNanoCalib.factor).toFixed(4)},${region}`
+      : `${base},${region}`);
+  }
+  const blob = new Blob([rows.join('\n')],{type:'text/csv'});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `E_map_${shapeName}_${Date.now()}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Save region statistics for the current shape into the comparison table.
+ * Calling again for the same shape replaces the previous row.
+ */
+function nanoSaveResults(){
+  const data = _nanoGetVisData();
+  if(!data||!data.modulusMap.some(v=>v>0)){
+    alert('Run a sweep first to build the modulus map.'); return;
+  }
+  const {verts,triIds,modulusMap,n} = data;
+  const {labels} = _nanoClassifyRegions(verts,triIds,n);
+
+  const sel = document.getElementById('selNanoShape');
+  const raw = sel ? sel.value : '__sphere__';
+  const name = raw==='__sphere__' ? 'Sphere'
+    : (sel.options[sel.selectedIndex]?.text || raw);
+
+  const byR = {face:[],edge:[],corner:[]};
+  for(let i=0;i<n;i++){
+    const E=modulusMap[i];
+    const region=labels[i];
+    if(E>0 && region!=='interior' && byR[region]) byR[region].push(E);
+  }
+  const result = {
+    name,
+    face   : _stats(byR.face),
+    edge   : _stats(byR.edge),
+    corner : _stats(byR.corner),
+    overall: _stats([...byR.face,...byR.edge,...byR.corner]),
+    ts     : new Date().toLocaleTimeString()
+  };
+
+  const idx = gNanoResults.findIndex(r=>r.name===name);
+  if(idx>=0) gNanoResults[idx]=result; else gNanoResults.push(result);
+
+  _renderNanoComparison();
+  document.getElementById('lblSweepProgress').textContent =
+    `Results saved for "${name}". ${gNanoResults.length} shape(s) in comparison table.`;
+}
+
+/** Render the multi-shape comparison table. */
+function _renderNanoComparison(){
+  const wrap  = document.getElementById('nanoComparisonWrap');
+  const panel = document.getElementById('nanoComparisonPanel');
+  if(!wrap||!panel) return;
+
+  if(!gNanoResults.length){ wrap.style.display='none'; return; }
+  wrap.style.display='block';
+
+  const unitLbl = _unitLabel();
+  const fmt = s => s.n>0
+    ? `${_fmtE(s.mean)}<br><span style="color:#556">&plusmn;${_fmtE(s.std)}</span>`
+    : '<span style="color:#334">—</span>';
+
+  let html = '<div style="overflow-x:auto">'
+    + '<table style="width:100%;font-size:10px;border-collapse:collapse;color:#cde">'
+    + '<thead><tr style="color:#7ecfff;border-bottom:1px solid #3a4a5a">'
+    + '<th style="text-align:left;padding:3px 4px;white-space:nowrap">Shape</th>'
+    + `<th style="text-align:center;padding:3px 4px" title="Flat face regions">Face E<br><span style="font-size:9px;color:#556">${unitLbl}</span></th>`
+    + `<th style="text-align:center;padding:3px 4px" title="Edge regions">Edge E<br><span style="font-size:9px;color:#556">${unitLbl}</span></th>`
+    + `<th style="text-align:center;padding:3px 4px" title="Corner/tip regions">Corner E<br><span style="font-size:9px;color:#556">${unitLbl}</span></th>`
+    + '<th style="text-align:center;padding:3px 4px">Overall / C:F</th>'
+    + '</tr></thead><tbody>';
+
+  for(const r of gNanoResults){
+    const rn = r.corner.n>0 && r.face.n>0
+      ? (r.corner.mean/r.face.mean).toFixed(2)+'x' : '—';
+    html += `<tr style="border-bottom:1px solid #1e2a38">
+      <td style="padding:3px 4px;white-space:nowrap">
+        <span style="color:#eee">${r.name}</span><br>
+        <span style="color:#445;font-size:9px">${r.ts}</span>
+      </td>
+      <td style="text-align:center;padding:3px 4px;color:#88bbff">${fmt(r.face)}</td>
+      <td style="text-align:center;padding:3px 4px;color:#ffcc44">${fmt(r.edge)}</td>
+      <td style="text-align:center;padding:3px 4px;color:#ff7766">${fmt(r.corner)}</td>
+      <td style="text-align:center;padding:3px 4px;color:#aaccee">
+        ${fmt(r.overall)}<br>
+        <span style="font-size:9px;color:#5a7a5a" title="corner/face modulus ratio">C/F: ${rn}</span>
+      </td>
+    </tr>`;
+  }
+  html += '</tbody></table></div>';
+  html += '<div style="margin-top:4px;display:flex;gap:6px">'
+    + '<button onclick="nanoExportComparisonCSV()" style="font-size:10px;padding:2px 8px;background:#1a2030;color:#7ecfff;border:1px solid #3a5a7a;border-radius:3px;cursor:pointer">Export table CSV</button>'
+    + '<button onclick="gNanoResults=[];_renderNanoComparison()" style="font-size:10px;padding:2px 8px;background:#1a2030;color:#99b;border:1px solid #3a4a5a;border-radius:3px;cursor:pointer">Clear</button>'
+    + '</div>'
+    + '<div style="font-size:9px;color:#445;margin-top:3px">E values in simulation units. C/F = corner/face ratio (geometry effect).</div>';
+  panel.innerHTML = html;
+}
+
+/** Export the comparison table to CSV. */
+function nanoExportComparisonCSV(){
+  if(!gNanoResults.length) return;
+  const hasCal = gNanoCalib.factor !== null;
+  const k = hasCal ? gNanoCalib.factor : 1;
+  const eSuffix = hasCal ? '_Pa' : '_sim';
+  const calNote = hasCal
+    ? `# Calibration: k=${k.toExponential(4)} Pa/sim  |  ref E=${(gNanoCalib.refE_Pa/1e3).toFixed(3)} kPa (literature Young's modulus for 12.5 wt% GelMA)  |  shape: ${gNanoCalib.shape}\n`
+    : '# No calibration applied — values in simulation units\n';
+  const cols = `shape,face_mean${eSuffix},face_std${eSuffix},face_n,`
+    + `edge_mean${eSuffix},edge_std${eSuffix},edge_n,`
+    + `corner_mean${eSuffix},corner_std${eSuffix},corner_n,`
+    + `overall_mean${eSuffix},overall_std${eSuffix},overall_n,corner_face_ratio`;
+  const rows = [calNote + cols];
+  for(const r of gNanoResults){
+    const cf = r.corner.n>0&&r.face.n>0 ? (r.corner.mean/r.face.mean).toFixed(4) : '';
+    rows.push([r.name,
+      (r.face.mean*k).toExponential(4),(r.face.std*k).toExponential(4),r.face.n,
+      (r.edge.mean*k).toExponential(4),(r.edge.std*k).toExponential(4),r.edge.n,
+      (r.corner.mean*k).toExponential(4),(r.corner.std*k).toExponential(4),r.corner.n,
+      (r.overall.mean*k).toExponential(4),(r.overall.std*k).toExponential(4),r.overall.n,
+      cf
+    ].join(','));
+  }
+  const blob = new Blob([rows.join('\n')],{type:'text/csv'});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href=url; a.download=`nano_comparison_${Date.now()}.csv`; a.click();
+  URL.revokeObjectURL(url);
 }
 
 function onExtrLockDelayChange(v){
@@ -6312,6 +7654,7 @@ function applyParticleTemplateFromJSON(data, sourceLabel){
     visTriIds   :new Int32Array(v.triIds),
     skinning    :hasSkinning ? v.skinning : null,
     nominalRadius:m.nominalRadius||0.3};
+  baseTmpl._fromJSON=true; // flag so nanoMode won't replace with high-res sphere
   gParticleTemplateBase=baseTmpl;
   // Apply current radius slider by uniform scaling
   const r=gNominalRadiusMm || baseTmpl.nominalRadius || 0.3;
