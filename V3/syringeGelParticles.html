@@ -496,10 +496,26 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
           <option value="4">High (5120 tris)</option>
         </select></div>
 
-      <div class="row"><label>Indenter radius (mm)</label>
-        <input type="number" id="pIndenterR" value="0.02" min="0.005" max="0.1" step="0.005"></div>
-      <div class="row"><label>Max depth (mm)</label>
-        <input type="number" id="pIndentDepth" value="0.005" min="0.001" max="0.05" step="0.001"></div>
+      <div class="row"><label title="Tip radius = diameter / 2 = 500 µm / 2 = 250 µm = 0.25 mm">Indenter radius (mm)</label>
+        <input type="number" id="pIndenterR" value="0.25" min="0.005" max="1.0" step="0.005"
+               title="Spherical tip diameter 500 µm → radius 0.25 mm"></div>
+      <div class="row"><label title="Indentation depth — varies 5 / 10 / 15 µm per protocol">Indent depth (µm)</label>
+        <select id="pIndentDepth" title="Operator is exploring 5, 10, 15 µm to finalise optimum parameters">
+          <option value="0.005" selected>5 µm</option>
+          <option value="0.010">10 µm</option>
+          <option value="0.015">15 µm</option>
+        </select></div>
+      <!-- ── Experimental protocol (informational) ── -->
+      <div style="margin-top:5px;border-top:1px solid #1e2d3e;padding-top:5px;margin-bottom:5px">
+        <div style="color:#aaccee;font-weight:600;font-size:10px;margin-bottom:4px"
+             title="Experimental nanoindentation protocol used with the Optics11 system">EXPERIMENTAL PROTOCOL</div>
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:2px 8px;font-size:10px;color:#7a9abd;line-height:1.7">
+          <span style="color:#aaccee">Tip geometry</span><span>Spherical, ∅ 500 µm (R = 0.25 mm)</span>
+          <span style="color:#aaccee">Approach</span><span>0.1 µm/s · 20 s</span>
+          <span style="color:#aaccee">Loading</span><span>0.1 µm/s · 40 s</span>
+          <span style="color:#aaccee">Depth sweep</span><span>5 µm · 10 µm · 15 µm (optimising)</span>
+        </div>
+      </div>
       <div class="row"><label>Depth steps</label>
         <input type="number" id="pIndentSteps" value="16" min="2" max="64" step="1"
                title="Number of depth increments per indentation. More steps = smoother force curve and longer animation."></div>
@@ -4407,7 +4423,7 @@ class SyringeSimulator {
   // ----------------------------------------------------------------
   async runIndentationSweep(particleIdx, options) {
     options = options || {};
-    const indenterR  = options.indenterRadiusMm  || 0.02;
+    const indenterR  = options.indenterRadiusMm  || 0.25;
     const maxDepth   = options.maxDepthMm         || 0.005;
     const depthSteps = options.depthSteps         || 16;
     const settleSteps= options.settleSteps        || 40;
@@ -5892,7 +5908,7 @@ async function _runPointIndent(particleIdx, localVisVertIdx){
   const p=gSimulator.particles[particleIdx];
   if(!p||!p.active) return;
 
-  const r     =parseFloat(document.getElementById('pIndenterR')?.value)||0.02;
+  const r     =parseFloat(document.getElementById('pIndenterR')?.value)||0.25;
   const depth =parseFloat(document.getElementById('pIndentDepth')?.value)||0.005;
   const steps =parseInt(document.getElementById('pIndentSteps')?.value)||8;
   const lbl   =document.getElementById('lblSweepProgress');
@@ -6566,7 +6582,7 @@ async function onRunIndentSweep(){
   if(!gSimulator) return;
   if(gNanoRunning){ alert('An indentation is already running. Please wait.'); return; }
   const idx=(gPickedParticle>=0)?gPickedParticle:0;
-  const r     =parseFloat(document.getElementById('pIndenterR')?.value)||0.02;
+  const r     =parseFloat(document.getElementById('pIndenterR')?.value)||0.25;
   const depth =parseFloat(document.getElementById('pIndentDepth')?.value)||0.005;
   const steps =parseInt(document.getElementById('pIndentSteps')?.value)||8;
   const lbl   =document.getElementById('lblSweepProgress');
