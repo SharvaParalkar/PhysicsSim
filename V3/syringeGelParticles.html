@@ -114,8 +114,8 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
   <button class="btn"        onclick="exportPoresOBJ()" title="Empty space inside the fluid domain minus gel (void mesh). Smooth isosurface via marching cubes + vertex normals when Performance → Smooth pore mesh is on.">Export pores (OBJ)</button>
   <button class="btn"        onclick="exportPLYColors()" title="Exports particles with vertex colors (stress/contact gradient)">Export PLY (colors)</button>
   <button class="btn"        onclick="exportMetricsCSV()" title="CSV: P2P contacts, contact area, force stats, porosity (box), motion &amp; strain, settle flags. Timer mode logs for a wall-clock window after Run / Drop.">Export metrics CSV</button>
-  <button class="btn" id="btnExport4kVideo" onclick="onExportAirwayVideo4K()" disabled
-          title="Pre-compute first (bronchial tree or box fill sequence), then export 3840×2400 WebM.">Export 4K video</button>
+  <button class="btn" id="btnExport4kVideo" onclick="onExport4kVideo()" disabled
+          title="Invisible box: records while Run is active — export anytime. Fill sequence / bronchial tree: pre-compute first.">Export 4K video</button>
   <label>Library:
     <select id="particleLibrary" onchange="onSelectLibrary(this.value)" style="width:auto">
       <option value="__default__">Default sphere</option>
@@ -146,7 +146,54 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
         <option value="volume">Invisible box volume</option>
         <option value="volume_fill">Invisible box fill sequence</option>
         <option value="nanoindent">Nanoindentation</option>
+        <option value="showcase">Particle showcase</option>
+        <option value="showcase_star">Star highlight</option>
+        <option value="showcase_star_interlock">Star interlock</option>
       </select></div>
+    <div id="wrapShowcasePanel" style="display:none">
+    <div class="row"><label></label>
+      <span id="lblShowcaseIntro" style="font-size:11px;color:#7a9abd"><b>Particle showcase</b> — library shapes side-by-side, spinning with stress-gradient colors.</span></div>
+    <div class="row"><label>Spin (deg/s)</label>
+      <input type="number" id="pShowcaseSpinDegS" value="45" min="0" max="360" step="5"
+             oninput="onShowcaseParamChange()"
+             title="Rotation speed for each floating particle"></div>
+    <div class="row" id="wrapShowcaseGapRow"><label>Gap (mm)</label>
+      <input type="number" id="pShowcaseGapMm" value="6" min="0" max="80" step="0.5"
+             oninput="onShowcaseParamChange()"
+             title="Space between particle centers"></div>
+    <div class="row"><label>Display radius (mm)</label>
+      <input type="number" id="pShowcaseDisplayR" value="2.5" min="0.3" max="15" step="0.1"
+             oninput="onShowcaseParamChange()"
+             title="Uniform size for all showcase particles"></div>
+    <div class="row" id="wrapShowcaseInterlockObjRow" style="display:none"><label>Interlock OBJ</label>
+      <input type="file" id="showcaseInterlockObjFile" accept=".obj,.OBJ,text/plain"
+             onchange="loadShowcaseInterlockObj(event)" style="width:auto;font-size:11px"
+             title="Optional pre-arranged interlock mesh (mm). Centered and scaled to Display radius."></div>
+    <div class="row" id="wrapShowcaseInterlockObjHintRow" style="display:none"><label></label>
+      <button type="button" class="btn" onclick="clearShowcaseInterlockObj()">Clear OBJ</button>
+      <span id="lblShowcaseInterlockObj" style="font-size:11px;color:#7a9abd;margin-left:6px">Optional — overrides built-in 3-star layout.</span></div>
+    <div class="row"><label>Color cycle (s)</label>
+      <input type="range" id="sShowcaseColorCycleS" min="3" max="90" value="12" step="1"
+             oninput="onShowcaseColorCycleChange(this.value)"
+             title="Seconds for one full blue→green→yellow→red sweep across the particle"></div>
+    <div class="row"><label></label><span id="lblShowcaseColorCycle" class="statVal">12 s</span></div>
+    <div class="row"><label></label>
+      <span id="lblShowcaseStatus" style="font-size:11px;color:#7a9abd">Cube, Cylinder, Hex, Star, Tri from assets/manifest.json</span></div>
+    <div class="row"><label></label>
+      <span style="font-size:11px;color:#7a9abd"><b>4K video export</b> — spinning particles at 3840×2400 WebM (uses current spin/gap/size and camera angle).</span></div>
+    <div class="row"><label>Export duration (s)</label>
+      <input type="number" id="pShowcaseExportDurS" value="10" min="1" max="600" step="1"
+             title="Length of the exported video in seconds"></div>
+    <div class="row"><label>Export fps</label>
+      <input type="number" id="pShowcaseExportFps" value="60" min="15" max="120" step="1"
+             title="Frame rate for the exported WebM"></div>
+    <div class="row"><label></label>
+      <button type="button" class="btn green" id="btnShowcaseExport4k" onclick="onShowcaseExport4K()"
+              title="Pre-render then encode a 3840×2400 WebM of the spinning showcase">Export 4K video</button>
+      <button type="button" class="btn" id="btnShowcaseExportCancel" onclick="onShowcaseExportCancel()" style="display:none;margin-left:6px">Cancel</button></div>
+    <div class="row"><label></label>
+      <span id="lblShowcaseExport" style="font-size:11px;color:#7a9abd">Set duration and export. Orbit camera (if enabled) is included in the export.</span></div>
+    </div>
     <div id="wrapContainerOrbit">
     <div class="row"><label>Orbit camera</label>
       <select id="selContainerOrbitMode" onchange="onContainerOrbitModeChange()" style="width:auto"
@@ -158,7 +205,7 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
       <input type="number" id="pContainerOrbitDegS" value="18" min="1" max="180" step="1"
              oninput="onContainerOrbitModeChange()"></div>
     <div class="row"><label></label>
-      <span style="font-size:11px;color:#7a9abd">Works in <b>Invisible box</b> / <b>fill sequence</b> and <b>Bronchial tree</b>. Keeps your current camera angle; only the camera moves.</span></div>
+      <span style="font-size:11px;color:#7a9abd">Works in <b>Invisible box</b> / <b>fill sequence</b>, <b>Bronchial tree</b>, <b>Particle showcase</b>, <b>Star highlight</b>, and <b>Star interlock</b>. Keeps your current camera angle; only the camera moves.</span></div>
     </div>
     <div class="row"><label>Auto-fit box to mesh</label>
       <input type="checkbox" id="chkFillMeshAutofit" checked
@@ -166,6 +213,9 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
     <div class="row"><label>Show fill mesh</label>
       <input type="checkbox" id="chkFillMeshShow" checked onchange="onFillMeshShowChange()"
              title="Semi-transparent preview when Invisible box mode is on"></div>
+    <div class="row"><label>Show volume box</label>
+      <input type="checkbox" id="chkVolumeOutlineShow" checked onchange="onVolumeOutlineShowChange()"
+             title="Wireframe outline of the invisible box / bronchial bounds (visible while paused)"></div>
     <div class="row"><label></label>
       <button type="button" class="btn" onclick="clearFillVolumeObj()">Clear fill mesh</button></div>
     <div class="row"><label></label>
@@ -187,6 +237,11 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
       <input type="number" id="pVolDropH" value="0" min="0" max="200" step="0.5"
              oninput="onVolDropHeightInput()"
              title="Extra height above the box inner top for Drop / spawns (mm). Timer mode defaults this to 20 mm."></div>
+    <div class="row"><label>Open bottom</label>
+      <input type="checkbox" id="chkVolumeOpenBottom" onchange="onToggleVolumeOpenBottom(this.checked)"
+             title="Remove the floor so particles can freefall out the bottom (side walls and ceiling remain)"></div>
+    <div class="row"><label></label>
+      <span style="font-size:11px;color:#7a9abd"><b>Run</b> records at 60 fps for 4K export (until Restart). Export pre-renders all frames, then encodes at 60 fps.</span></div>
     <div id="wrapBoxFillSequence" class="box-fill-sequence-panel" style="display:none">
     <div class="row"><label></label>
       <span style="font-size:11px;color:#7a9abd"><b>Box fill sequence</b> — pre-compute repeated Drop-more cycles (same spawn grid) until the box is ~half full, then export one 4K video.</span></div>
@@ -287,6 +342,40 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
       <input type="number" id="pNeedleLen"  value="25"  min="2" max="60" step="1"></div>
     <div class="row"><label>Taper H</label>
       <input type="number" id="pTaperH"     value="2"   min="0.5" max="10" step="0.1"></div>
+    <div id="wrapSyringe4kExport">
+    <div class="row"><label></label>
+      <span style="font-size:11px;color:#7a9abd"><b>4K video export</b> — pre-compute the set duration of physics, then export a clean 60 fps WebM.</span></div>
+    <div class="row"><label>Export duration (s)</label>
+      <input type="number" id="pSyringe4kDurS" value="10" min="1" max="600" step="1"
+             title="Seconds of simulated time to bake. The exported video will be this many seconds long at 60 fps."></div>
+    <div class="row"><label>Uncap at (sim s)</label>
+      <input type="number" id="pSyringe4kUncapAtS" value="3" min="0" max="600" step="0.1"
+             title="Simulated seconds before the end cap releases (0 = use End cap checkbox as-is). Must be ≤ export duration."></div>
+    <div class="row"><label>Playback fps</label>
+      <input type="number" id="pSyringe4kPlayFps" value="60" min="15" max="240" step="1"
+             title="Frame rate for playback and 4K export after pre-compute."></div>
+    <div class="row"><label>Auto 4K export</label>
+      <input type="checkbox" id="chkSyringe4kAuto4k" checked
+             title="Automatically encode and download the 4K WebM once pre-compute finishes."></div>
+    <div class="row"><label></label>
+      <button type="button" class="btn green" id="btnSyringe4kBake" onclick="onSyringe4kBake()"
+              title="Runs physics headless for the set duration from t=0, then exports a 3840×2400 WebM at 60 fps">Pre-compute &amp; export</button>
+      <button type="button" class="btn" id="btnSyringe4kBakeCancel" onclick="onSyringe4kBakeCancel()" style="display:none;margin-left:6px">Cancel</button></div>
+    <div class="row"><label></label>
+      <span id="lblSyringe4kBake" style="font-size:11px;color:#7a9abd">Set duration and uncap time. Sticky extrusion extends the needle bore below the tip (no tray pile-up).</span></div>
+    <div class="row"><label></label>
+      <div id="wrapSyringe4kProgress" class="airway-bake-progress" style="flex:1;min-width:0">
+        <div class="airway-bake-progress-track" id="syringe4kProgressBar" role="progressbar"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+             aria-label="Syringe pre-compute progress">
+          <div class="airway-bake-progress-fill" id="syringe4kProgressFill"></div>
+        </div>
+        <div class="airway-bake-progress-meta">
+          <span id="lblSyringe4kBakePct">0%</span>
+          <span id="lblSyringe4kBakeEta">ETA —</span>
+        </div>
+      </div></div>
+    </div>
     </div>
   </details>
 
@@ -373,7 +462,7 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
              title="When enabled, particles cannot enter the needle (barrel/taper only). Toggle anytime."></div>
     <div class="row"><label>Sticky extrusion (uncapped)</label>
       <input type="checkbox" id="chkExtrCohesion" checked onchange="onToggleExtrCohesion(this.checked)"
-             title="With the end cap off, particles past the tip stay bonded; after ~1.5s each gel blob’s shape locks. Catch tray below catches drops."></div>
+             title="With the end cap off: extrudate stays visible, needle bore continues below the tip (plug flow), catch tray is bypassed, and each particle locks shape after the delay below."></div>
     <div class="row"><label>Narrow filament guide</label>
       <input type="checkbox" id="chkFilamentGuide" checked onchange="onToggleFilamentGuide(this.checked)"
              title="Below the tip, clamps material to a thin cylinder around the needle so extrusion reads as a line—not a wide splotch. Off = free spread."></div>
@@ -481,11 +570,11 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
       <div class="row"><label title="Select the microgel geometry to study">Particle shape</label>
         <select id="selNanoShape" onchange="onNanoShapeChange(this.value)" style="width:auto">
           <option value="__sphere__">Sphere (procedural)</option>
-          <option value="Cube600M_hires.json">Cube</option>
-          <option value="Cyl600M_hires.json">Cylinder</option>
-          <option value="Hex600M_hires.json">Hexagon</option>
-          <option value="Tri600M_hires.json">Triangle prism</option>
-          <option value="Star600M_hires.json">Star (5-arm)</option>
+          <option value="HIRES_Cube600M.json">Cube</option>
+          <option value="HIRES_Cyl600M.json">Cylinder</option>
+          <option value="HIRES_Hex600M.json">Hexagon</option>
+          <option value="HIRES_Tri600M.json">Triangle prism</option>
+          <option value="HIRES_Star600M.json">Star (5-arm)</option>
         </select></div>
 
       <!-- Mesh resolution only applies to the procedural sphere -->
@@ -498,13 +587,19 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
 
       <div class="row"><label title="Tip radius = diameter / 2 = 500 µm / 2 = 250 µm = 0.25 mm">Indenter radius (mm)</label>
         <input type="number" id="pIndenterR" value="0.25" min="0.005" max="1.0" step="0.005"
-               title="Spherical tip diameter 500 µm → radius 0.25 mm"></div>
-      <div class="row"><label title="Indentation depth — varies 5 / 10 / 15 µm per protocol">Indent depth (µm)</label>
-        <select id="pIndentDepth" title="Operator is exploring 5, 10, 15 µm to finalise optimum parameters">
-          <option value="0.005" selected>5 µm</option>
+               title="Spherical tip diameter 500 µm → radius 0.25 mm"
+               onchange="_nanoUpdateHertzWarn()" oninput="_nanoUpdateHertzWarn()"></div>
+      <div class="row"><label title="Indentation depth confirmed at 75 µm by Optics11 protocol (Shounak, Jun 2026)">Indent depth (µm)</label>
+        <select id="pIndentDepth" title="Confirmed experimental depth: 75 µm. Legacy sweep options retained for comparison."
+                onchange="_nanoUpdateHertzWarn()">
+          <option value="0.005">5 µm</option>
           <option value="0.010">10 µm</option>
           <option value="0.015">15 µm</option>
+          <option value="0.075" selected>75 µm ★ confirmed</option>
         </select></div>
+      <!-- ── Hertz regime validity warning ── -->
+      <div id="nanoHertzWarn" style="font-size:9px;line-height:1.5;margin:3px 0 4px 0;padding:4px 6px;border-radius:3px;display:none"></div>
+
       <!-- ── Experimental protocol (informational) ── -->
       <div style="margin-top:5px;border-top:1px solid #1e2d3e;padding-top:5px;margin-bottom:5px">
         <div style="color:#aaccee;font-weight:600;font-size:10px;margin-bottom:4px"
@@ -513,7 +608,7 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
           <span style="color:#aaccee">Tip geometry</span><span>Spherical, ∅ 500 µm (R = 0.25 mm)</span>
           <span style="color:#aaccee">Approach</span><span>0.1 µm/s · 20 s</span>
           <span style="color:#aaccee">Loading</span><span>0.1 µm/s · 40 s</span>
-          <span style="color:#aaccee">Depth sweep</span><span>5 µm · 10 µm · 15 µm (optimising)</span>
+          <span style="color:#aaccee">Indent depth</span><span>75 µm (confirmed)</span>
         </div>
       </div>
       <div class="row"><label>Depth steps</label>
@@ -538,31 +633,31 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
       <!-- ── Modulus calibration ── -->
       <div style="margin-top:6px;border-top:1px solid #1e2d3e;padding-top:6px">
         <div style="color:#aaccee;font-weight:600;font-size:10px;margin-bottom:4px"
-             title="Map simulated E values to absolute Pa using a known reference material">MODULUS CALIBRATION</div>
+             title="Map simulated E values to absolute kPa using a known reference material">MODULUS CALIBRATION</div>
         <div style="font-size:9px;color:#667;margin-bottom:4px;line-height:1.5">
-          Literature value for 12.5 wt% GelMA: <b style="color:#aac">~25 kPa</b>.
-          Do <em>not</em> use bulk-assembly G&prime; (60–250 Pa) — that is the jammed-network modulus, not the individual particle modulus.
+          Measured bulk modulus for <b style="color:#aac">10 wt% GelMA: 132 ± 40 kPa</b> (compressive, Shounak Jun 2026).
+          Do <em>not</em> use bulk-assembly G&prime; — that is the jammed-network modulus, not the individual particle modulus.
         </div>
         <!-- Sensitivity presets -->
         <div style="display:flex;gap:4px;margin-bottom:5px;flex-wrap:wrap">
           <span style="font-size:10px;color:#7a9abd;align-self:center">Presets:</span>
-          <button onclick="document.getElementById('pNanoRefE').value=10"
-                  title="Low bound — conservative estimate for 10 wt% GelMA"
-                  style="font-size:10px;padding:2px 7px;background:#1a2030;border:1px solid #3a5a7a;color:#88aacc;border-radius:3px;cursor:pointer">10 kPa</button>
-          <button onclick="document.getElementById('pNanoRefE').value=25"
-                  title="Recommended — mid-range for 12.5 wt% GelMA (literature)"
-                  style="font-size:10px;padding:2px 7px;background:#1a2a3a;border:1px solid #4a7a9a;color:#7ecfff;border-radius:3px;cursor:pointer;font-weight:600">25 kPa &#x2605;</button>
-          <button onclick="document.getElementById('pNanoRefE').value=50"
-                  title="High bound — stiffer crosslinking or 15 wt% GelMA"
-                  style="font-size:10px;padding:2px 7px;background:#1a2030;border:1px solid #3a5a7a;color:#88aacc;border-radius:3px;cursor:pointer">50 kPa</button>
+          <button onclick="document.getElementById('pNanoRefE').value=92"
+                  title="Lower bound — 132 − 40 kPa"
+                  style="font-size:10px;padding:2px 7px;background:#1a2030;border:1px solid #3a5a7a;color:#88aacc;border-radius:3px;cursor:pointer">92 kPa</button>
+          <button onclick="document.getElementById('pNanoRefE').value=132"
+                  title="Confirmed mean — 10 wt% GelMA compressive modulus (Shounak Jun 2026)"
+                  style="font-size:10px;padding:2px 7px;background:#1a2a3a;border:1px solid #4a7a9a;color:#7ecfff;border-radius:3px;cursor:pointer;font-weight:600">132 kPa &#x2605;</button>
+          <button onclick="document.getElementById('pNanoRefE').value=172"
+                  title="Upper bound — 132 + 40 kPa"
+                  style="font-size:10px;padding:2px 7px;background:#1a2030;border:1px solid #3a5a7a;color:#88aacc;border-radius:3px;cursor:pointer">172 kPa</button>
         </div>
         <div class="row" style="align-items:center;gap:4px;flex-wrap:wrap">
-          <label style="flex:none" title="Real Young's modulus of the individual microgel (not the jammed-assembly G')">Reference E</label>
-          <input type="number" id="pNanoRefE" value="25" min="0.001" max="1000" step="0.5"
-                 style="width:60px" title="Young's modulus in kPa — recommended 25 kPa for 12.5 wt% GelMA">
+          <label style="flex:none" title="Compressive modulus of 10 wt% GelMA bulk hydrogel (not the jammed-assembly G')">Reference E</label>
+          <input type="number" id="pNanoRefE" value="132" min="0.001" max="1000" step="0.5"
+                 style="width:60px" title="Young's modulus in kPa — 132 kPa for 10 wt% GelMA (measured)">
           <span style="font-size:10px;color:#7a9abd">kPa</span>
           <button onclick="nanoRunCalibration()"
-                  title="Run a sweep on the current particle, then use its mean E to compute a Pa conversion factor"
+                  title="Run a sweep on the current particle, then use its mean E to compute a kPa conversion factor"
                   style="font-size:10px;padding:3px 8px;background:#1a2a3a;border:1px solid #4a7a5a;color:#7eff99;border-radius:3px;cursor:pointer">
             Calibrate from sweep</button>
           <button onclick="nanoClearCalibration()"
@@ -1188,6 +1283,8 @@ class Syringe {
     /** Below tip: max cylindrical radius (mm) around Y axis; 0 = no guide (splotch allowed). */
     this.filamentGuideRadius=(p.filamentGuideRadiusMm!=null&&Number.isFinite(+p.filamentGuideRadiusMm)&&+p.filamentGuideRadiusMm>0)
       ? +p.filamentGuideRadiusMm : 0;
+    /** Set each step by simulator when sticky extrusion + uncapped (extends bore, no tray pile-up). */
+    this.extrusionModeActive=false;
   }
 
   getRadiusAtY(y){
@@ -1213,22 +1310,21 @@ class Syringe {
       pos[3*i+1]=this.needleLen;py=this.needleLen;hit=true;nx=0;ny=1;nz=0}
     // end cap at needle exit (Y=0): keep material inside until cap is released
     if(this.capActive && py<0){pos[3*i+1]=0;py=0;hit=true;nx=0;ny=1;nz=0}
-    // radial wall (skip particles below needle tip – they've exited)
-    if(py>=0){
+    // Radial syringe wall (in-bore). Below the tip, continue the needle bore during plug extrusion
+    // so jammed cross-section slides out as a column instead of spreading / piling on the tray.
+    const plugWall=this.extrusionModeActive;
+    if(py>=0||plugWall){
       const r=Math.sqrt(px*px+pz*pz);
-      const rMax=this.getRadiusAtY(pos[3*i+1]);
       const allow=this.wallAllowPenetrationMm||0;
-      const rClamp=rMax+allow;
-      if(r>rClamp&&r>1e-10){
-        const sc=rClamp/r;
+      const rMax=(py>=0?this.getRadiusAtY(py):this.needleInR)+allow;
+      if(r>rMax&&r>1e-10){
+        const sc=rMax/r;
         pos[3*i]=px*sc;pos[3*i+2]=pz*sc;hit=true;
         nx=px/r;ny=0;nz=pz/r;}}
-    // Below tip: thin invisible cylinder on the needle axis (line extrusion vs splotch).
-    const gR=this.filamentGuideRadius;
-    if(gR>0&&py<0){
-      const trayY0=this.catchTrayTopY;
-      const guideFloor=(trayY0!=null&&Number.isFinite(trayY0))?trayY0+0.4:-1e9;
-      if(py>guideFloor){
+    // Legacy filament guide (only when plug wall is off — e.g. sticky extrusion disabled).
+    if(!plugWall){
+      const gR=this.filamentGuideRadius||0;
+      if(gR>0&&py<0){
         const rxy=Math.sqrt(px*px+pz*pz);
         const allow=this.wallAllowPenetrationMm||0;
         const rMax=gR+allow;
@@ -1240,10 +1336,10 @@ class Syringe {
           px=pos[3*i];pz=pos[3*i+2];
           hit=true;
           nx=px0/rxy;ny=0;nz=pz0/rxy}}}
-    // catch tray under needle tip (optional): solid top plane + outer rim
+    // Catch tray — off during plug extrusion (otherwise all extrudate piles at one disk point).
     const trayY=this.catchTrayTopY;
     const trayRlim=this.catchTrayRadius;
-    if(trayY!=null){
+    if(trayY!=null&&!plugWall){
       if(py<trayY){
         pos[3*i+1]=trayY;py=trayY;hit=true;nx=0;ny=1;nz=0}
       if(trayRlim!=null&&py<=trayY+2.5){
@@ -1387,6 +1483,7 @@ class BoxVolume {
     this.centerY=Number.isFinite(+cyIn) ? +cyIn : this.halfY;
     this.centerZ=Number.isFinite(+(p.centerZ_mm ?? p.centerZ)) ? +(p.centerZ_mm ?? p.centerZ) : 0;
     this.wallAllowPenetrationMm=Math.max(0, +(p.wallAllowPenetrationMm || 0));
+    this.openBottom=!!(p.openBottom ?? p.volumeOpenBottom);
     this.meshes=[];
     // Syringe-compat flags: closed box, no needle / extrusion extras
     this.capActive=true;
@@ -1410,7 +1507,7 @@ class BoxVolume {
     const minZ=cz-hz-a,maxZ=cz+hz+a;
     if(px<minX){pos[3*i]=minX;px=minX;hit=true;nx=1;ny=0;nz=0}
     if(px>maxX){pos[3*i]=maxX;px=maxX;hit=true;nx=-1;ny=0;nz=0}
-    if(py<minY){pos[3*i+1]=minY;py=minY;hit=true;nx=0;ny=1;nz=0}
+    if(!this.openBottom && py<minY){pos[3*i+1]=minY;py=minY;hit=true;nx=0;ny=1;nz=0}
     if(py>maxY){pos[3*i+1]=maxY;py=maxY;hit=true;nx=0;ny=-1;nz=0}
     if(pz<minZ){pos[3*i+2]=minZ;pz=minZ;hit=true;nx=0;ny=0;nz=1}
     if(pz>maxZ){pos[3*i+2]=maxZ;pz=maxZ;hit=true;nx=0;ny=0;nz=-1}
@@ -2330,7 +2427,7 @@ function _porePointInFluidDomain(syringe, x, y, z){
     const cx=syringe.centerX, cy=syringe.centerY, cz=syringe.centerZ;
     const hx=syringe.halfX, hy=syringe.halfY, hz=syringe.halfZ;
     return x>=cx-hx-a && x<=cx+hx+a &&
-           y>=cy-hy-a && y<=cy+hy+a &&
+           (syringe.openBottom ? y<=cy+hy+a : y>=cy-hy-a && y<=cy+hy+a) &&
            z>=cz-hz-a && z<=cz+hz+a;
   }
   const allow=syringe.wallAllowPenetrationMm||0;
@@ -3263,7 +3360,8 @@ class SyringeSimulator {
     const airwayMode=(cm==='airway');
     if(volMode){
       this.syringe=new BoxVolume(Object.assign({}, syringeParams.volumeBox||{},{
-        wallAllowPenetrationMm:syringeParams.wallAllowPenetrationMm}));
+        wallAllowPenetrationMm:syringeParams.wallAllowPenetrationMm,
+        openBottom:!!syringeParams.volumeOpenBottom}));
     }else if(airwayMode){
       this.syringe=new AirwayTree(Object.assign({}, syringeParams.airway||{},{
         wallAllowPenetrationMm:syringeParams.wallAllowPenetrationMm,
@@ -3839,92 +3937,14 @@ class SyringeSimulator {
     return !!(this.extrusionCohesionEnabled && this.syringe && !this.syringe.capActive);
   }
 
-  _particleCentroidBelowTip(p){
-    return p.active && p.center[1]<0;
-  }
-
   /**
-   * Pull extruded particles together when centroid separation exceeds maxD = (rA+rB)*bondMaxF.
-   * Complement to repulsive contact (keeps stream from separating).
+   * Sticky extrusion: keep extrudate visible + freeze shapes after delay.
+   * Jam cohesion is handled by normal p2p contacts + extended needle bore (plug wall);
+   * explicit pull-together bonds caused collapse onto the catch tray.
    */
-  _p2pExtrusionCohesionPair(A,B,sdt,alpha,corrClampFrac,bondMaxF){
-    if(!this._particleCentroidBelowTip(A)||!this._particleCentroidBelowTip(B))return;
-    const dx=A.center[0]-B.center[0];
-    const dy=A.center[1]-B.center[1];
-    const dz=A.center[2]-B.center[2];
-    const d2=dx*dx+dy*dy+dz*dz;
-    if(d2<1e-14)return;
-    const axialFrac=(dy*dy)/d2;
-    const amin=Math.max(0.02,Math.min(0.9,Number.isFinite(this.extrusionFilamentAxialMin)?this.extrusionFilamentAxialMin:0.28));
-    if(axialFrac<amin)return;
-    const rA=this._contactRadiusForP2P(A);
-    const rB=this._contactRadiusForP2P(B);
-    const maxD=(rA+rB)*bondMaxF;
-    if(maxD<=0)return;
-    if(d2<=maxD*maxD)return;
-    const d=Math.sqrt(d2);
-    const nx=dx/d,ny=dy/d,nz=dz/d;
-    const gap=d-maxD;
-    const wA=1,wB=1;
-    let corr=gap/(wA+wB+alpha);
-    const corrMax=maxD*corrClampFrac;
-    if(corr>corrMax)corr=corrMax;
-    if(corr<=0)return;
-    for(let k=0;k<A.numTetVerts;k++){
-      A.pos[3*k]  -=corr*wA*nx;
-      A.pos[3*k+1]-=corr*wA*ny;
-      A.pos[3*k+2]-=corr*wA*nz;
-      if(this.syringe.constrainVertex(A.pos,A.prevPos,k,this.wallFriction))A.inWallContact=true}
-    for(let k=0;k<B.numTetVerts;k++){
-      B.pos[3*k]  +=corr*wB*nx;
-      B.pos[3*k+1]+=corr*wB*ny;
-      B.pos[3*k+2]+=corr*wB*nz;
-      if(this.syringe.constrainVertex(B.pos,B.prevPos,k,this.wallFriction))B.inWallContact=true}
-    A.center[0]-=corr*wA*nx;A.center[1]-=corr*wA*ny;A.center[2]-=corr*wA*nz;
-    B.center[0]+=corr*wB*nx;B.center[1]+=corr*wB*ny;B.center[2]+=corr*wB*nz;
+  _solveExtrusionCohesion(_sdt){
+    return;
   }
-
-  _solveExtrusionCohesion(sdt){
-    if(!this._extrusionCohesionWanted())return;
-    const ps=this.particles;
-    const n=ps.length;
-    if(n<2)return;
-    let activeCount=0, extrudedCount=0;
-    for(let i=0;i<n;i++)if(ps[i].active)activeCount++;
-    if(activeCount<2)return;
-    for(let i=0;i<n;i++)if(ps[i].active&&this._particleCentroidBelowTip(ps[i]))extrudedCount++;
-    if(extrudedCount<2)return;
-    const alpha=Math.max(0,this.extrusionCohesionCompliance)/(sdt*sdt);
-    // Allow stronger per-iter pulls than default contact so separated beads reconnect.
-    const corrClampFrac=Math.max(0.38,Math.min(1,this.maxContactCorrFrac||0.25));
-    const bondMaxF=Math.max(0.35,Math.min(1.05,this.extrusionBondMaxFactor||0.88));
-    const P2P_HASHLESS_MAX=64;
-    if(activeCount<=P2P_HASHLESS_MAX){
-      for(let i=0;i<n;i++){
-        if(!ps[i].active)continue;
-        const A=ps[i];
-        for(let j=i+1;j<n;j++){
-          if(!ps[j].active)continue;
-          this._p2pExtrusionCohesionPair(A,ps[j],sdt,alpha,corrClampFrac,bondMaxF);
-        }
-      }
-      return;
-    }
-    for(let i=0;i<n;i++){
-      this.centroids[3*i]  =ps[i].active?ps[i].center[0]:1e9;
-      this.centroids[3*i+1]=ps[i].active?ps[i].center[1]:1e9;
-      this.centroids[3*i+2]=ps[i].active?ps[i].center[2]:1e9}
-    this.centroidHash.create(this.centroids);
-    for(let i=0;i<n;i++){
-      if(!ps[i].active)continue;
-      const A=ps[i];
-      if(!this._particleCentroidBelowTip(A))continue;
-      this.centroidHash.query(this.centroids,i,2.35*this.maxNR);
-      for(let nr=0;nr<this.centroidHash.querySize;nr++){
-        const j=this.centroidHash.queryIds[nr];
-        if(j<=i||!ps[j].active)continue;
-        this._p2pExtrusionCohesionPair(A,ps[j],sdt,alpha,corrClampFrac,bondMaxF);
-      }}}
 
   _updateSettleAfterStep(){
     if(this.timerExportMode){
@@ -4252,6 +4272,14 @@ class SyringeSimulator {
   // ── Main simulate step ─────────────────────────────────────────
   simulate(dt){
     const sdt=dt/this.numSubsteps;
+    if(this.syringe&&!this.syringe._boxVolume&&!this.syringe._airwayVolume){
+      this.syringe.extrusionModeActive=this._extrusionCohesionWanted();
+      if(gSyringe4kBakeUncapAtS!=null&&gSyringe4kBakeUncapAtS>0&&this.simTime>=gSyringe4kBakeUncapAtS&&this.syringe.capActive){
+        this.syringe.capActive=false;
+        const chkCap=document.getElementById('chkCap');
+        if(chkCap) chkCap.checked=false;
+      }
+    }
     this.contactPairs=0;
     this.maxPenetration=0;
     // reset contact flags
@@ -4330,9 +4358,11 @@ class SyringeSimulator {
     // so the stream stays visible on the catch tray.
     let disp=0;
     const hideFallthrough=!this._extrusionCohesionWanted();
+    const skipFallthroughHide=!!(this.syringe._boxVolume && this.syringe.openBottom);
     for(const p of this.particles){
       if(!p.active)continue;
       if(!hideFallthrough)continue;
+      if(skipFallthroughHide)continue;
       if(p.center[1]<-this.tmpl.nominalRadius*2){
         p.active=false;
         this._hideParticleOffscreen(p);
@@ -5252,6 +5282,12 @@ const VIDEO_EXPORT_4K_H=2400; // 16:10
 const VIDEO_EXPORT_LOOPS=3;
 /** Box fill sequence orchestration (multi-segment bake + optional 4K). */
 let gBoxFillSequence={active:false,targetFill:0.5,pauseS:3,autoExport4k:true};
+/** Live 4K frame buffer for plain Invisible box volume (not fill-sequence bake). */
+let gVolumeLiveRecord={recording:false,frames:[],playFps:60};
+/** Syringe mode pre-compute bake settings. */
+let gSyringe4kBake={simDurationS:10,uncapAtS:3,playFps:60,autoExport4k:true};
+/** Scheduled uncap time during syringe 4K bake (null = no schedule). */
+let gSyringe4kBakeUncapAtS=null;
 let gRaycaster=null,gPointer=null,gPickedParticle=-1;
 let gTuningOverrides={}; // loaded from config.json (optional)
 let gPickMode='inspect'; // 'inspect' | 'lock'
@@ -5277,6 +5313,495 @@ let gContainerOrbitEnabled=false;
 let gContainerOrbitState=null;
 let gContainerOrbitLastMs=0;
 const _ORBIT_Y_AXIS=new THREE.Vector3(0,1,0);
+
+/** Standard library shapes for Container → Particle showcase (manifest.json entries). */
+const SHOWCASE_LIBRARY_FILES=[
+  'Cube600M.json',
+  'Cyl600M.json',
+  'Hex600m.json',
+  'Star600M.json',
+  'tri600M.json',
+];
+
+const SHOWCASE_STAR_FILE='Star600M.json';
+const SHOWCASE_STAR_INTERLOCK_COUNT=3;
+
+let gShowcase={active:false, root:null, cluster:null, items:[], lastMs:0, timeS:0, layout:'gallery', clusterSpin:0};
+let gShowcaseExportCancel=false;
+/** Optional user OBJ for Star interlock mode: {soup: Float32Array, label: string}. */
+let gShowcaseInterlockObj=null;
+
+function _readShowcaseSpinDegS(){
+  return Math.max(0, +document.getElementById('pShowcaseSpinDegS')?.value||45);
+}
+function _readShowcaseGapMm(){
+  return Math.max(0, +document.getElementById('pShowcaseGapMm')?.value||6);
+}
+function _readShowcaseDisplayR(){
+  return Math.max(0.3, Math.min(15, +document.getElementById('pShowcaseDisplayR')?.value||2.5));
+}
+function _readShowcaseColorCycleS(){
+  return Math.max(3, Math.min(90, +document.getElementById('sShowcaseColorCycleS')?.value||12));
+}
+function onShowcaseColorCycleChange(v){
+  const el=document.getElementById('lblShowcaseColorCycle');
+  if(el) el.textContent=`${Math.round(+v)} s`;
+}
+
+function _showcaseRampBGYR(t){
+  const lerp=(a,b,u)=>a+(b-a)*u;
+  t=Math.max(0,Math.min(1,t));
+  if(t<=1/3){
+    const u=t*3;
+    return [0, lerp(0,1,u), lerp(1,0,u)];
+  }else if(t<=2/3){
+    const u=(t-1/3)*3;
+    return [lerp(0,1,u), 1, 0];
+  }
+  const u=(t-2/3)*3;
+  return [1, lerp(1,0,u), 0];
+}
+
+function parseParticleTemplateFromJSONData(data){
+  if(!data||!data.tet||!data.vis) return null;
+  const t=data.tet, v=data.vis, m=data.meta||{};
+  const hasSkinning=Array.isArray(v.skinning) && v.skinning.length>0;
+  return {
+    verts       :new Float32Array(t.verts),
+    tetIds      :new Int32Array(t.tetIds),
+    edgeIds     :new Int32Array(t.edgeIds),
+    surfTriIds  :new Int32Array(t.surfTriIds),
+    numVerts    :t.verts.length/3,
+    numTets     :t.tetIds.length/4,
+    numEdges    :t.edgeIds.length/2,
+    numSurfTris :t.surfTriIds.length/3,
+    hasSkinning :hasSkinning,
+    visVerts    :new Float32Array(v.verts),
+    visTriIds   :new Int32Array(v.triIds),
+    skinning    :hasSkinning ? v.skinning : null,
+    nominalRadius:m.nominalRadius||0.3,
+    _fromJSON:true,
+  };
+}
+
+function _showcaseMeshFromTemplate(tmpl){
+  const src=tmpl.visVerts;
+  const n=src.length/3;
+  let cx=0,cy=0,cz=0;
+  for(let i=0;i<n;i++){
+    cx+=src[i*3]; cy+=src[i*3+1]; cz+=src[i*3+2];
+  }
+  cx/=n; cy/=n; cz/=n;
+  const positions=new Float32Array(src.length);
+  for(let i=0;i<n;i++){
+    positions[i*3]=src[i*3]-cx;
+    positions[i*3+1]=src[i*3+1]-cy;
+    positions[i*3+2]=src[i*3+2]-cz;
+  }
+  const colors=new Float32Array(src.length);
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(positions,3));
+  geo.setAttribute('color',new THREE.BufferAttribute(colors,3));
+  const triIds=tmpl.visTriIds;
+  const idx=new Uint32Array(triIds.length);
+  for(let i=0;i<triIds.length;i++) idx[i]=triIds[i];
+  geo.setIndex(new THREE.BufferAttribute(idx,1));
+  const mat=new THREE.MeshPhongMaterial({vertexColors:true,flatShading:true,shininess:40});
+  const mesh=new THREE.Mesh(geo,mat);
+  mesh.castShadow=true;
+  return mesh;
+}
+
+function _showcaseApplyStressColors(item, tSec){
+  const mesh=item.mesh;
+  const pos=mesh.geometry.attributes.position;
+  const col=mesh.geometry.attributes.color;
+  const n=pos.count;
+  let yMin=Infinity,yMax=-Infinity,rMax=1e-9;
+  for(let i=0;i<n;i++){
+    const y=pos.getY(i);
+    const x=pos.getX(i), z=pos.getZ(i);
+    if(y<yMin)yMin=y;
+    if(y>yMax)yMax=y;
+    rMax=Math.max(rMax,Math.sqrt(x*x+z*z));
+  }
+  const ySpan=Math.max(1e-6,yMax-yMin);
+  const phase=item.stressPhase;
+  const cycleS=_readShowcaseColorCycleS();
+  const sweep=(tSec/cycleS)%1;
+  const w=2*Math.PI/cycleS;
+  const rawTs=new Float32Array(n);
+  let tMin=Infinity,tMax=-Infinity;
+  for(let i=0;i<n;i++){
+    const x=pos.getX(i), y=pos.getY(i), z=pos.getZ(i);
+    const depth=Math.max(0,Math.min(1,(yMax-y)/ySpan));
+    const radial=Math.max(0,Math.min(1,Math.sqrt(x*x+z*z)/rMax));
+    const ripple=0.5+0.5*Math.sin(tSec*w*1.2+phase*1.35+depth*5.2+radial*3.8);
+    const spatial=depth*0.55+radial*0.45;
+    const raw=sweep*0.62+spatial*0.28+(ripple-0.5)*0.38;
+    rawTs[i]=raw;
+    if(raw<tMin) tMin=raw;
+    if(raw>tMax) tMax=raw;
+  }
+  const span=Math.max(1e-6,tMax-tMin);
+  for(let i=0;i<n;i++){
+    const t=(rawTs[i]-tMin)/span;
+    const c=_showcaseRampBGYR(t);
+    col.setXYZ(i,c[0],c[1],c[2]);
+  }
+  col.needsUpdate=true;
+  mesh.geometry.computeVertexNormals();
+}
+
+function disposeShowcase(){
+  if(gShowcase.root&&gScene){
+    gScene.remove(gShowcase.root);
+    for(const item of gShowcase.items||[]){
+      if(item.mesh?.geometry) item.mesh.geometry.dispose();
+      if(item.mesh?.material) item.mesh.material.dispose();
+    }
+  }
+  gShowcase={active:false, root:null, cluster:null, items:[], lastMs:0, timeS:0, layout:'gallery', clusterSpin:0};
+  _syncExport4kVideoButton();
+}
+
+function _showcaseFocusCamera(){
+  if(!gShowcase.root||!gCamera||!gCamCtrl) return;
+  const box=new THREE.Box3().setFromObject(gShowcase.root);
+  if(box.isEmpty()) return;
+  const center=new THREE.Vector3();
+  const size=new THREE.Vector3();
+  box.getCenter(center);
+  box.getSize(size);
+  const centered=gShowcase.layout==='star'||gShowcase.layout==='star_interlock';
+  const span=Math.max(size.x,size.y,size.z,_readShowcaseDisplayR()*(centered?2.2:2),1);
+  const dist=span*(centered?1.65:1.42);
+  gCamCtrl.target.copy(center);
+  gCamera.position.set(center.x, center.y+dist*(centered?0.12:0.14), center.z+dist*1.02);
+  gCamCtrl.minDistance=Math.max(0.2,span*0.15);
+  gCamCtrl.maxDistance=Math.max(900,dist*12);
+  gCamCtrl.update();
+}
+
+function _showcaseMeshFromObjSoup(soup, displayR){
+  const n=soup.length/3;
+  let cx=0,cy=0,cz=0;
+  for(let i=0;i<n;i++){
+    cx+=soup[i*3]; cy+=soup[i*3+1]; cz+=soup[i*3+2];
+  }
+  cx/=n; cy/=n; cz/=n;
+  const positions=new Float32Array(soup.length);
+  let rMax=1e-9;
+  for(let i=0;i<n;i++){
+    const x=soup[i*3]-cx, y=soup[i*3+1]-cy, z=soup[i*3+2]-cz;
+    positions[i*3]=x; positions[i*3+1]=y; positions[i*3+2]=z;
+    rMax=Math.max(rMax, Math.sqrt(x*x+y*y+z*z));
+  }
+  const sc=displayR/Math.max(rMax, 1e-9);
+  for(let i=0;i<n;i++){
+    positions[i*3]*=sc;
+    positions[i*3+1]*=sc;
+    positions[i*3+2]*=sc;
+  }
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.computeVertexNormals();
+  const mat=new THREE.MeshPhongMaterial({
+    color:0xb8bec8, flatShading:true, shininess:40, side:THREE.DoubleSide,
+  });
+  const mesh=new THREE.Mesh(geo, mat);
+  mesh.castShadow=true;
+  return mesh;
+}
+
+function loadShowcaseInterlockObj(evt){
+  const file=evt.target?.files?.[0];
+  if(!file) return;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    try{
+      const soup=parseObjToTriangleSoup(e.target.result);
+      if(soup.length<9){
+        alert('No triangles found in OBJ (need v + f lines).');
+        return;
+      }
+      gShowcaseInterlockObj={soup, label:file.name};
+      const lbl=document.getElementById('lblShowcaseInterlockObj');
+      if(lbl) lbl.textContent=file.name;
+      if(_isShowcaseStarInterlockMode()) onRestart();
+    }catch(err){
+      alert('Could not read interlock OBJ:\n\n'+err);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function clearShowcaseInterlockObj(){
+  gShowcaseInterlockObj=null;
+  const inp=document.getElementById('showcaseInterlockObjFile');
+  if(inp) inp.value='';
+  const lbl=document.getElementById('lblShowcaseInterlockObj');
+  if(lbl) lbl.textContent='Optional — overrides built-in 3-star layout.';
+  if(_isShowcaseStarInterlockMode()) onRestart();
+}
+
+function _showcaseApplySolidColor(item, r, g, b){
+  const col=item.mesh.geometry.attributes.color;
+  for(let i=0;i<col.count;i++) col.setXYZ(i, r, g, b);
+  col.needsUpdate=true;
+  item.mesh.geometry.computeVertexNormals();
+}
+
+function _showcaseDefaultRotBase(i){
+  return {x:(i%3)*0.12, y:0, z:((i+1)%4)*0.08};
+}
+/** Fixed orthogonal poses so thin star prisms mesh at the origin without volumetric overlap. */
+function _showcaseInterlockPose(i){
+  const poses=[
+    {x:0, y:0, z:0},
+    {x:Math.PI/2, y:0, z:0},
+    {x:0, y:Math.PI/2, z:0},
+  ];
+  return poses[i%poses.length];
+}
+function _showcaseApplyItemRotation(item, tSec){
+  const b=item.rotBase||{x:0,y:0,z:0};
+  item.group.rotation.y=b.y+item.spinSpeedY*tSec;
+  item.group.rotation.x=b.x+item.spinSpeedX*tSec;
+  item.group.rotation.z=b.z+(item.spinSpeedZ||0)*tSec;
+}
+
+async function _showcaseLoadItem(fname, displayR, spinRadS, i, root){
+  const url=resolveAppUrl(`assets/${fname}`);
+  const res=await fetch(url,{cache:'no-cache'});
+  if(!res.ok) throw new Error(`${fname}: HTTP ${res.status}`);
+  const data=await res.json();
+  const base=parseParticleTemplateFromJSONData(data);
+  if(!base) throw new Error(`${fname}: invalid particle JSON`);
+  const tmpl=_buildScaledTemplateFromBase(base, displayR);
+  const mesh=_showcaseMeshFromTemplate(tmpl);
+  const group=new THREE.Group();
+  group.add(mesh);
+  const rotBase=_showcaseDefaultRotBase(i);
+  group.rotation.x=rotBase.x;
+  group.rotation.z=rotBase.z;
+  root.add(group);
+  return{
+    index:i,
+    name:fname.replace(/\.json$/i,''),
+    group,
+    mesh,
+    tmpl,
+    rotBase,
+    stressPhase:i*1.17,
+    spinSpeedY:spinRadS*(0.88+i*0.04),
+    spinSpeedX:spinRadS*0.22*(i%2?1:-1),
+    spinSpeedZ:0,
+  };
+}
+
+async function initShowcase(){
+  disposeShowcase();
+  const lbl=document.getElementById('lblShowcaseStatus');
+  const starMode=_isShowcaseStarMode();
+  const interlockMode=_isShowcaseStarInterlockMode();
+  const layout=interlockMode?'star_interlock':starMode?'star':'gallery';
+  if(lbl){
+    lbl.textContent=interlockMode
+      ? gShowcaseInterlockObj?.soup
+        ? `Loading interlock OBJ…`
+        : `Loading ${SHOWCASE_STAR_INTERLOCK_COUNT} interlocked stars…`
+      : starMode ? 'Loading star particle…' : 'Loading showcase particles…';
+  }
+
+  const displayR=_readShowcaseDisplayR();
+  const gap=_readShowcaseGapMm();
+  const spinRadS=_readShowcaseSpinDegS()*Math.PI/180;
+  const root=new THREE.Group();
+  root.name='showcaseRoot';
+  gScene.add(root);
+
+  const cluster=interlockMode ? new THREE.Group() : null;
+  if(cluster){
+    cluster.name='showcaseCluster';
+    root.add(cluster);
+  }
+  const itemParent=cluster||root;
+
+  const items=[];
+  if(interlockMode&&gShowcaseInterlockObj?.soup){
+    const mesh=_showcaseMeshFromObjSoup(gShowcaseInterlockObj.soup, displayR);
+    const group=new THREE.Group();
+    group.add(mesh);
+    cluster.add(group);
+    items.push({
+      index:0,
+      name:(gShowcaseInterlockObj.label||'interlock OBJ').replace(/\.obj$/i,''),
+      group,
+      mesh,
+      rotBase:{x:0,y:0,z:0},
+      spinSpeedY:0,
+      spinSpeedX:0,
+      spinSpeedZ:0,
+      fromObj:true,
+    });
+  }else{
+    const fileList=interlockMode
+      ? Array(SHOWCASE_STAR_INTERLOCK_COUNT).fill(SHOWCASE_STAR_FILE)
+      : starMode ? [SHOWCASE_STAR_FILE] : SHOWCASE_LIBRARY_FILES;
+    for(let i=0;i<fileList.length;i++){
+      items.push(await _showcaseLoadItem(fileList[i], displayR, interlockMode?0:spinRadS, i, itemParent));
+    }
+
+    if(interlockMode){
+      for(let i=0;i<items.length;i++){
+        const item=items[i];
+        const pose=_showcaseInterlockPose(i);
+        item.group.position.set(0, 0, 0);
+        item.rotBase={x:pose.x, y:pose.y, z:pose.z};
+        item.spinSpeedY=0;
+        item.spinSpeedX=0;
+        item.spinSpeedZ=0;
+        item.group.rotation.set(pose.x, pose.y, pose.z);
+        _showcaseApplySolidColor(item, 0.72, 0.76, 0.82);
+      }
+    }else if(starMode){
+      items[0].group.position.set(0, 0, 0);
+    }else{
+      const pitch=displayR*2.35+gap;
+      const startX=-((items.length-1)*pitch)/2;
+      for(let i=0;i<items.length;i++){
+        items[i].group.position.set(startX+i*pitch, 0, 0);
+      }
+    }
+  }
+
+  gShowcase={
+    active:true, root, cluster, items, lastMs:performance.now(), timeS:0, layout,
+    clusterSpin:interlockMode?spinRadS:0,
+  };
+  if(!interlockMode){
+    for(const item of items) _showcaseApplyStressColors(item, 0);
+  }
+  _showcaseFocusCamera();
+  if(lbl){
+    lbl.textContent=interlockMode
+      ? gShowcaseInterlockObj?.soup
+        ? `Interlock OBJ · cluster spin ${_readShowcaseSpinDegS()}°/s`
+        : `${items.length} interlocked stars · cluster spin ${_readShowcaseSpinDegS()}°/s`
+      : starMode
+        ? `Star · spin ${_readShowcaseSpinDegS()}°/s · stress gradient`
+        : `${items.length} shapes · spin ${_readShowcaseSpinDegS()}°/s · stress gradient`;
+  }
+  console.log('Showcase mode:', items.map(it=>it.name).join(', '));
+  _syncExport4kVideoButton();
+}
+
+function onShowcaseParamChange(){
+  if(!_isShowcaseMode()) return;
+  onRestart();
+}
+
+function _syncShowcasePanelUi(){
+  const star=_isShowcaseStarMode();
+  const interlock=_isShowcaseStarInterlockMode();
+  const centered=star||interlock;
+  const gapRow=document.getElementById('wrapShowcaseGapRow');
+  const objRow=document.getElementById('wrapShowcaseInterlockObjRow');
+  const objHintRow=document.getElementById('wrapShowcaseInterlockObjHintRow');
+  const intro=document.getElementById('lblShowcaseIntro');
+  if(gapRow) gapRow.style.display=centered?'none':'';
+  if(objRow) objRow.style.display=interlock?'':'none';
+  if(objHintRow) objHintRow.style.display=interlock?'':'none';
+  if(intro){
+    intro.innerHTML=interlock
+      ? `<b>Star interlock</b> — import an OBJ of your pre-meshed cluster (centered, mm units), or use the built-in 3-star layout. The cluster spins as one unit.`
+      : star
+        ? '<b>Star highlight</b> — star particle centered, spinning with stress-gradient colors.'
+        : '<b>Particle showcase</b> — library shapes side-by-side, spinning with stress-gradient colors.';
+  }
+}
+
+function _readShowcaseExportDurS(){
+  return Math.max(1, Math.min(600, +document.getElementById('pShowcaseExportDurS')?.value||10));
+}
+function _readShowcaseExportFps(){
+  return Math.max(15, Math.min(120, +document.getElementById('pShowcaseExportFps')?.value||60));
+}
+function _setShowcaseExportLabel(t){
+  const el=document.getElementById('lblShowcaseExport');
+  if(el) el.textContent=t;
+}
+function _showcaseApplyExportTime(tSec){
+  if(gShowcase.layout==='star_interlock'&&gShowcase.cluster){
+    gShowcase.cluster.rotation.y=gShowcase.clusterSpin*tSec;
+    gShowcase.timeS=tSec;
+    return;
+  }
+  for(const item of gShowcase.items){
+    _showcaseApplyItemRotation(item, tSec);
+    _showcaseApplyStressColors(item,tSec);
+  }
+  gShowcase.timeS=tSec;
+}
+function _showcaseSaveLiveState(){
+  return{
+    timeS:gShowcase.timeS,
+    lastMs:gShowcase.lastMs,
+    clusterY:gShowcase.cluster?.rotation.y||0,
+    rots:gShowcase.items.map(it=>({x:it.group.rotation.x,y:it.group.rotation.y,z:it.group.rotation.z})),
+  };
+}
+function _showcaseRestoreLiveState(saved){
+  if(!saved||!gShowcase.active) return;
+  gShowcase.timeS=saved.timeS;
+  gShowcase.lastMs=performance.now();
+  if(gShowcase.layout==='star_interlock'&&gShowcase.cluster){
+    gShowcase.cluster.rotation.y=saved.clusterY||0;
+    return;
+  }
+  saved.rots.forEach((r,i)=>{
+    const it=gShowcase.items[i];
+    if(!it) return;
+    it.group.rotation.x=r.x;
+    it.group.rotation.y=r.y;
+    it.group.rotation.z=r.z;
+    _showcaseApplyStressColors(it,saved.timeS);
+  });
+}
+
+function _showcaseStep(nowMs){
+  if(gVideoExport.active) return;
+  if(!gShowcase.active||!gShowcase.items.length) return;
+  if(!gShowcase.lastMs) gShowcase.lastMs=nowMs;
+  const dt=Math.max(0,Math.min(0.05,(nowMs-gShowcase.lastMs)/1000));
+  gShowcase.lastMs=nowMs;
+  gShowcase.timeS+=dt;
+  if(gShowcase.layout==='star_interlock'&&gShowcase.cluster){
+    gShowcase.cluster.rotation.y+=gShowcase.clusterSpin*dt;
+    return;
+  }
+  for(const item of gShowcase.items){
+    _showcaseApplyItemRotation(item, gShowcase.timeS);
+    _showcaseApplyStressColors(item, gShowcase.timeS);
+  }
+}
+
+function _isShowcaseMode(){
+  const mv=_containerModeRaw();
+  return mv==='showcase'||mv==='showcase_star'||mv==='showcase_star_interlock';
+}
+function _isShowcaseStarMode(){
+  return _containerModeRaw()==='showcase_star';
+}
+function _isShowcaseStarInterlockMode(){
+  return _containerModeRaw()==='showcase_star_interlock';
+}
+function _showcaseExportFilenamePrefix(){
+  if(gShowcase.layout==='star') return 'particle_showcase_star';
+  if(gShowcase.layout==='star_interlock') return 'particle_showcase_star_interlock';
+  return 'particle_showcase';
+}
 
 // ═══════════════════════════════════════════════════════════════
 // 7b.  ASSET LIBRARY POPULATION (assets/*.json + default sphere)
@@ -5517,13 +6042,48 @@ function _focusTarget(x,y,z, keepDistance=true){
   gCamCtrl.update();
 }
 
+/** Wireframe for volume box preview; open bottom omits the floor square. */
+function _makeVolumeOutlineGeometry(openBottom){
+  if(!openBottom){
+    const unitBox=new THREE.BoxGeometry(1,1,1);
+    const geo=new THREE.EdgesGeometry(unitBox);
+    unitBox.dispose();
+    return geo;
+  }
+  const h=0.5;
+  const verts=new Float32Array([
+    -h,h,-h, h,h,-h,
+    h,h,-h, h,h,h,
+    h,h,h, -h,h,h,
+    -h,h,h, -h,h,-h,
+    -h,h,-h, -h,-h,-h,
+    h,h,-h, h,-h,-h,
+    h,h,h, h,-h,h,
+    -h,h,h, -h,-h,h,
+  ]);
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+  return geo;
+}
+
+function _setVolumeOutlineOpenBottom(openBottom){
+  if(!gVolumeOutline)return;
+  const open=!!openBottom;
+  if(gVolumeOutline.userData.openBottom===open)return;
+  gVolumeOutline.userData.openBottom=open;
+  const old=gVolumeOutline.geometry;
+  gVolumeOutline.geometry=_makeVolumeOutlineGeometry(open);
+  if(old)old.dispose();
+}
+
 /** Show wireframe box from sidebar volume fields when paused; hides while sim is running. */
 function syncVolumeOutlinePreview(){
   if(!gVolumeOutline)return;
   const mv=_containerModeRaw();
   const volMode=_isVolumeContainerMode();
   const airwayMode=mv==='airway';
-  const show=gPaused && (volMode||airwayMode) && !gPerfSkipDraw;
+  const wantOutline=!!(document.getElementById('chkVolumeOutlineShow')?.checked);
+  const show=wantOutline && gPaused && (volMode||airwayMode) && !gPerfSkipDraw;
   gVolumeOutline.visible=show;
   if(!show)return;
   if(airwayMode&&gSimulator&&gSimulator.syringe&&gSimulator.syringe._airwayVolume){
@@ -5531,6 +6091,7 @@ function syncVolumeOutlinePreview(){
     gVolumeOutline.scale.set(b.halfX*2,b.halfY*2,b.halfZ*2);
     gVolumeOutline.position.set(b.centerX,b.centerY,b.centerZ);
   }else{
+    _setVolumeOutlineOpenBottom(!!document.getElementById('chkVolumeOpenBottom')?.checked);
     const vb=readVolumeBoxParams();
     gVolumeOutline.scale.set(vb.widthMm,vb.heightMm,vb.depthMm);
     gVolumeOutline.position.set(vb.centerX_mm,vb.centerY_mm,vb.centerZ_mm);
@@ -5587,6 +6148,16 @@ function applyFillMeshAutoFitBox(bb){
 
 function onFillMeshShowChange(){
   syncFillMeshPreviewVisibility();
+}
+
+function onVolumeOutlineShowChange(){
+  syncVolumeOutlinePreview();
+}
+
+function onToggleVolumeOpenBottom(on){
+  if(gSimulator&&gSimulator.syringe&&gSimulator.syringe._boxVolume)
+    gSimulator.syringe.openBottom=!!on;
+  syncVolumeOutlinePreview();
 }
 
 function loadFillVolumeObj(evt){
@@ -5713,6 +6284,14 @@ function focusVolumeBox(){
 
 /** Center + framing for invisible box / bronchial tree (sidebar or live sim). */
 function _containerOrbitCenter(){
+  if(gShowcase.active&&gShowcase.root){
+    const box=new THREE.Box3().setFromObject(gShowcase.root);
+    const center=new THREE.Vector3();
+    const size=new THREE.Vector3();
+    box.getCenter(center);
+    box.getSize(size);
+    return{cx:center.x,cy:center.y,cz:center.z,w:size.x,h:size.y,d:size.z};
+  }
   if(gSimulator&&gSimulator.syringe&&(gSimulator.syringe._boxVolume||gSimulator.syringe._airwayVolume)){
     const b=gSimulator.syringe;
     return{cx:b.centerX,cy:b.centerY,cz:b.centerZ,
@@ -5725,7 +6304,7 @@ function _containerOrbitCenter(){
 
 function _isContainerOrbitContentMode(){
   const mv=_containerModeRaw();
-  return _isVolumeContainerMode()||mv==='airway';
+  return _isVolumeContainerMode()||mv==='airway'||_isShowcaseMode();
 }
 
 function _beginContainerOrbit(){
@@ -6223,6 +6802,10 @@ function readVolumeDropHeightMm(){
   return Number.isFinite(v)?Math.max(0,v):0;
 }
 
+function readVolumeOpenBottom(){
+  return !!document.getElementById('chkVolumeOpenBottom')?.checked;
+}
+
 function readAirwayParams(){
   const g=id=>{
     const el=document.getElementById(id);
@@ -6259,6 +6842,7 @@ function readSyringeParams(){
     containerMode,
     airway:readAirwayParams(),
     volumeBox:nanoBox||readVolumeBoxParams(),
+    volumeOpenBottom:readVolumeOpenBottom(),
     volumeDropHeightMm:readVolumeDropHeightMm(),
     barrelDiam  :+document.getElementById('pBarrelDiam').value,
     barrelLen   :+document.getElementById('pBarrelLen').value,
@@ -6275,12 +6859,23 @@ function readSyringeParams(){
     })()}}
 
 function initSimulation(){
+  disposeShowcase();
   if(gSimulator){gSimulator.dispose();gSimulator=null}
   // Hide indenter visuals from any previous run
   if(gIndenterMesh)  gIndenterMesh.visible=false;
   if(gIndenterShaft) gIndenterShaft.visible=false;
   if(gNanoFloorMesh) gNanoFloorMesh.visible=false;
   gNanoRunning=false;
+
+  if(_isShowcaseMode()){
+    initShowcase().catch(err=>{
+      console.error(err);
+      alert('Showcase load failed:\n\n'+err);
+      const lbl=document.getElementById('lblShowcaseStatus');
+      if(lbl) lbl.textContent='Showcase load failed — see console.';
+    });
+    return;
+  }
 
   const nanoMode=_containerModeRaw()==='nanoindent';
   // In nanoindent mode always use a high-res sphere (unless a custom JSON is loaded).
@@ -6436,6 +7031,7 @@ function onRun(){
   document.getElementById('btnRun').textContent=gPaused?'Run':'Stop';
   const pb=document.getElementById('btnPause');
   if(pb)pb.textContent=gPaused?'Resume':'Pause';
+  _volumeLiveOnSimActiveChange(wasPaused, !gPaused);
   // Timer export: if nothing has called Drop yet, start the wall-clock window on first Run
   // (initial particles already spawned at restart).
   if(!gPaused&&gSimulator&&gSimulator.timerExportMode&&gSimulator._timerWallAnchorMs==null){
@@ -6451,16 +7047,19 @@ function onRun(){
 }
 
 function onPauseToggle(){
+  const wasPaused=gPaused;
   gPaused=!gPaused;
   const rb=document.getElementById('btnRun');
   if(rb)rb.textContent=gPaused?'Run':'Stop';
   const pb=document.getElementById('btnPause');
   if(pb)pb.textContent=gPaused?'Resume':'Pause';
+  _volumeLiveOnSimActiveChange(wasPaused, !gPaused);
   syncVolumeOutlinePreview();
 }
 function onRestart(){
   gPaused=true;
   _airwayBakeReset();
+  _volumeLiveRecordReset();
   document.getElementById('btnRun').textContent='Run';
   const pb=document.getElementById('btnPause');
   if(pb)pb.textContent='Resume';
@@ -6576,6 +7175,28 @@ function onColorModeChange(v){
   }
   const sel=document.getElementById('selColorMode');
   if(sel&&sel.value!==v)sel.value=v;
+}
+
+// Update the Hertz small-strain validity banner whenever depth or radius changes.
+function _nanoUpdateHertzWarn(){
+  const el=document.getElementById('nanoHertzWarn');
+  if(!el) return;
+  const depth=parseFloat(document.getElementById('pIndentDepth')?.value)||0.005;
+  const r    =parseFloat(document.getElementById('pIndenterR')?.value)||0.25;
+  const ratio=depth/r;
+  if(ratio<=0.2){
+    el.style.display='none';
+  } else {
+    el.style.display='block';
+    el.style.background='#2a1800';
+    el.style.border='1px solid #7a4400';
+    el.style.color='#ffbb66';
+    el.innerHTML=`<b>⚠ Hertz regime exceeded</b> — &delta;/R&nbsp;=&nbsp;${ratio.toFixed(2)}&nbsp;&gt;&nbsp;0.2. `+
+      `Hertz contact theory assumes small strains (&delta;/R&nbsp;&le;&nbsp;0.2). `+
+      `At 75&nbsp;&micro;m depth with R&nbsp;=&nbsp;0.25&nbsp;mm the ratio is <b>${ratio.toFixed(2)}</b>. `+
+      `Computed moduli will be <em>underestimated</em> relative to linear-elastic theory — `+
+      `use calibration against the bulk reference (132&nbsp;kPa) to correct for this.`;
+  }
 }
 
 async function onRunIndentSweep(){
@@ -6773,7 +7394,9 @@ async function loadUIConfig(){
         if(vb.centerX_mm!==undefined) setVol('pVolCx', vb.centerX_mm);
         if(vb.centerY_mm!==undefined) setVol('pVolCy', vb.centerY_mm);
         if(vb.centerZ_mm!==undefined) setVol('pVolCz', vb.centerZ_mm);
+        if(vb.openBottom!==undefined) setBool('chkVolumeOpenBottom', vb.openBottom);
       }
+      if(cfg.physics.volumeOpenBottom!==undefined) setBool('chkVolumeOpenBottom', cfg.physics.volumeOpenBottom);
       setBool('chkCap',    cfg.physics.enableEndCap);
       if(cfg.physics.blockNeedleInlet!==undefined) setBool('chkNeedleInlet', cfg.physics.blockNeedleInlet);
       if(cfg.physics.cohesiveExtrusionWhenUncapped!==undefined) setBool('chkExtrCohesion', cfg.physics.cohesiveExtrusionWhenUncapped);
@@ -6835,6 +7458,7 @@ async function loadUIConfig(){
       if(cfg.viz.stressDepthMix!==undefined) gTuningOverrides.stressDepthMix=Math.max(0,Math.min(1,+cfg.viz.stressDepthMix));
       if(cfg.viz.stressSampleEveryNFrames!==undefined) gTuningOverrides.stressSampleEveryNFrames=+cfg.viz.stressSampleEveryNFrames;
       if(cfg.viz.normalSampleEveryNFrames!==undefined) gTuningOverrides.normalSampleEveryNFrames=+cfg.viz.normalSampleEveryNFrames;
+      if(cfg.viz.showVolumeBox!==undefined) setBool('chkVolumeOutlineShow', cfg.viz.showVolumeBox);
     }
 
     // Ensure labels reflect whatever we set (even before initSimulation()).
@@ -6854,6 +7478,7 @@ async function loadUIConfig(){
     onPickModeChange(document.getElementById('selPickMode')?.value ?? 'inspect');
     onWallMuChange(document.getElementById('sWallMu')?.value ?? 65);
     onStressGainChange(document.getElementById('sStressGain')?.value ?? 120);
+    syncVolumeOutlinePreview();
 
     if(document.getElementById('selContainerMode')?.value==='airway'){
       applyAirwayUiDefaults(gAirwayUiOverrides);
@@ -6928,6 +7553,65 @@ function _readBoxFillBakeMaxS(){
 
 function _readBoxFillPlayFps(){
   return Math.max(15, Math.min(240, +document.getElementById('pBoxFillPlayFps')?.value||60));
+}
+
+function _readSyringe4kDurS(){
+  return Math.max(1, Math.min(600, +document.getElementById('pSyringe4kDurS')?.value||10));
+}
+
+function _readSyringe4kUncapAtS(){
+  const dur=_readSyringe4kDurS();
+  const v=+document.getElementById('pSyringe4kUncapAtS')?.value;
+  if(!Number.isFinite(v)||v<=0) return 0;
+  return Math.max(0.1, Math.min(dur, v));
+}
+
+function _readSyringe4kPlayFps(){
+  return Math.max(15, Math.min(240, +document.getElementById('pSyringe4kPlayFps')?.value||60));
+}
+
+function _setSyringe4kLabel(t){
+  const el=document.getElementById('lblSyringe4kBake');
+  if(el) el.textContent=t;
+}
+
+function _syringe4kProgressShow(show){
+  const w=document.getElementById('wrapSyringe4kProgress');
+  if(!w) return;
+  w.classList.toggle('is-active', !!show);
+  if(!show){
+    const fill=document.getElementById('syringe4kProgressFill');
+    const bar=document.getElementById('syringe4kProgressBar');
+    if(fill) fill.style.width='0%';
+    if(bar) bar.setAttribute('aria-valuenow','0');
+    const lblPct=document.getElementById('lblSyringe4kBakePct');
+    const lblEta=document.getElementById('lblSyringe4kBakeEta');
+    if(lblPct) lblPct.textContent='0%';
+    if(lblEta) lblEta.textContent='ETA —';
+  }
+}
+
+function _syringe4kProgressUpdate(pb, simDurationS){
+  if(!pb||pb.mode!=='baking') return;
+  const elapsed=_airwayBakeElapsedSimS(pb);
+  const pct=simDurationS>0 ? Math.min(100,(elapsed/simDurationS)*100) : 0;
+  const fill=document.getElementById('syringe4kProgressFill');
+  const bar=document.getElementById('syringe4kProgressBar');
+  const lblPct=document.getElementById('lblSyringe4kBakePct');
+  const lblEta=document.getElementById('lblSyringe4kBakeEta');
+  if(fill) fill.style.width=pct.toFixed(1)+'%';
+  if(bar) bar.setAttribute('aria-valuenow',String(Math.round(pct)));
+  if(lblPct) lblPct.textContent=pct.toFixed(0)+'%';
+  if(lblEta&&pb._bakeWallStartMs!=null){
+    const wallS=(performance.now()-pb._bakeWallStartMs)/1000;
+    const rate=elapsed>0.05?elapsed/wallS:0;
+    let etaStr='ETA —';
+    if(rate>1e-6){
+      const remain=Math.max(0,simDurationS-elapsed);
+      etaStr='ETA '+_formatBakeEta(remain/rate);
+    }
+    if(lblEta) lblEta.textContent=etaStr;
+  }
 }
 
 function _syncBoxFillSequenceUi(){
@@ -7102,21 +7786,105 @@ function applyAirwayUiDefaults(overrides){
   if(lbl) lbl.textContent=d.radiusMm.toFixed(3);
 }
 
+function _isPlainVolumeMode(){
+  return _containerModeRaw()==='volume' && !_boxFillSequenceEnabled();
+}
+
+function _volumeLiveRecordReset(){
+  gVolumeLiveRecord.recording=false;
+  gVolumeLiveRecord.frames=[];
+  gVolumeLiveRecord.playFps=60;
+  _syncExport4kVideoButton();
+}
+
+function _volumeLiveRecording(){
+  return _isPlainVolumeMode() && gVolumeLiveRecord.recording && !gVideoExport.active;
+}
+
+function _volumeLiveCaptureFrame(){
+  const frames=gVolumeLiveRecord.frames;
+  if(frames.length>=AIRWAY_BAKE_FRAME_CAP){
+    if(gVolumeLiveRecord.recording){
+      gVolumeLiveRecord.recording=false;
+      console.warn(`Volume 4K record capped at ${AIRWAY_BAKE_FRAME_CAP} frames (~${AIRWAY_BAKE_SIM_CAP_S|0} s sim).`);
+      _syncExport4kVideoButton();
+    }
+    return;
+  }
+  frames.push(_airwayBakeCaptureFrame());
+  if(frames.length===1 || frames.length%60===0) _syncExport4kVideoButton();
+}
+
+function _volumeLiveOnSimActiveChange(wasPaused, nowRunning){
+  if(!_isPlainVolumeMode()) return;
+  gVolumeLiveRecord.recording=nowRunning;
+  if(nowRunning && wasPaused && gVolumeLiveRecord.frames.length===0 && gSimulator)
+    _volumeLiveCaptureFrame();
+  _syncExport4kVideoButton();
+}
+
+function _videoExportFrameSource(){
+  if(_isPlainVolumeMode() && gVolumeLiveRecord.frames.length){
+    return {frames:gVolumeLiveRecord.frames, playFps:gVolumeLiveRecord.playFps, kind:'volume_live'};
+  }
+  if(gAirwayPlayback.frames.length){
+    const mv=_containerModeRaw();
+    const kind=_boxFillSequenceEnabled() ? 'box_fill' : mv==='syringe' ? 'syringe' : 'airway';
+    return {frames:gAirwayPlayback.frames, playFps:gAirwayPlayback.playFps, kind};
+  }
+  return null;
+}
+
 function _videoExportLoopCount(){
-  return _boxFillSequenceEnabled() ? 1 : VIDEO_EXPORT_LOOPS;
+  if(_boxFillSequenceEnabled() || _isPlainVolumeMode() || _containerModeRaw()==='syringe') return 1;
+  return VIDEO_EXPORT_LOOPS;
 }
 
 function _syncExport4kVideoButton(){
   const btn=document.getElementById('btnExport4kVideo');
   if(!btn) return;
-  const airway=(document.getElementById('selContainerMode')?.value==='airway');
+  const mv=_containerModeRaw();
+  const airway=(mv==='airway');
   const boxFill=_boxFillSequenceEnabled();
-  const n=gAirwayPlayback?.frames?.length||0;
-  const can=(airway||boxFill)&&n>0&&!gVideoExport.active;
-  btn.disabled=!can;
+  const plainVol=_isPlainVolumeMode();
+  const syringe=(mv==='syringe');
+  const showcase=_isShowcaseMode();
+  const showcaseStar=_isShowcaseStarMode();
+  const showcaseInterlock=_isShowcaseStarInterlockMode();
+  const liveN=gVolumeLiveRecord.frames.length;
+  const bakeN=gAirwayPlayback?.frames?.length||0;
+  const n=plainVol ? liveN : bakeN;
+  const can=(showcase&&gShowcase.active) || ((airway||boxFill||plainVol||syringe)&&n>0&&!gVideoExport.active);
+  btn.disabled=!can||gVideoExport.active;
   const loops=_videoExportLoopCount();
   if(gVideoExport.active){
     btn.title='4K export in progress…';
+  }else if(showcase){
+    if(!gShowcase.active){
+      btn.title='Showcase not loaded — switch to Particle showcase and Restart.';
+    }else{
+      const dur=_readShowcaseExportDurS();
+      const fps=_readShowcaseExportFps();
+      btn.title=showcaseInterlock
+        ? `Export ${dur} s of interlocked stars (${fps} fps) as 3840×2400 WebM.`
+        : showcaseStar
+          ? `Export ${dur} s of centered star (${fps} fps) as 3840×2400 WebM.`
+          : `Export ${dur} s of spinning particles (${fps} fps) as 3840×2400 WebM.`;
+    }
+  }else if(plainVol){
+    if(liveN===0){
+      btn.title='Press Run to start recording. Export 4K video anytime while or after sim runs (cleared on Restart).';
+    }else{
+      const rec=gVolumeLiveRecord.recording ? ' · recording' : '';
+      const simS=(liveN/60).toFixed(1);
+      btn.title=`Export live capture (${liveN} frames, ~${simS} s sim${rec}) as 3840×2400 WebM @ 60 fps.`;
+    }
+  }else if(syringe){
+    if(n===0){
+      btn.title='Press Pre-compute & export under Syringe (mm) to bake and export.';
+    }else{
+      btn.title=`Export syringe bake (${n} frames) as 3840×2400 WebM. Or use Pre-compute & export to re-bake.`;
+    }
   }else if(!airway&&!boxFill){
     btn.title='Enable Box fill sequence (invisible box) or Bronchial tree, pre-compute, then export.';
   }else if(n===0){
@@ -7132,6 +7900,7 @@ function _syncExport4kVideoButton(){
 function onContainerModeChange(fromUser){
   const mv=_containerModeRaw();
   const nano=mv==='nanoindent';
+  const showcase=_isShowcaseMode();
   const vol=_isVolumeContainerMode();
   const boxFill=mv==='volume_fill';
   const airway=mv==='airway';
@@ -7139,14 +7908,18 @@ function onContainerModeChange(fromUser){
   const wd=document.getElementById('wrapVolumeDims');
   const ad=document.getElementById('wrapAirwayDims');
   const ex=document.getElementById('wrapSyringePhysicsExtras');
+  const sc=document.getElementById('wrapShowcasePanel');
   const chkBoxFill=document.getElementById('chkBoxFillSequence');
   const ni=document.getElementById('rowNanoindent');
   // In nanoindent mode hide syringe geometry panel, physics extras, volume dims
-  if(ds) ds.style.display=(vol||airway||nano)?'none':'';
+  if(ds) ds.style.display=(vol||airway||nano||showcase)?'none':'';
   if(wd) wd.style.display=vol?'block':'none';
   if(ad) ad.style.display=airway?'block':'none';
-  if(ex) ex.style.display=(vol||airway||nano)?'none':'';
+  if(ex) ex.style.display=(vol||airway||nano||showcase)?'none':'';
+  if(sc) sc.style.display=showcase?'block':'none';
+  _syncShowcasePanelUi();
   if(ni) ni.style.display=nano?'block':'none';
+  if(nano) _nanoUpdateHertzWarn();
   // Hide floor mesh when leaving nanoindent mode
   if(!nano && gNanoFloorMesh) gNanoFloorMesh.visible=false;
   if(!nano && gIndenterMesh)  gIndenterMesh.visible=false;
@@ -7198,7 +7971,7 @@ function _fmtE(E_sim){
   }
   return E_sim.toExponential(3);
 }
-function _unitLabel(){ return gNanoCalib.factor !== null ? 'Pa (calibrated)' : 'sim units'; }
+function _unitLabel(){ return gNanoCalib.factor !== null ? 'kPa (calibrated)' : 'simulation units'; }
 
 /** Run sweep then calibrate factor from mean E vs user-entered reference E. */
 async function nanoRunCalibration(){
@@ -7258,9 +8031,7 @@ function _updateCalibStatus(){
     el.textContent = 'No calibration set — values shown in simulation units.';
   } else {
     const k = gNanoCalib.factor;
-    const kStr = k >= 1e6 ? (k/1e6).toExponential(3)+' MPa/sim'
-                : k >= 1e3 ? (k/1e3).toExponential(3)+' kPa/sim'
-                : k.toExponential(3)+' Pa/sim';
+    const kStr = (k/1e3).toExponential(3)+' kPa/sim';
     el.style.color = '#7eff99';
     el.innerHTML =
       'Calibrated on <b>'+gNanoCalib.shape+'</b> &mdash; '
@@ -7481,16 +8252,18 @@ function nanoExportCSV(){
 
   const calibrated = gNanoCalib.factor !== null;
   const header = calibrated
-    ? 'vertex_index,x_mm,y_mm,z_mm,E_sim,E_Pa,region'
+    ? 'vertex_index,x_mm,y_mm,z_mm,E_sim,E_kPa,region'
     : 'vertex_index,x_mm,y_mm,z_mm,E_sim,region';
   const rows = [header];
+  if(calibrated) rows.unshift(`# Calibrated — E_kPa = E_sim × ${(gNanoCalib.factor/1e3).toExponential(6)} kPa/sim`);
+  else rows.unshift('# Uncalibrated — E_sim in simulation units');
   for(let i=0;i<n;i++){
     const E=modulusMap[i];
     const region=labels[i];
     if(!E || region==='interior') continue;
     const base = `${i},${verts[3*i].toFixed(4)},${verts[3*i+1].toFixed(4)},${verts[3*i+2].toFixed(4)},${E.toExponential(6)}`;
     rows.push(calibrated
-      ? `${base},${(E*gNanoCalib.factor).toFixed(4)},${region}`
+      ? `${base},${(E*gNanoCalib.factor/1e3).toFixed(4)},${region}`
       : `${base},${region}`);
   }
   const blob = new Blob([rows.join('\n')],{type:'text/csv'});
@@ -7588,7 +8361,7 @@ function _renderNanoComparison(){
     + '<button onclick="nanoExportComparisonCSV()" style="font-size:10px;padding:2px 8px;background:#1a2030;color:#7ecfff;border:1px solid #3a5a7a;border-radius:3px;cursor:pointer">Export table CSV</button>'
     + '<button onclick="gNanoResults=[];_renderNanoComparison()" style="font-size:10px;padding:2px 8px;background:#1a2030;color:#99b;border:1px solid #3a4a5a;border-radius:3px;cursor:pointer">Clear</button>'
     + '</div>'
-    + '<div style="font-size:9px;color:#445;margin-top:3px">E values in simulation units. C/F = corner/face ratio (geometry effect).</div>';
+    + `<div style="font-size:9px;color:#445;margin-top:3px">E values in ${unitLbl}. C/F = corner/face ratio (geometry effect).</div>`;
   panel.innerHTML = html;
 }
 
@@ -7597,22 +8370,27 @@ function nanoExportComparisonCSV(){
   if(!gNanoResults.length) return;
   const hasCal = gNanoCalib.factor !== null;
   const k = hasCal ? gNanoCalib.factor : 1;
-  const eSuffix = hasCal ? '_Pa' : '_sim';
+  const eSuffix = hasCal ? '_kPa' : '_sim';
   const calNote = hasCal
-    ? `# Calibration: k=${k.toExponential(4)} Pa/sim  |  ref E=${(gNanoCalib.refE_Pa/1e3).toFixed(3)} kPa (literature Young's modulus for 12.5 wt% GelMA)  |  shape: ${gNanoCalib.shape}\n`
+    ? `# Calibration: k=${(k/1e3).toExponential(4)} kPa/sim  |  ref E=${(gNanoCalib.refE_Pa/1e3).toFixed(3)} kPa  |  shape: ${gNanoCalib.shape}\n`
     : '# No calibration applied — values in simulation units\n';
   const cols = `shape,face_mean${eSuffix},face_std${eSuffix},face_n,`
     + `edge_mean${eSuffix},edge_std${eSuffix},edge_n,`
     + `corner_mean${eSuffix},corner_std${eSuffix},corner_n,`
     + `overall_mean${eSuffix},overall_std${eSuffix},overall_n,corner_face_ratio`;
   const rows = [calNote + cols];
+  const fmtCal = v => (v*k/1e3).toFixed(4);
   for(const r of gNanoResults){
     const cf = r.corner.n>0&&r.face.n>0 ? (r.corner.mean/r.face.mean).toFixed(4) : '';
     rows.push([r.name,
-      (r.face.mean*k).toExponential(4),(r.face.std*k).toExponential(4),r.face.n,
-      (r.edge.mean*k).toExponential(4),(r.edge.std*k).toExponential(4),r.edge.n,
-      (r.corner.mean*k).toExponential(4),(r.corner.std*k).toExponential(4),r.corner.n,
-      (r.overall.mean*k).toExponential(4),(r.overall.std*k).toExponential(4),r.overall.n,
+      hasCal ? fmtCal(r.face.mean) : r.face.mean.toExponential(4),
+      hasCal ? fmtCal(r.face.std) : r.face.std.toExponential(4), r.face.n,
+      hasCal ? fmtCal(r.edge.mean) : r.edge.mean.toExponential(4),
+      hasCal ? fmtCal(r.edge.std) : r.edge.std.toExponential(4), r.edge.n,
+      hasCal ? fmtCal(r.corner.mean) : r.corner.mean.toExponential(4),
+      hasCal ? fmtCal(r.corner.std) : r.corner.std.toExponential(4), r.corner.n,
+      hasCal ? fmtCal(r.overall.mean) : r.overall.mean.toExponential(4),
+      hasCal ? fmtCal(r.overall.std) : r.overall.std.toExponential(4), r.overall.n,
       cf
     ].join(','));
   }
@@ -7760,6 +8538,150 @@ function _videoExportMimeType(){
     if(MediaRecorder.isTypeSupported(m)) return m;
   }
   return null;
+}
+
+/** Output frame indices for 4K export (one entry per encoded frame). */
+function _videoExportOutputSequence(sourceFrameCount, exportLoops){
+  const n=Math.max(1, sourceFrameCount|0);
+  const framesPerLoop=Math.max(1, n-1);
+  const total=framesPerLoop*Math.max(1, exportLoops|0);
+  const seq=[];
+  let frameIdx=0, playhead=0;
+  for(let f=0; f<total; f++){
+    seq.push({i0:frameIdx, alpha:playhead});
+    playhead+=1;
+    while(playhead>=1){
+      playhead-=1;
+      frameIdx++;
+      if(frameIdx>=n-1) frameIdx=0;
+    }
+  }
+  return seq;
+}
+
+function _canvasToJpegBlob(canvas, quality=0.92){
+  return new Promise((resolve, reject)=>{
+    canvas.toBlob(b=>b?resolve(b):reject(new Error('canvas toBlob failed')), 'image/jpeg', quality);
+  });
+}
+
+function _videoExportSetProgress(src, btn, phase, pct, detail){
+  const msg=`4K ${phase} ${pct}% · ${detail}`;
+  if(_isShowcaseMode()) _setShowcaseExportLabel(msg);
+  else if(_boxFillSequenceEnabled()) _setBoxFillBakeLabel(msg);
+  else if(src?.kind!=='volume_live') _setAirwayBakeLabel(msg);
+  else console.log(msg);
+  if(btn) btn.textContent=`4K ${phase}… ${pct}%`;
+}
+
+/**
+ * Phase 2 — pipelined JPEG blob sequence → WebM via MediaRecorder.
+ */
+async function _videoEncodeJpegBlobs(jpegs, fps, mime, btn, progressSrc){
+  const totalOut=jpegs.length;
+  const frameMs=1000/fps;
+  const blitCanvas=document.createElement('canvas');
+  blitCanvas.width=VIDEO_EXPORT_4K_W;
+  blitCanvas.height=VIDEO_EXPORT_4K_H;
+  const blitCtx=blitCanvas.getContext('2d',{alpha:false});
+  if(!blitCtx) throw new Error('2D canvas unavailable for video encode');
+
+  const stream=blitCanvas.captureStream(0);
+  const track=stream.getVideoTracks()[0];
+  const chunks=[];
+  const recorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:60_000_000});
+  recorder.ondataavailable=e=>{if(e.data?.size>0) chunks.push(e.data);};
+  const stopped=new Promise(resolve=>{recorder.onstop=resolve;});
+
+  try{
+    recorder.start();
+    await _sleepMs(80);
+
+    let bmpPromise=createImageBitmap(jpegs[0]);
+    const encodeStart=performance.now();
+
+    for(let f=0; f<totalOut; f++){
+      const nextPromise=(f+1<totalOut) ? createImageBitmap(jpegs[f+1]) : null;
+      const bmp=await bmpPromise;
+      blitCtx.drawImage(bmp,0,0,VIDEO_EXPORT_4K_W,VIDEO_EXPORT_4K_H);
+      bmp.close();
+      if(track?.requestFrame) track.requestFrame();
+
+      const nextTarget=encodeStart+(f+1)*frameMs;
+      const wait=nextTarget-performance.now();
+      if(wait>1) await _sleepMs(wait);
+
+      bmpPromise=nextPromise;
+
+      if(f%20===0 || f===totalOut-1){
+        const pct=((f+1)/totalOut*100)|0;
+        _videoExportSetProgress(progressSrc, btn, 'encode', pct,
+          `${f+1}/${totalOut} frames @ ${fps} fps`);
+      }
+    }
+
+    await _sleepMs(frameMs*3);
+  }finally{
+    try{if(recorder.state==='recording') recorder.stop();}catch(_e){}
+  }
+  await stopped;
+  return chunks;
+}
+
+/**
+ * Two-phase 4K export.
+ *
+ * Phase 1 — Pre-render (complete, no timing pressure):
+ *   Every output frame is rendered at full 3840×2400 WebGL quality and
+ *   captured as a JPEG blob. The MediaRecorder is not running yet, so
+ *   there are no frame-timing obligations.
+ *
+ * Phase 2 — Pipelined encode (smooth 60 fps):
+ *   The decode of frame N+1 is kicked off *before* sleeping for frame N's
+ *   interval, so JPEG decode overlaps the sleep.  The encoder therefore
+ *   never stalls waiting for a decode to finish and delivers a continuous
+ *   stream to MediaRecorder at the target fps.
+ *   Absolute-timestamp pacing (encodeStart + f * frameMs) prevents drift.
+ */
+async function _videoExport4KTwoPhase(opts){
+  const {
+    src, exportFrames, fps, exportLoops, mime, btn,
+    offRend, offCanvas, expCam, orbitPivot, orbitBase, orbitDPS, orbitAz0,
+  }=opts;
+  const n=exportFrames.length;
+  const frameMs=1000/fps;
+  const seq=_videoExportOutputSequence(n, exportLoops);
+  const totalOut=seq.length;
+
+  // ── Phase 1: render every output frame → JPEG blob ─────────────────
+  const jpegs=new Array(totalOut);
+  const exportNorm={_normCounter:0};
+  let orbitAz=orbitAz0;
+  const advanceOrbit=()=>{
+    if(!orbitPivot) return;
+    orbitAz+=orbitDPS*(1/fps)*(Math.PI/180);
+    const off=orbitBase.clone().applyAxisAngle(_ORBIT_Y_AXIS, orbitAz);
+    expCam.position.copy(orbitPivot).add(off);
+    expCam.lookAt(orbitPivot);
+    expCam.updateMatrixWorld();
+  };
+
+  for(let f=0; f<totalOut; f++){
+    const {i0, alpha}=seq[f];
+    _airwayApplyFrameBlend(i0, alpha, exportNorm, exportFrames);
+    advanceOrbit();
+    offRend.render(gScene, expCam);
+    jpegs[f]=await _canvasToJpegBlob(offCanvas, 0.88);
+    if(f%15===0 || f===totalOut-1){
+      const pct=((f+1)/totalOut*100)|0;
+      _videoExportSetProgress(src, btn, 'pre-render', pct,
+        `${f+1}/${totalOut} frames`);
+      await new Promise(r=>requestAnimationFrame(r));
+    }
+  }
+
+  const chunks=await _videoEncodeJpegBlobs(jpegs, fps, mime, btn, src);
+  return chunks;
 }
 
 function _saveRendererViewport(){
@@ -8054,6 +8976,117 @@ function onBoxFillBakeCancel(){
   _setBoxFillBakeLabel('Cancelling box fill sequence…');
 }
 
+function onSyringe4kBakeCancel(){
+  if(gAirwayPlayback.mode!=='baking'&&!gAirwayPlayback._asyncBaking) return;
+  gAirwayPlayback._bakeAbort=true;
+  _setSyringe4kLabel('Cancelling syringe pre-compute…');
+}
+
+async function onSyringe4kBake(){
+  if(_containerModeRaw()!=='syringe'){
+    alert('Switch to Syringe (visible) container mode first.');
+    return;
+  }
+  if(gAirwayPlayback._asyncBaking) return;
+
+  const simDurationS=_readSyringe4kDurS();
+  const uncapAtS=_readSyringe4kUncapAtS();
+  const playFps=_readSyringe4kPlayFps();
+  const autoExport=!!document.getElementById('chkSyringe4kAuto4k')?.checked;
+
+  gPaused=true;
+  gFrameIdx=0;
+  initSimulation();
+  _applyContainerOrbitMode();
+
+  // Scheduled uncap: start capped, release at uncapAtS.
+  gSyringe4kBakeUncapAtS=(uncapAtS>0)?uncapAtS:null;
+  if(gSimulator?.syringe){
+    if(uncapAtS>0){
+      gSimulator.syringe.capActive=true;
+      const chkCap=document.getElementById('chkCap');
+      if(chkCap) chkCap.checked=true;
+    }
+    gSimulator.extrusionCohesionEnabled=!!(document.getElementById('chkExtrCohesion')?.checked ?? true);
+  }
+
+  const pb=gAirwayPlayback;
+  pb._bakeAbort=false;
+  pb._multiSegmentBake=true;  // so _airwayBakeOnStep sets _segmentDone instead of calling _airwayBakeFinish
+  pb._segmentDone=false;
+  pb._boxFillSegmentIdx=0;
+  pb.mode='baking';
+  pb._asyncBaking=true;
+  pb.frames=[];
+  pb.frameIdx=0;
+  pb.playhead=0;
+  pb.maxSimS=simDurationS;
+  pb.playFps=playFps;
+  pb._savedPerfSkip=gPerfSkipDraw;
+  gPerfSkipDraw=true;
+  pb._bakeSimStart=0;
+
+  const rb=document.getElementById('btnRun');
+  if(rb) rb.textContent='Run';
+  const pbtn=document.getElementById('btnPause');
+  if(pbtn) pbtn.textContent='Resume';
+  const bakeBtn=document.getElementById('btnSyringe4kBake');
+  if(bakeBtn) bakeBtn.disabled=true;
+  const cancelBtn=document.getElementById('btnSyringe4kBakeCancel');
+  if(cancelBtn) cancelBtn.style.display='inline-block';
+
+  pb._bakeWallStartMs=performance.now();
+  _syringe4kProgressShow(true);
+  const uncapMsg=uncapAtS>0?`, uncap @ ${uncapAtS} s`:'';
+  _setSyringe4kLabel(`Pre-computing ${simDurationS} s of syringe simulation${uncapMsg}…`);
+  console.log(`Syringe 4K bake: ${simDurationS} sim s at 60 Hz${uncapMsg}`);
+
+  const BATCH=48;
+  try{
+    while(pb.mode==='baking'&&!pb._bakeAbort&&!pb._segmentDone){
+      for(let i=0;i<BATCH&&pb.mode==='baking'&&!pb._bakeAbort&&!pb._segmentDone;i++)
+        gSimulator.simulate(FIXED_DT);
+      if(pb.mode!=='baking'||pb._bakeAbort) break;
+      _syringe4kProgressUpdate(pb, simDurationS);
+      await new Promise(r=>setTimeout(r,0));
+    }
+
+    if(pb._bakeAbort&&pb.mode!=='playing'){
+      pb.mode='off';
+      pb.frames=[];
+      gPerfSkipDraw=pb._savedPerfSkip;
+      _syringe4kProgressShow(false);
+      _setSyringe4kLabel('Syringe pre-compute cancelled.');
+    }else if(pb.frames.length){
+      const n=pb.frames.length;
+      const elapsed=_airwayBakeElapsedSimS(pb);
+      const msg=`Syringe: ${n} frames (${elapsed.toFixed(1)} s sim). Looping playback.`;
+      _airwayBakeFinish(msg);
+      _syringe4kProgressShow(false);
+      _setSyringe4kLabel(msg+' · Run = live physics');
+      if(autoExport) await onExportAirwayVideo4K();
+    }else{
+      pb.mode='off';
+      gPerfSkipDraw=pb._savedPerfSkip;
+      _syringe4kProgressShow(false);
+      _setSyringe4kLabel('Syringe pre-compute produced no frames.');
+    }
+  }finally{
+    gSyringe4kBakeUncapAtS=null;
+    pb._asyncBaking=false;
+    pb._multiSegmentBake=false;
+    pb._segmentDone=false;
+    if(bakeBtn) bakeBtn.disabled=false;
+    if(cancelBtn) cancelBtn.style.display='none';
+    if(pb.mode==='baking'){
+      gPerfSkipDraw=pb._savedPerfSkip;
+      pb.mode='off';
+      _syringe4kProgressShow(false);
+    }
+    _syncExport4kVideoButton();
+  }
+}
+
 async function _boxFillBakeSegment(pb, segmentIdx, targetFill){
   pb._segmentDone=false;
   pb._boxFillSegmentIdx=segmentIdx;
@@ -8187,6 +9220,7 @@ async function onBoxFillSequenceBake(){
 
 function _airwayBakeReset(){
   _airwayClearPlaybackStats();
+  gSyringe4kBakeUncapAtS=null;
   gAirwayPlayback._bakeAbort=true;
   gAirwayPlayback._asyncBaking=false;
   gAirwayPlayback._multiSegmentBake=false;
@@ -8318,10 +9352,14 @@ function _airwayBakeOnStep(){
     return;
   }
   if(n%90===0){
-    if(pb._multiSegmentBake)
-      _boxFillBakeProgressUpdate(pb, pb._boxFillSegmentIdx|0, gBoxFillSequence.targetFill);
-    else
+    if(pb._multiSegmentBake){
+      if(_containerModeRaw()==='syringe')
+        _syringe4kProgressUpdate(pb, pb.maxSimS);
+      else
+        _boxFillBakeProgressUpdate(pb, pb._boxFillSegmentIdx|0, gBoxFillSequence.targetFill);
+    }else{
       _airwayBakeProgressUpdate(pb);
+    }
   }
 }
 
@@ -8344,7 +9382,9 @@ function _airwayBakeFinish(msg){
   pb.mode='playing';
   pb.frameIdx=0;
   pb.playhead=0;
-  pb.playFps=_boxFillSequenceEnabled() ? _readBoxFillPlayFps() : _airwayReadPlayFps();
+  pb.playFps=_boxFillSequenceEnabled() ? _readBoxFillPlayFps()
+    : _containerModeRaw()==='syringe' ? _readSyringe4kPlayFps()
+    : _airwayReadPlayFps();
   pb._lastPlayMs=performance.now();
   pb._normCounter=0;
   gPaused=true;
@@ -8357,7 +9397,9 @@ function _airwayBakeFinish(msg){
   const pbtn=document.getElementById('btnPause');
   if(pbtn) pbtn.textContent='Resume';
   const f0=pb.frames[0];
-  const setLbl=_boxFillSequenceEnabled()?_setBoxFillBakeLabel:_setAirwayBakeLabel;
+  const setLbl=_boxFillSequenceEnabled()?_setBoxFillBakeLabel
+    :_containerModeRaw()==='syringe'?_setSyringe4kLabel
+    :_setAirwayBakeLabel;
   if(f0&&!_airwayFrameCol(f0))
     setLbl((msg||'Playback looping')+` · re-bake for colors & stats`);
   else
@@ -8372,12 +9414,12 @@ function _airwayApplyFrameDiscrete(idx){
 }
 
 /** Interpolate baked frames i0→i1 (same blending as live playback). */
-function _airwayApplyFrameBlend(i0, alpha, normCounterRef){
-  const pb=gAirwayPlayback;
-  if(!pb.frames.length||!gSimulator) return;
-  const i1=Math.min(i0+1, pb.frames.length-1);
+function _airwayApplyFrameBlend(i0, alpha, normCounterRef, framesOverride){
+  const frames=framesOverride||gAirwayPlayback.frames;
+  if(!frames.length||!gSimulator) return;
+  const i1=Math.min(i0+1, frames.length-1);
   const a=Math.max(0, Math.min(1, alpha));
-  const f0=pb.frames[i0], f1=pb.frames[i1];
+  const f0=frames[i0], f1=frames[i1];
   const p0=_airwayFramePos(f0), p1=_airwayFramePos(f1);
   const c0=_airwayFrameCol(f0), c1=_airwayFrameCol(f1);
   const out=gSimulator.allPositions;
@@ -8394,20 +9436,146 @@ function _airwayApplyFrameBlend(i0, alpha, normCounterRef){
   const geo=gSimulator.particleMesh.geometry;
   geo.attributes.position.needsUpdate=true;
   if(c0&&c1) geo.attributes.color.needsUpdate=true;
-  const ctr=normCounterRef||pb;
+  const ctr=normCounterRef||gAirwayPlayback;
   if((++ctr._normCounter)%3===0) geo.computeVertexNormals();
+}
+
+function onExport4kVideo(){
+  if(_isShowcaseMode()) onShowcaseExport4K();
+  else onExportAirwayVideo4K();
+}
+
+function onShowcaseExportCancel(){
+  gShowcaseExportCancel=true;
+  _setShowcaseExportLabel('Cancelling showcase export…');
+}
+
+async function onShowcaseExport4K(){
+  if(gVideoExport.active) return;
+  if(!gShowcase.active||!gShowcase.items.length||!gScene||!gCamera){
+    alert('Showcase not ready. Switch to Particle showcase and press Restart.');
+    return;
+  }
+  const mime=_videoExportMimeType();
+  if(!mime){
+    alert('This browser cannot encode video (MediaRecorder unsupported). Try Chrome or Edge.');
+    return;
+  }
+
+  const durS=_readShowcaseExportDurS();
+  const fps=_readShowcaseExportFps();
+  const totalOut=Math.max(1, Math.round(durS*fps));
+  const src={kind:'showcase', playFps:fps};
+
+  gVideoExport.active=true;
+  gShowcaseExportCancel=false;
+  _syncExport4kVideoButton();
+
+  const topBtn=document.getElementById('btnExport4kVideo');
+  const panelBtn=document.getElementById('btnShowcaseExport4k');
+  const cancelBtn=document.getElementById('btnShowcaseExportCancel');
+  if(topBtn) topBtn.textContent='Exporting…';
+  if(panelBtn){ panelBtn.disabled=true; panelBtn.textContent='Exporting…'; }
+  if(cancelBtn) cancelBtn.style.display='inline-block';
+
+  const savedLive=_showcaseSaveLiveState();
+
+  const offCanvas=document.createElement('canvas');
+  offCanvas.width=VIDEO_EXPORT_4K_W;
+  offCanvas.height=VIDEO_EXPORT_4K_H;
+  const offRend=new THREE.WebGLRenderer({canvas:offCanvas, antialias:true, preserveDrawingBuffer:true});
+  offRend.shadowMap.enabled=true;
+  offRend.shadowMap.type=THREE.PCFSoftShadowMap;
+  offRend.setPixelRatio(1);
+  offRend.setSize(VIDEO_EXPORT_4K_W, VIDEO_EXPORT_4K_H, false);
+
+  const expCam=new THREE.PerspectiveCamera(
+    gCamera.fov, VIDEO_EXPORT_4K_W/VIDEO_EXPORT_4K_H, gCamera.near, gCamera.far);
+  expCam.position.copy(gCamera.position);
+  expCam.quaternion.copy(gCamera.quaternion);
+  expCam.updateMatrixWorld();
+
+  const orbitSrc=gContainerOrbitState;
+  const orbitPivot=orbitSrc ? orbitSrc.pivot.clone() : gCamCtrl?.target?.clone() || null;
+  const orbitBase=orbitSrc ? orbitSrc.baseOffset.clone()
+    : orbitPivot ? expCam.position.clone().sub(orbitPivot) : null;
+  const orbitDPS=orbitSrc ? (orbitSrc.degPerSec||18) : 0;
+  let orbitAz=orbitSrc ? (orbitSrc.azimuth||0) : 0;
+
+  const t0=performance.now();
+  try{
+    _setShowcaseExportLabel(`Pre-rendering 0/${totalOut} frames · ${durS} s @ ${fps} fps…`);
+
+    const jpegs=new Array(totalOut);
+    for(let f=0; f<totalOut; f++){
+      if(gShowcaseExportCancel) throw new Error('Showcase export cancelled.');
+      _showcaseApplyExportTime(f/fps);
+      if(orbitPivot&&orbitBase){
+        orbitAz+=orbitDPS*(1/fps)*(Math.PI/180);
+        const off=orbitBase.clone().applyAxisAngle(_ORBIT_Y_AXIS, orbitAz);
+        expCam.position.copy(orbitPivot).add(off);
+        expCam.lookAt(orbitPivot);
+        expCam.updateMatrixWorld();
+      }
+      offRend.render(gScene, expCam);
+      jpegs[f]=await _canvasToJpegBlob(offCanvas, 0.88);
+      if(f%15===0 || f===totalOut-1){
+        const pct=((f+1)/totalOut*100)|0;
+        _videoExportSetProgress(src, topBtn||panelBtn, 'pre-render', pct,
+          `${f+1}/${totalOut} frames`);
+        await new Promise(r=>requestAnimationFrame(r));
+      }
+    }
+
+    const chunks=await _videoEncodeJpegBlobs(jpegs, fps, mime, topBtn||panelBtn, src);
+    const ext=mime.includes('webm')?'webm':'mp4';
+    const blob=new Blob(chunks,{type:mime.split(';')[0]});
+    const wStr=`${VIDEO_EXPORT_4K_W}x${VIDEO_EXPORT_4K_H}`;
+    _downloadBlob(blob,
+      `${_showcaseExportFilenamePrefix()}_${durS}s_${fps}fps_${wStr}_${Date.now()}.${ext}`);
+    const doneMsg=`Exported showcase ${wStr} WebM · ${durS} s @ ${fps} fps · ${totalOut} frames.`;
+    _setShowcaseExportLabel(doneMsg);
+    console.log(
+      `Showcase 4K export: ${totalOut} frames · ${durS} s @ ${fps} fps · `+
+      `${(blob.size/1e6).toFixed(1)} MB · wall ${((performance.now()-t0)/1000).toFixed(0)} s`);
+  }catch(err){
+    console.error(err);
+    if(gShowcaseExportCancel){
+      _setShowcaseExportLabel('Showcase export cancelled.');
+    }else{
+      alert('4K export failed: '+err);
+      _setShowcaseExportLabel('4K export failed — see console.');
+    }
+  }finally{
+    offRend.dispose();
+    _showcaseRestoreLiveState(savedLive);
+    gVideoExport.active=false;
+    gShowcaseExportCancel=false;
+    if(topBtn) topBtn.textContent='Export 4K video';
+    if(panelBtn){ panelBtn.disabled=false; panelBtn.textContent='Export 4K video'; }
+    if(cancelBtn) cancelBtn.style.display='none';
+    _syncExport4kVideoButton();
+    console.log(`Showcase export wall time: ${((performance.now()-t0)/1000).toFixed(0)} s`);
+  }
 }
 
 async function onExportAirwayVideo4K(){
   if(gVideoExport.active) return;
-  const pb=gAirwayPlayback;
-  if(!pb.frames.length){
+  const src=_videoExportFrameSource();
+  if(!src||!src.frames.length){
     const boxFill=_boxFillSequenceEnabled();
-    alert(boxFill
-      ? 'No baked frames yet. Run Pre-compute fill sequence (or Run with pre-compute enabled), then export.'
-      : 'No baked frames yet. In Bronchial tree mode, run Pre-compute & play (or Run with pre-compute enabled), then export.');
+    const plainVol=_isPlainVolumeMode();
+    const syringe=_containerModeRaw()==='syringe';
+    alert(plainVol
+      ? 'No frames recorded yet. Press Run to start recording, then export anytime.'
+      : boxFill
+        ? 'No baked frames yet. Run Pre-compute fill sequence (or Run with pre-compute enabled), then export.'
+        : syringe
+          ? 'No baked frames yet. Press Pre-compute & export under Syringe (mm) to bake first.'
+          : 'No baked frames yet. In Bronchial tree mode, run Pre-compute & play (or Run with pre-compute enabled), then export.');
     return;
   }
+  const exportFrames=src.frames;
   if(!gSimulator||!gScene||!gCamera){
     alert('Simulation not ready.');
     return;
@@ -8418,14 +9586,14 @@ async function onExportAirwayVideo4K(){
     return;
   }
   const btn=document.getElementById('btnExport4kVideo');
-  const n=pb.frames.length;
-  const fps=Math.max(15, pb.playFps||_airwayReadPlayFps());
-  const frameMs=1000/fps;
+  const n=exportFrames.length;
+  const fps=Math.max(15, src.playFps||_airwayReadPlayFps());
   const framesPerLoop=Math.max(1, n-1);
   const exportLoops=_videoExportLoopCount();
   const totalOutFrames=framesPerLoop*exportLoops;
 
   gVideoExport.active=true;
+  gVolumeLiveRecord.recording=false;
   _syncExport4kVideoButton();
   if(btn) btn.textContent='Exporting…';
   // Pause live physics/playback while we run the export loop.
@@ -8453,116 +9621,45 @@ async function onExportAirwayVideo4K(){
   expCam.quaternion.copy(gCamera.quaternion);
   expCam.updateMatrixWorld();
 
-  // ── Orbit state snapshot ─────────────────────────────────────
-  // If the orbit is active, we advance it by exactly 1/fps s per frame
-  // so the exported video matches what the viewer sees during playback.
   const orbitSrc=gContainerOrbitState;
-  let orbitPivot=null, orbitBase=null, orbitDPS=0, orbitAz=0;
-  if(orbitSrc){
-    orbitPivot=orbitSrc.pivot.clone();
-    orbitBase=orbitSrc.baseOffset.clone();
-    orbitDPS=orbitSrc.degPerSec||18;
-    orbitAz=orbitSrc.azimuth||0;
-  }
+  const orbitPivot=orbitSrc ? orbitSrc.pivot.clone() : null;
+  const orbitBase=orbitSrc ? orbitSrc.baseOffset.clone() : null;
+  const orbitDPS=orbitSrc ? (orbitSrc.degPerSec||18) : 0;
+  const orbitAz0=orbitSrc ? (orbitSrc.azimuth||0) : 0;
 
-  // ── MediaRecorder ─────────────────────────────────────────────
-  // captureStream(fps) embeds the correct fps into the WebM container so
-  // every player knows the intended playback speed.  requestFrame() stamps
-  // each rendered canvas snapshot into the stream at the right moment.
-  const stream=offCanvas.captureStream(fps);
-  const track=stream.getVideoTracks()[0];
-  const chunks=[];
-  const recorder=new MediaRecorder(stream,{mimeType:mime, videoBitsPerSecond:60000000});
-  recorder.ondataavailable=e=>{if(e.data&&e.data.size>0) chunks.push(e.data);};
-  const stopped=new Promise(resolve=>{recorder.onstop=resolve;});
   const t0=performance.now();
-  let frameIdx=0, playhead=0;
-  const exportNorm={_normCounter:0};
-
-  const advanceOrbit=()=>{
-    if(!orbitPivot) return;
-    orbitAz+=orbitDPS*(1/fps)*(Math.PI/180);
-    const off=orbitBase.clone().applyAxisAngle(_ORBIT_Y_AXIS, orbitAz);
-    expCam.position.copy(orbitPivot).add(off);
-    expCam.lookAt(orbitPivot);
-    expCam.updateMatrixWorld();
-  };
-
-  /** One playback tick; returns true when the baked loop wraps (drop restarts). */
-  const exportTick=()=>{
-    _airwayApplyFrameBlend(frameIdx, playhead, exportNorm);
-    advanceOrbit();
-    offRend.render(gScene, expCam);
-    playhead+=1;
-    let wrapped=false;
-    while(playhead>=1){
-      playhead-=1;
-      frameIdx++;
-      if(frameIdx>=n-1){
-        frameIdx=0;
-        wrapped=true;
-      }
-    }
-    return wrapped;
-  };
-
   try{
-    // Warm up GPU + encoder on real baked state (avoids a blank-frame jump into frame 0).
-    _airwayApplyFrameBlend(0, 0, exportNorm);
-    advanceOrbit();
-    offRend.render(gScene, expCam);
-    const warmupSteps=Math.min(24, framesPerLoop);
-    for(let w=0;w<warmupSteps;w++){
-      exportTick();
-      await _sleepMs(frameMs*0.5);
-    }
-    frameIdx=0;
-    playhead=0;
-    exportNorm._normCounter=0;
-    _airwayApplyFrameBlend(0, 0, exportNorm);
-    advanceOrbit();
-    offRend.render(gScene, expCam);
-
-    recorder.start();
-    await _sleepMs(frameMs);
-
-    for(let f=0;f<totalOutFrames;f++){
-      exportTick();
-      if(track?.requestFrame) track.requestFrame();
-      await _sleepMs(frameMs);
-
-      if(f%20===0){
-        const pct=((f+1)/totalOutFrames*100)|0;
-        const loopLbl=exportLoops===1?'sequence':`${exportLoops} loops`;
-        const lblFn=_boxFillSequenceEnabled()?_setBoxFillBakeLabel:_setAirwayBakeLabel;
-        lblFn(`4K export ${pct}% (${f+1}/${totalOutFrames}) · ${loopLbl} · ${fps} fps`);
-        await new Promise(r=>requestAnimationFrame(r));
-      }
-    }
-    await _sleepMs(frameMs*3);
-    recorder.stop();
-    await stopped;
+    const chunks=await _videoExport4KTwoPhase({
+      src, exportFrames, fps, exportLoops, mime, btn,
+      offRend, offCanvas, expCam,
+      orbitPivot, orbitBase, orbitDPS, orbitAz0,
+    });
     const ext=mime.includes('webm')?'webm':'mp4';
     const blob=new Blob(chunks,{type:mime.split(';')[0]});
     const durS=(totalOutFrames/fps).toFixed(1);
     const wStr=`${VIDEO_EXPORT_4K_W}x${VIDEO_EXPORT_4K_H}`;
-    const namePrefix=_boxFillSequenceEnabled()?'box_fill_sequence':'bronchial_bake';
+    const namePrefix=src.kind==='volume_live'?'box_volume'
+      :src.kind==='box_fill'?'box_fill_sequence'
+      :src.kind==='syringe'?'syringe_bake'
+      :'bronchial_bake';
     _downloadBlob(blob,
       `${namePrefix}_${exportLoops}x${n}f_${fps}fps_${wStr}_${Date.now()}.${ext}`);
     console.log(
       `4K export: ${exportLoops} loop(s) · ${totalOutFrames} frames · ${durS} s @ ${fps} fps · `+
-      `${(blob.size/1e6).toFixed(1)} MB`);
+      `${(blob.size/1e6).toFixed(1)} MB · wall ${((performance.now()-t0)/1000).toFixed(0)} s`);
     const doneMsg=exportLoops===1
       ? `Exported full sequence (${totalOutFrames} frames) ${wStr} WebM · ${durS} s @ ${fps} fps.`
       : `Exported ${exportLoops}× loop (${totalOutFrames} frames) ${wStr} WebM · ${durS} s @ ${fps} fps.`;
     if(_boxFillSequenceEnabled()) _setBoxFillBakeLabel(doneMsg);
-    else _setAirwayBakeLabel(doneMsg);
+    else if(src.kind==='syringe') _setSyringe4kLabel(doneMsg);
+    else if(src.kind!=='volume_live') _setAirwayBakeLabel(doneMsg);
+    else console.log(doneMsg);
   }catch(err){
     console.error(err);
     alert('4K export failed: '+err);
-    _setAirwayBakeLabel('4K export failed — see console.');
+    if(src.kind==='syringe') _setSyringe4kLabel('4K export failed — see console.');
+    else if(src.kind!=='volume_live') _setAirwayBakeLabel('4K export failed — see console.');
   }finally{
-    try{if(recorder.state==='recording') recorder.stop();}catch(_e){}
     offRend.dispose();
     gVideoExport.active=false;
     if(btn) btn.textContent='Export 4K video';
@@ -8614,7 +9711,8 @@ function _stepPhysics(dt){
   _physicsAcc = Math.min(_physicsAcc, MAX_CATCHUP_SEC);
   while(_physicsAcc >= FIXED_DT){
     gSimulator.simulate(FIXED_DT);
-    if(gAirwayPlayback.mode!=='baking') gSimulator.pushMetricsRow(gFrameIdx);
+    if(_volumeLiveRecording()) _volumeLiveCaptureFrame();
+    else if(gAirwayPlayback.mode!=='baking') gSimulator.pushMetricsRow(gFrameIdx);
     gFrameIdx++;
     _physicsAcc -= FIXED_DT;
     if(gSimulator._autoPauseAfterSettle){
@@ -8651,6 +9749,7 @@ function _physicsTick(){
   if(!_lastPhysicsMs) _lastPhysicsMs = now;
   let dt = (now - _lastPhysicsMs) / 1000;
   _lastPhysicsMs = now;
+  if(gShowcase.active) return;
   if(!gPaused && gSimulator){
     if(gAirwayPlayback.mode==='baking'&&gAirwayPlayback._asyncBaking) return;
     if(gPerfSkipDraw && gPerfSimMul > 1) dt *= gPerfSimMul;
@@ -8659,6 +9758,13 @@ function _physicsTick(){
 }
 
 function _updateStats(){
+  if(gShowcase.active){
+    const tEl=document.getElementById('statTime');
+    if(tEl) tEl.textContent=gShowcase.timeS.toFixed(1);
+    const msEl=document.getElementById('statMs');
+    if(msEl) msEl.textContent=_renderMsEMA.toFixed(1);
+    return;
+  }
   if(!gSimulator) return;
   if(gPerfSkipDraw){
     const t=performance.now();
@@ -8711,6 +9817,7 @@ function _renderLoop(){
   requestAnimationFrame(_renderLoop);
   syncVolumeOutlinePreview();
   const now=performance.now();
+  if(gShowcase.active) _showcaseStep(now);
   if(gPerfSkipDraw){
     if(gPerfDeadlineMs!=null && now>=gPerfDeadlineMs){
       gPerfSkipDraw=false;

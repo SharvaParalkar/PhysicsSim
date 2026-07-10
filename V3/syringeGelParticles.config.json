@@ -40,6 +40,7 @@
       "centerY_mm": 10,
       "centerZ_mm": 0
     },
+    "volumeOpenBottom": false,
 
     "enableEndCap": true,
     "blockNeedleInlet": false,
@@ -61,13 +62,14 @@
     "wallAllowPenetrationMm": 0.08,
 
     "contactRestDistFactor": 0.94,
-    "contactBoundingWeight": 0.5,
+    "contactBoundingWeight": 0.05,
     "contactCompliance": 0.008,
     "contactIterations": 7,
     "maxContactCorrFrac": 0.48,
     "velDampingPerSec": 18
   },
   "viz": {
+    "showVolumeBox": true,
     "colorMode": "stress",
     "stressGain": 0.72,
     "stressDepthMix": 0.52,
