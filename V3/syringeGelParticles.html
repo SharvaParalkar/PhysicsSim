@@ -619,6 +619,60 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
       <div class="row"><label></label>
         <span id="lblSweepProgress" style="font-size:11px;color:#7a9abd">Click the particle surface to indent at that point. Bottom vertices are substrate-pinned for accurate modulus.</span></div>
 
+      <!-- ── Interactive indent playground (separate workflow) ── -->
+      <div id="nanoPlaygroundPanel" style="margin-top:8px;border-top:1px solid #2a4a6a;padding-top:8px">
+        <div style="color:#7ecfff;font-weight:600;font-size:11px;margin-bottom:6px"
+             title="Place a high-res particle, orient it, click to position the probe, then adjust depth with live mesh deformation">
+          INTERACTIVE INDENT PLAYGROUND</div>
+        <div style="font-size:9px;color:#667;margin-bottom:6px;line-height:1.5">
+          Separate from sweep / point-indent. Switch shapes anytime. Adjust indenter size live. Export PLY with stress colors + indenter as separate entities.
+        </div>
+        <div class="row"><label title="High-res particle geometry">Playground shape</label>
+          <select id="selPlaygroundShape" onchange="nanoPlaygroundOnShapeChange(this.value)" style="width:auto;flex:1">
+            <option value="HIRES_Cube600M.json">Cube</option>
+            <option value="HIRES_Cyl600M.json">Cylinder</option>
+            <option value="HIRES_Hex600M.json">Hexagon</option>
+            <option value="HIRES_Tri600M.json">Triangle prism</option>
+            <option value="HIRES_Star600M.json">Star (5-arm)</option>
+          </select>
+          <button class="btn" id="btnPgSwitchShape" onclick="nanoPlaygroundSwitchShape()" style="display:none;font-size:10px;padding:3px 8px;background:#1a2a3a;border:1px solid #4a7a9a;color:#7ecfff;white-space:nowrap"
+                  title="Reload the selected shape (keeps rotation)">Switch shape</button></div>
+        <div class="row" id="rowPgIndenterR"><label title="Spherical probe tip radius for playground indents">Playground indenter R (mm)</label>
+          <input type="number" id="pgIndenterR" value="0.25" min="0.005" max="1.0" step="0.005"
+                 title="Tip radius in mm — 0.25 mm = 500 µm diameter (sweep default)"
+                 onchange="nanoPlaygroundOnIndenterRChange()" oninput="nanoPlaygroundOnIndenterRChange()"></div>
+        <div class="row"><label>Rotation X</label>
+          <input type="range" id="pgRotX" min="-180" max="180" value="0" step="1"
+                 style="flex:1" oninput="nanoPlaygroundOnRotChange()">
+          <span id="lblPgRotX" style="font-size:10px;color:#7a9abd;min-width:34px;text-align:right">0°</span></div>
+        <div class="row"><label>Rotation Y</label>
+          <input type="range" id="pgRotY" min="-180" max="180" value="0" step="1"
+                 style="flex:1" oninput="nanoPlaygroundOnRotChange()">
+          <span id="lblPgRotY" style="font-size:10px;color:#7a9abd;min-width:34px;text-align:right">0°</span></div>
+        <div class="row"><label>Rotation Z</label>
+          <input type="range" id="pgRotZ" min="-180" max="180" value="0" step="1"
+                 style="flex:1" oninput="nanoPlaygroundOnRotChange()">
+          <span id="lblPgRotZ" style="font-size:10px;color:#7a9abd;min-width:34px;text-align:right">0°</span></div>
+        <div class="row" id="rowPgDepth" style="display:none"><label title="Probe penetration depth — same max as sweep depth setting">Indent depth</label>
+          <input type="range" id="pgDepth" min="0" max="75" value="0" step="1"
+                 style="flex:1" oninput="nanoPlaygroundOnDepthChange()">
+          <span id="lblPgDepth" style="font-size:10px;color:#7a9abd;min-width:48px;text-align:right">0 µm</span></div>
+        <div class="row" style="gap:4px;flex-wrap:wrap">
+          <label></label>
+          <button class="btn" id="btnPgStart" onclick="nanoPlaygroundStart()"
+                  style="font-size:10px;padding:3px 10px;background:#1a2a3a;border:1px solid #4a7a9a;color:#7ecfff">
+            Start playground</button>
+          <button class="btn" id="btnPgExit" onclick="nanoPlaygroundExit()" style="display:none;font-size:10px;padding:3px 10px;background:#2a1a1a;border:1px solid #7a4a4a;color:#ffaa88">
+            Exit playground</button>
+          <button class="btn" id="btnPgExportPLY" onclick="nanoPlaygroundExportPLY()" style="display:none;font-size:10px;padding:3px 10px;background:#1a2a3a;border:1px solid #4a7a5a;color:#7eff99"
+                  title="Export deformed particle (stress colors) + indenter as separate PLY entities">
+            Export PLY</button>
+        </div>
+        <div class="row"><label></label>
+          <span id="lblPgStatus" style="font-size:10px;color:#7a9abd;line-height:1.5">
+            Load a high-res shape, orient it, click to place the indenter, then adjust depth.</span></div>
+      </div>
+
       <!-- ── Post-sweep actions ── -->
       <div class="row" style="margin-top:4px;gap:4px">
         <label></label>
@@ -767,6 +821,17 @@ function mat3RandomRotation(m9){
   m9[0]=t*x*x+c;   m9[1]=t*x*y-s*z; m9[2]=t*x*z+s*y;
   m9[3]=t*x*y+s*z; m9[4]=t*y*y+c;   m9[5]=t*y*z-s*x;
   m9[6]=t*x*z-s*y; m9[7]=t*y*z+s*x; m9[8]=t*z*z+c;
+}
+
+/** 3×3 rotation matrix from Euler angles (degrees), applied as Rz·Ry·Rx. */
+function mat3FromEulerDeg(exDeg, eyDeg, ezDeg, m9){
+  const ex=exDeg*Math.PI/180, ey=eyDeg*Math.PI/180, ez=ezDeg*Math.PI/180;
+  const cx=Math.cos(ex), sx=Math.sin(ex);
+  const cy=Math.cos(ey), sy=Math.sin(ey);
+  const cz=Math.cos(ez), sz=Math.sin(ez);
+  m9[0]=cy*cz;           m9[1]=cy*sz;           m9[2]=-sy;
+  m9[3]=sx*sy*cz-cx*sz;  m9[4]=sx*sy*sz+cx*cz;  m9[5]=sx*cy;
+  m9[6]=cx*sy*cz+sx*sz;  m9[7]=cx*sy*sz-sx*cz;  m9[8]=cx*cy;
 }
 
 /**
@@ -5298,6 +5363,8 @@ let gVolumeOutline=null;
 let gIndenterMesh=null, gIndenterShaft=null, gNanoFloorMesh=null;
 /** True while an async indentation animation is running (blocks re-entry). */
 let gNanoRunning=false;
+/** Interactive indent playground state (separate from sweep / point-indent workflow). */
+let gNanoPlayground={active:false};
 /** Triangle soup from “fill volume” OBJ: 9 floats per triangle (ax..cz), world mm. Box mode only. */
 let gFillVolumeTris=null;
 /** Low-poly soup for spawn + collision (derived on load). */
@@ -5995,10 +6062,15 @@ function initThreeScene(){
     gScene.add(gNanoFloorMesh);
   }
 
-  window.addEventListener('resize',onResize,false);}
+  window.addEventListener('resize',onResize,false);
+  window.addEventListener('keydown',nanoPlaygroundOnKey,false);}
 
 function updatePickedVisual(){
   if(!gPickMarker){
+    return;
+  }
+  if(gNanoPlayground?.active){
+    gPickMarker.visible=false;
     return;
   }
   if(!gSimulator || gPickedParticle<0 || gPickedParticle>=gSimulator.particles.length){
@@ -6402,6 +6474,7 @@ function onPickParticle(ev){
   gRaycaster.setFromCamera(gPointer,gCamera);
   const hits=gRaycaster.intersectObject(gSimulator.particleMesh,false);
   if(!hits||hits.length===0){
+    if(gNanoPlayground?.active) return;
     // Clicked empty space -> deselect.
     gPickedParticle=-1;
     updatePickedVisual();
@@ -6435,6 +6508,18 @@ function onPickParticle(ev){
   if(_containerModeRaw()==='nanoindent'){
     const p=gSimulator.particles[pi];
     if(!p||!p.active) return;
+
+    // Interactive playground: orient → click to place probe → depth slider
+    if(gNanoPlayground?.active){
+      if(gNanoPlayground.phase==='orient'){
+        const localVi=visVertIdx-p.visVertOffset;
+        if(localVi>=0 && localVi<p.numVisVerts){
+          nanoPlaygroundPlaceAt(pi, localVi);
+        }
+      }
+      return;
+    }
+
     if(pi!==gPickedParticle){
       // First click on this particle: select it, init the map.
       gPickedParticle=pi;
@@ -6483,6 +6568,7 @@ function onPickParticle(ev){
 // restoring the rest shape.
 async function _runPointIndent(particleIdx, localVisVertIdx){
   if(!gSimulator) return;
+  if(gNanoPlayground?.active) return;
   if(gNanoRunning) return; // prevent overlapping animations
   const p=gSimulator.particles[particleIdx];
   if(!p||!p.active) return;
@@ -6866,6 +6952,10 @@ function initSimulation(){
   if(gIndenterShaft) gIndenterShaft.visible=false;
   if(gNanoFloorMesh) gNanoFloorMesh.visible=false;
   gNanoRunning=false;
+  if(gNanoPlayground?.active && !gNanoPlayground._keepActive){
+    gNanoPlayground={active:false};
+    nanoPlaygroundUpdateUi();
+  }
 
   if(_isShowcaseMode()){
     initShowcase().catch(err=>{
@@ -6917,8 +7007,12 @@ function initSimulation(){
     gSimulator.velDampingPerSec=200; // kill any residual motion instantly
     // Auto-select the single particle and focus camera on it
     setTimeout(()=>{
-      gPickedParticle=0;
-      updatePickedVisual();
+      if(!gNanoPlayground?.active){
+        gPickedParticle=0;
+        updatePickedVisual();
+      }else if(gPickMarker){
+        gPickMarker.visible=false;
+      }
       const p=gSimulator?.particles[0];
       if(p && p.active){
         if(!p._modulusMap) p._modulusMap=new Float32Array(p.numVisVerts);
@@ -7201,6 +7295,7 @@ function _nanoUpdateHertzWarn(){
 
 async function onRunIndentSweep(){
   if(!gSimulator) return;
+  if(gNanoPlayground?.active){ alert('Exit the interactive playground first.'); return; }
   if(gNanoRunning){ alert('An indentation is already running. Please wait.'); return; }
   const idx=(gPickedParticle>=0)?gPickedParticle:0;
   const r     =parseFloat(document.getElementById('pIndenterR')?.value)||0.25;
@@ -7924,6 +8019,7 @@ function onContainerModeChange(fromUser){
   if(!nano && gNanoFloorMesh) gNanoFloorMesh.visible=false;
   if(!nano && gIndenterMesh)  gIndenterMesh.visible=false;
   if(!nano && gIndenterShaft) gIndenterShaft.visible=false;
+  if(!nano) nanoPlaygroundExit();
   if(airway) applyAirwayUiDefaults(gAirwayUiOverrides);
   if(boxFill) applyBoxFillUiDefaults(gBoxFillUiOverrides);
   if(chkBoxFill){
@@ -7944,6 +8040,585 @@ function onNanoDivsChange(val){
     gParticleTemplateBase=null;
     onRestart();
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Interactive indent playground — place/orient particle, click probe site, depth slider
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Playground indenter tip color (matches gIndenterMesh material 0xccd8ea). */
+const PG_INDENTER_TIP_RGB=[204,216,234];
+/** Playground indenter shaft color (matches gIndenterShaft material 0x8899bb). */
+const PG_INDENTER_SHAFT_RGB=[136,153,187];
+
+function nanoPlaygroundGetIndenterR(){
+  const pg=parseFloat(document.getElementById('pgIndenterR')?.value);
+  if(Number.isFinite(pg)&&pg>0) return pg;
+  return parseFloat(document.getElementById('pIndenterR')?.value)||0.25;
+}
+
+/** Extract world-space vertices and triangle faces from a THREE.Mesh. */
+function _triMeshWorldVertsFaces(mesh){
+  if(!mesh||!mesh.geometry) return {verts:[],faces:[]};
+  mesh.updateMatrixWorld(true);
+  const geo=mesh.geometry;
+  const posAttr=geo.attributes.position;
+  if(!posAttr||posAttr.count<3) return {verts:[],faces:[]};
+  const idx=geo.index;
+  const mw=mesh.matrixWorld;
+  const v=new THREE.Vector3();
+  const verts=[];
+  for(let i=0;i<posAttr.count;i++){
+    v.fromBufferAttribute(posAttr,i);
+    v.applyMatrix4(mw);
+    verts.push([v.x,v.y,v.z]);
+  }
+  const faces=[];
+  if(idx){
+    for(let i=0;i<idx.count;i+=3){
+      faces.push([idx.getX(i),idx.getX(i+1),idx.getX(i+2)]);
+    }
+  }else{
+    for(let i=0;i<posAttr.count;i+=3){
+      faces.push([i,i+1,i+2]);
+    }
+  }
+  return {verts,faces};
+}
+
+function nanoPlaygroundUpdateRotLabels(){
+  const pairs=[['pgRotX','lblPgRotX'],['pgRotY','lblPgRotY'],['pgRotZ','lblPgRotZ']];
+  for(const [id,lbl] of pairs){
+    const v=parseFloat(document.getElementById(id)?.value)||0;
+    const el=document.getElementById(lbl);
+    if(el) el.textContent=Math.round(v)+'°';
+  }
+}
+
+function nanoPlaygroundUpdateUi(){
+  const active=!!(gNanoPlayground&&gNanoPlayground.active);
+  const btnStart=document.getElementById('btnPgStart');
+  const btnExit=document.getElementById('btnPgExit');
+  const btnSwitch=document.getElementById('btnPgSwitchShape');
+  const btnExport=document.getElementById('btnPgExportPLY');
+  const rowDepth=document.getElementById('rowPgDepth');
+  const rowIndR=document.getElementById('rowPgIndenterR');
+  const btnSweep=document.getElementById('btnSweepAll');
+  const lbl=document.getElementById('lblPgStatus');
+  const sweepLbl=document.getElementById('lblSweepProgress');
+
+  if(btnStart) btnStart.style.display=active?'none':'';
+  if(btnExit) btnExit.style.display=active?'':'none';
+  if(btnSwitch) btnSwitch.style.display=active?'':'none';
+  if(btnExport) btnExport.style.display=active?'':'none';
+  if(rowIndR) rowIndR.style.display=active?'':'none';
+  if(rowDepth) rowDepth.style.display=(active&&gNanoPlayground.phase==='indent')?'':'none';
+  if(btnSweep) btnSweep.disabled=active;
+
+  if(gPickMarker&&active) gPickMarker.visible=false;
+
+  if(sweepLbl){
+    if(active){
+      if(gNanoPlayground.phase==='orient'){
+        sweepLbl.textContent='Playground active — use shape dropdown to switch particles. Rotate, then click surface to place indenter.';
+      }else{
+        sweepLbl.textContent='Playground active — adjust depth slider (↑/↓ keys) or indenter size. Export PLY captures current state.';
+      }
+    }else if(!gNanoRunning){
+      sweepLbl.textContent='Click the particle surface to indent at that point. Bottom vertices are substrate-pinned for accurate modulus.';
+    }
+  }
+
+  if(lbl){
+    if(!active){
+      lbl.textContent='Load a high-res shape, orient it, click to place the indenter, then adjust depth.';
+    }else if(gNanoPlayground.phase==='orient'){
+      lbl.textContent='Rotate with sliders or switch shape anytime. Click the surface where the probe should contact.';
+    }else{
+      lbl.textContent='Move depth up/down to deform the mesh. Export PLY saves particle stress colors + indenter geometry.';
+    }
+  }
+}
+
+function nanoPlaygroundClearIndenter(){
+  if(gIndenterMesh)  gIndenterMesh.visible=false;
+  if(gIndenterShaft) gIndenterShaft.visible=false;
+  if(gNanoPlayground){
+    gNanoPlayground.indenter=null;
+    gNanoPlayground.site=null;
+    gNanoPlayground.depthMm=0;
+  }
+  const depthEl=document.getElementById('pgDepth');
+  if(depthEl) depthEl.value=0;
+  const lblD=document.getElementById('lblPgDepth');
+  if(lblD) lblD.textContent='0 µm';
+}
+
+function nanoPlaygroundPinSubstrate(p){
+  let subMinY=Infinity;
+  for(let k=0;k<p.numTetVerts;k++){
+    if(p.invMass[k]>0) subMinY=Math.min(subMinY,p.pos[3*k+1]);
+  }
+  const subTol=(p.nominalRadius||0.3)*0.15;
+  let pinCt=0;
+  for(let k=0;k<p.numTetVerts;k++){
+    if(p.pos[3*k+1]-subMinY<subTol){ p.invMass[k]=0; pinCt++; }
+  }
+  if(pinCt===0){
+    let lk=0;
+    for(let k=1;k<p.numTetVerts;k++) if(p.pos[3*k+1]<p.pos[3*lk+1]) lk=k;
+    p.invMass[lk]=0;
+  }
+}
+
+function nanoPlaygroundApplyRotation(){
+  if(!gNanoPlayground?.active||!gSimulator) return;
+  const p=gSimulator.particles[0];
+  if(!p||!p.active) return;
+  const tmpl=gParticleTemplate;
+  if(!tmpl) return;
+
+  gNanoPlayground.rotX=parseFloat(document.getElementById('pgRotX')?.value)||0;
+  gNanoPlayground.rotY=parseFloat(document.getElementById('pgRotY')?.value)||0;
+  gNanoPlayground.rotZ=parseFloat(document.getElementById('pgRotZ')?.value)||0;
+
+  const m9=new Float32Array(9);
+  mat3FromEulerDeg(gNanoPlayground.rotX,gNanoPlayground.rotY,gNanoPlayground.rotZ,m9);
+
+  const nv=tmpl.numVerts;
+  let tcx=0,tcy=0,tcz=0;
+  for(let i=0;i<nv;i++){
+    tcx+=tmpl.verts[3*i]; tcy+=tmpl.verts[3*i+1]; tcz+=tmpl.verts[3*i+2];
+  }
+  const invN=1/nv;
+  tcx*=invN; tcy*=invN; tcz*=invN;
+
+  const tx=p.center[0], ty=p.center[1], tz=p.center[2];
+  for(let i=0;i<nv;i++){
+    const vx=tmpl.verts[3*i]-tcx, vy=tmpl.verts[3*i+1]-tcy, vz=tmpl.verts[3*i+2]-tcz;
+    const rx=m9[0]*vx+m9[1]*vy+m9[2]*vz;
+    const ry=m9[3]*vx+m9[4]*vy+m9[5]*vz;
+    const rz=m9[6]*vx+m9[7]*vy+m9[8]*vz;
+    p.pos[3*i]=rx+tx; p.pos[3*i+1]=ry+ty; p.pos[3*i+2]=rz+tz;
+    p.prevPos[3*i]=p.pos[3*i]; p.prevPos[3*i+1]=p.pos[3*i+1]; p.prevPos[3*i+2]=p.pos[3*i+2];
+    p.vel[3*i]=p.vel[3*i+1]=p.vel[3*i+2]=0;
+  }
+  p._initPhysics();
+  p.updateCenter();
+  p.updateVisMesh(gSimulator.allPositions);
+  gSimulator.colorMode='stress';
+  gSimulator._updateColors();
+  const geo=gSimulator.particleMesh?.geometry;
+  if(geo){
+    geo.attributes.position.needsUpdate=true;
+    geo.attributes.color.needsUpdate=true;
+  }
+  const sel=document.getElementById('selColorMode');
+  if(sel) sel.value='stress';
+}
+
+function nanoPlaygroundSolveAtDepth(depthMm){
+  if(!gNanoPlayground?.active||!gSimulator||!gNanoPlayground.indenter||!gNanoPlayground.site) return;
+  const p=gSimulator.particles[0];
+  if(!p||!p.active) return;
+
+  const r=nanoPlaygroundGetIndenterR();
+  const indenter=gNanoPlayground.indenter;
+  const site=gNanoPlayground.site;
+  const depth=Math.max(0, depthMm);
+
+  p.pos.set(gNanoPlayground.restPos);
+  p.prevPos.set(gNanoPlayground.restPrev);
+  p.vel.fill(0);
+  p.invMass.set(gNanoPlayground.savedInvMass);
+  nanoPlaygroundPinSubstrate(p);
+
+  indenter.placAt(site.sx,site.sy,site.sz,site.nx,site.ny,site.nz);
+  if(depth>0){
+    indenter.stepInward(-site.nx,-site.ny,-site.nz,depth);
+  }
+
+  const sdt=0.001;
+  const iterations=Math.max(50, Math.ceil(depth/0.002)*50);
+  for(let sub=0;sub<iterations;sub++){
+    for(let k=0;k<p.numTetVerts;k++){
+      if(p.invMass[k]===0) continue;
+      p.prevPos[3*k]=p.pos[3*k];
+      p.prevPos[3*k+1]=p.pos[3*k+1];
+      p.prevPos[3*k+2]=p.pos[3*k+2];
+    }
+    indenter.forceProxy=0;
+    indenter.applyToParticle(p,0.2);
+    p.solveEdges(sdt);
+    p.solveVolumes(sdt);
+  }
+
+  gNanoPlayground.depthMm=depth;
+  p.updateCenter();
+  p.updateVisMesh(gSimulator.allPositions);
+  gSimulator.colorMode='stress';
+  gSimulator._updateColors();
+  _positionIndenterMesh(indenter,r,p.nominalRadius||gNominalRadiusMm||0.3,site.nx,site.ny,site.nz);
+  const geo=gSimulator.particleMesh?.geometry;
+  if(geo){
+    geo.attributes.position.needsUpdate=true;
+    geo.attributes.color.needsUpdate=true;
+  }
+}
+
+function nanoPlaygroundPlaceAt(particleIdx, localVisVertIdx){
+  if(!gNanoPlayground?.active||gNanoPlayground.phase!=='orient') return;
+  const p=gSimulator.particles[particleIdx];
+  if(!p||!p.active) return;
+
+  const tmpl=gParticleTemplate||gParticleTemplateBase;
+  if(tmpl){
+    const cv=tmpl.hasSkinning?tmpl.visVerts:tmpl.verts;
+    const ct=tmpl.hasSkinning?tmpl.visTriIds:tmpl.surfTriIds;
+    const {labels}=_nanoClassifyRegions(cv,ct,p.numVisVerts);
+    if(labels[localVisVertIdx]==='interior'){
+      const lbl=document.getElementById('lblPgStatus');
+      if(lbl) lbl.textContent='That point is interior — click the outer surface.';
+      return;
+    }
+  }
+
+  const b=(p.visVertOffset+localVisVertIdx)*3;
+  const sx=gSimulator.allPositions[b];
+  const sy=gSimulator.allPositions[b+1];
+  const sz=gSimulator.allPositions[b+2];
+
+  const worldVerts=new Float32Array(p.numVisVerts*3);
+  for(let i=0;i<p.numVisVerts;i++){
+    const base=(p.visVertOffset+i)*3;
+    worldVerts[3*i]=gSimulator.allPositions[base];
+    worldVerts[3*i+1]=gSimulator.allPositions[base+1];
+    worldVerts[3*i+2]=gSimulator.allPositions[base+2];
+  }
+  const triIds=tmpl?(tmpl.hasSkinning?tmpl.visTriIds:tmpl.surfTriIds):null;
+  let nx,ny,nz;
+  if(triIds){
+    const sn=_nanoOutwardNormals(worldVerts,triIds,p.numVisVerts,p.center[0],p.center[1],p.center[2]);
+    nx=sn[3*localVisVertIdx]; ny=sn[3*localVisVertIdx+1]; nz=sn[3*localVisVertIdx+2];
+  }
+  const dx=sx-p.center[0], dy=sy-p.center[1], dz=sz-p.center[2];
+  const dl=Math.sqrt(dx*dx+dy*dy+dz*dz);
+  if(dl<1e-10) return;
+  if(!(nx*nx+ny*ny+nz*nz>0.5)){ nx=dx/dl; ny=dy/dl; nz=dz/dl; }
+
+  const r=nanoPlaygroundGetIndenterR();
+  const maxDepthMm=parseFloat(document.getElementById('pIndentDepth')?.value)||0.075;
+
+  gNanoPlayground.restPos=new Float32Array(p.pos);
+  gNanoPlayground.restPrev=new Float32Array(p.prevPos);
+  gNanoPlayground.savedInvMass=new Float32Array(p.invMass);
+  gNanoPlayground.indenter=new Indenter(r);
+  gNanoPlayground.site={sx,sy,sz,nx,ny,nz,localVi:localVisVertIdx};
+  gNanoPlayground.phase='indent';
+  gNanoPlayground.depthMm=0;
+
+  const depthEl=document.getElementById('pgDepth');
+  const maxUm=Math.round(maxDepthMm*1000);
+  if(depthEl){
+    depthEl.min=0;
+    depthEl.max=String(maxUm);
+    depthEl.value=0;
+  }
+  const lblD=document.getElementById('lblPgDepth');
+  if(lblD) lblD.textContent='0 µm';
+
+  nanoPlaygroundSolveAtDepth(0);
+  nanoPlaygroundUpdateUi();
+}
+
+function nanoPlaygroundOnRotChange(){
+  if(!gNanoPlayground?.active) return;
+  nanoPlaygroundUpdateRotLabels();
+  if(gNanoPlayground.phase==='indent'){
+    nanoPlaygroundClearIndenter();
+    gNanoPlayground.phase='orient';
+    gNanoPlayground.restPos=null;
+    gNanoPlayground.restPrev=null;
+    gNanoPlayground.savedInvMass=null;
+  }
+  nanoPlaygroundApplyRotation();
+  nanoPlaygroundUpdateUi();
+}
+
+function nanoPlaygroundOnDepthChange(){
+  if(!gNanoPlayground?.active||gNanoPlayground.phase!=='indent') return;
+  const depthUm=parseFloat(document.getElementById('pgDepth')?.value)||0;
+  const lblD=document.getElementById('lblPgDepth');
+  if(lblD) lblD.textContent=Math.round(depthUm)+' µm';
+  nanoPlaygroundSolveAtDepth(depthUm/1000);
+}
+
+function nanoPlaygroundOnIndenterRChange(){
+  if(!gNanoPlayground?.active) return;
+  const r=nanoPlaygroundGetIndenterR();
+  if(gNanoPlayground.indenter){
+    gNanoPlayground.indenter.radius=r;
+    if(gNanoPlayground.phase==='indent'){
+      nanoPlaygroundSolveAtDepth(gNanoPlayground.depthMm||0);
+    }
+  }
+}
+
+function nanoPlaygroundOnShapeChange(value){
+  if(!gNanoPlayground?.active) return;
+  nanoPlaygroundSwitchShape(value);
+}
+
+async function nanoPlaygroundSwitchShape(shapeFile){
+  if(!gNanoPlayground?.active) return;
+  if(gNanoRunning) return;
+
+  const shape=shapeFile||document.getElementById('selPlaygroundShape')?.value;
+  if(!shape) return;
+
+  const rotX=parseFloat(document.getElementById('pgRotX')?.value)||0;
+  const rotY=parseFloat(document.getElementById('pgRotY')?.value)||0;
+  const rotZ=parseFloat(document.getElementById('pgRotZ')?.value)||0;
+
+  nanoPlaygroundClearIndenter();
+  gNanoPlayground.phase='orient';
+  gNanoPlayground.restPos=null;
+  gNanoPlayground.restPrev=null;
+  gNanoPlayground.savedInvMass=null;
+
+  const lbl=document.getElementById('lblPgStatus');
+  if(lbl) lbl.textContent='Loading shape…';
+
+  try{
+    gNanoPlayground._keepActive=true;
+    const res=await fetch(resolveAppUrl('assets/'+shape),{cache:'no-cache'});
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const data=await res.json();
+    applyParticleTemplateFromJSON(data, shape);
+    delete gNanoPlayground._keepActive;
+  }catch(err){
+    delete gNanoPlayground._keepActive;
+    alert('Failed to switch shape: '+err);
+    nanoPlaygroundUpdateUi();
+    return;
+  }
+
+  gNanoPlayground.active=true;
+  gNanoPlayground.phase='orient';
+  gNanoPlayground.rotX=rotX;
+  gNanoPlayground.rotY=rotY;
+  gNanoPlayground.rotZ=rotZ;
+  document.getElementById('pgRotX').value=String(rotX);
+  document.getElementById('pgRotY').value=String(rotY);
+  document.getElementById('pgRotZ').value=String(rotZ);
+  nanoPlaygroundUpdateRotLabels();
+
+  gPaused=true;
+  gPickedParticle=-1;
+  if(gPickMarker) gPickMarker.visible=false;
+
+  setTimeout(()=>{
+    if(!gSimulator) return;
+    const p=gSimulator.particles[0];
+    if(p&&p.active&&gNanoFloorMesh){
+      const r=p.nominalRadius||gNominalRadiusMm||0.3;
+      gNanoFloorMesh.scale.set(r*7,1,r*7);
+      gNanoFloorMesh.position.set(p.center[0],p.center[1]-r*1.15,p.center[2]);
+      gNanoFloorMesh.visible=true;
+    }
+    nanoPlaygroundApplyRotation();
+    nanoPlaygroundUpdateUi();
+  }, 120);
+}
+
+function nanoPlaygroundExportPLY(){
+  if(!gNanoPlayground?.active||!gSimulator){
+    alert('Start the interactive playground first.');
+    return;
+  }
+  const p=gSimulator.particles[0];
+  if(!p||!p.active){
+    alert('No active particle to export.');
+    return;
+  }
+
+  gSimulator.colorMode='stress';
+  gSimulator._updateColors();
+
+  const verts=[];
+  const faces=[];
+  let nParticleVerts=0, nParticleFaces=0;
+  let nIndenterVerts=0, nIndenterFaces=0;
+
+  for(let i=0;i<p.numVisVerts;i++){
+    const base=(p.visVertOffset+i)*3;
+    verts.push({
+      x:gSimulator.allPositions[base],
+      y:gSimulator.allPositions[base+1],
+      z:gSimulator.allPositions[base+2],
+      r:Math.max(0,Math.min(255,Math.round((gSimulator.allColors[base]||0)*255))),
+      g:Math.max(0,Math.min(255,Math.round((gSimulator.allColors[base+1]||0)*255))),
+      b:Math.max(0,Math.min(255,Math.round((gSimulator.allColors[base+2]||0)*255))),
+      entity:0,
+    });
+  }
+  nParticleVerts=verts.length;
+  const triIds=p.visTriIds;
+  for(let i=0;i<triIds.length;i+=3){
+    faces.push({a:triIds[i],b:triIds[i+1],c:triIds[i+2],entity:0});
+  }
+  nParticleFaces=faces.length;
+
+  function appendMesh(mesh, entityId, rgb){
+    if(!mesh||!mesh.visible) return;
+    const {verts:mv,faces:mf}=_triMeshWorldVertsFaces(mesh);
+    if(!mv.length) return;
+    const base=verts.length;
+    for(const v of mv){
+      verts.push({x:v[0],y:v[1],z:v[2],r:rgb[0],g:rgb[1],b:rgb[2],entity:entityId});
+    }
+    for(const f of mf){
+      faces.push({a:base+f[0],b:base+f[1],c:base+f[2],entity:entityId});
+    }
+  }
+
+  appendMesh(gIndenterMesh, 1, PG_INDENTER_TIP_RGB);
+  appendMesh(gIndenterShaft, 1, PG_INDENTER_SHAFT_RGB);
+  nIndenterVerts=verts.length-nParticleVerts;
+  nIndenterFaces=faces.length-nParticleFaces;
+
+  const shapeName=(document.getElementById('selPlaygroundShape')?.selectedOptions?.[0]?.text||'particle').replace(/\s+/g,'_');
+  const depthUm=Math.round((gNanoPlayground.depthMm||0)*1000);
+  const indR=nanoPlaygroundGetIndenterR();
+
+  let s='';
+  s+='ply\n';
+  s+='format ascii 1.0\n';
+  s+='comment Nanoindentation playground export\n';
+  s+=`comment shape=${shapeName}\n`;
+  s+=`comment depth_um=${depthUm}\n`;
+  s+=`comment indenter_radius_mm=${indR.toFixed(4)}\n`;
+  s+=`comment color_mode=stress\n`;
+  s+=`comment entity 0 = particle (deformed, stress-colored)\n`;
+  s+=`comment entity 1 = nano_indenter (tip + shaft)\n`;
+  s+=`comment particle_vertices=${nParticleVerts} particle_faces=${nParticleFaces}\n`;
+  s+=`comment indenter_vertices=${nIndenterVerts} indenter_faces=${nIndenterFaces}\n`;
+  s+=`element vertex ${verts.length}\n`;
+  s+='property float x\nproperty float y\nproperty float z\n';
+  s+='property uchar red\nproperty uchar green\nproperty uchar blue\n';
+  s+='property uchar entity\n';
+  s+=`element face ${faces.length}\n`;
+  s+='property list uchar int vertex_indices\n';
+  s+='property uchar entity\n';
+  s+='end_header\n';
+
+  for(const v of verts){
+    s+=`${v.x.toFixed(6)} ${v.y.toFixed(6)} ${v.z.toFixed(6)} ${v.r} ${v.g} ${v.b} ${v.entity}\n`;
+  }
+  for(const f of faces){
+    s+=`3 ${f.a} ${f.b} ${f.c} ${f.entity}\n`;
+  }
+
+  const stamp=Date.now();
+  _download(s,`nano_playground_${shapeName}_d${depthUm}um_${stamp}.ply`,'application/octet-stream');
+}
+
+async function nanoPlaygroundStart(){
+  if(_containerModeRaw()!=='nanoindent'){
+    alert('Switch to Nanoindentation mode first.');
+    return;
+  }
+  if(gNanoRunning){
+    alert('Wait for the current indentation animation to finish.');
+    return;
+  }
+
+  const shape=document.getElementById('selPlaygroundShape')?.value;
+  if(!shape){ alert('Select a playground shape.'); return; }
+
+  try{
+    gNanoPlayground={active:true,_keepActive:true,phase:'orient',rotX:0,rotY:0,rotZ:0,
+      indenter:null,site:null,restPos:null,restPrev:null,savedInvMass:null,depthMm:0};
+    const res=await fetch(resolveAppUrl('assets/'+shape),{cache:'no-cache'});
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const data=await res.json();
+    applyParticleTemplateFromJSON(data, shape);
+    delete gNanoPlayground._keepActive;
+  }catch(err){
+    gNanoPlayground={active:false};
+    alert('Failed to load shape: '+err);
+    nanoPlaygroundUpdateUi();
+    return;
+  }
+
+  gNanoPlayground.active=true;
+  gNanoPlayground.phase='orient';
+  gNanoPlayground.rotX=0;
+  gNanoPlayground.rotY=0;
+  gNanoPlayground.rotZ=0;
+  gNanoPlayground.indenter=null;
+  gNanoPlayground.site=null;
+  gNanoPlayground.restPos=null;
+  gNanoPlayground.restPrev=null;
+  gNanoPlayground.savedInvMass=null;
+  gNanoPlayground.depthMm=0;
+
+  for(const id of ['pgRotX','pgRotY','pgRotZ']){
+    const el=document.getElementById(id);
+    if(el) el.value=0;
+  }
+  nanoPlaygroundUpdateRotLabels();
+
+  const pgR=document.getElementById('pgIndenterR');
+  const sweepR=document.getElementById('pIndenterR');
+  if(pgR&&sweepR) pgR.value=sweepR.value;
+
+  gPaused=true;
+  gPickedParticle=-1;
+  if(gPickMarker) gPickMarker.visible=false;
+
+  setTimeout(()=>{
+    if(!gSimulator) return;
+    const p=gSimulator.particles[0];
+    if(p&&p.active){
+      if(gNanoFloorMesh){
+        const r=p.nominalRadius||gNominalRadiusMm||0.3;
+        gNanoFloorMesh.scale.set(r*7,1,r*7);
+        gNanoFloorMesh.position.set(p.center[0],p.center[1]-r*1.15,p.center[2]);
+        gNanoFloorMesh.visible=true;
+      }
+    }
+    nanoPlaygroundApplyRotation();
+    nanoPlaygroundUpdateUi();
+  }, 120);
+}
+
+function nanoPlaygroundExit(){
+  if(!gNanoPlayground?.active) return;
+  nanoPlaygroundClearIndenter();
+  gNanoPlayground={active:false};
+  if(_containerModeRaw()==='nanoindent'){
+    gPickedParticle=0;
+    updatePickedVisual();
+  }else{
+    gPickedParticle=-1;
+    if(gPickMarker) gPickMarker.visible=false;
+  }
+  nanoPlaygroundUpdateUi();
+}
+
+function nanoPlaygroundOnKey(ev){
+  if(!gNanoPlayground?.active||gNanoPlayground.phase!=='indent') return;
+  const depthEl=document.getElementById('pgDepth');
+  if(!depthEl) return;
+  let delta=0;
+  if(ev.key==='ArrowUp'||ev.key==='w'||ev.key==='W') delta=1;
+  else if(ev.key==='ArrowDown'||ev.key==='s'||ev.key==='S') delta=-1;
+  else return;
+  ev.preventDefault();
+  const next=Math.max(+depthEl.min, Math.min(+depthEl.max, +depthEl.value+delta));
+  depthEl.value=String(next);
+  nanoPlaygroundOnDepthChange();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
