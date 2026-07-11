@@ -111,7 +111,7 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
   <button class="btn"        onclick="focusBarrel()" title="Center camera on barrel (mid height)">Focus barrel</button>
   <button class="btn"        onclick="focusPicked()" title="Center camera on picked particle">Focus picked</button>
   <button class="btn"        onclick="exportOBJ()">Export OBJ</button>
-  <button class="btn"        onclick="exportPoresOBJ()" title="Empty space inside the fluid domain minus gel (void mesh). Smooth isosurface via marching cubes + vertex normals when Performance → Smooth pore mesh is on.">Export pores (OBJ)</button>
+  <button class="btn"        onclick="exportPoresOBJ()" title="Empty space inside the fluid domain minus gel (void mesh + CSV volumes in mm³). Smooth isosurface via marching cubes + vertex normals when Performance → Smooth pore mesh is on.">Export pores (OBJ+CSV)</button>
   <button class="btn"        onclick="exportPLYColors()" title="Exports particles with vertex colors (stress/contact gradient)">Export PLY (colors)</button>
   <button class="btn"        onclick="exportMetricsCSV()" title="CSV: P2P contacts, contact area, force stats, porosity (box), motion &amp; strain, settle flags. Timer mode logs for a wall-clock window after Run / Drop.">Export metrics CSV</button>
   <button class="btn" id="btnExport4kVideo" onclick="onExport4kVideo()" disabled
@@ -4969,11 +4969,8 @@ class SyringeSimulator {
   /** @deprecated name kept for callers */
   getContactCSV(){return this.getMetricsCSV();}
 
-  /**
-   * Void between gel and container: optional marching-cubes smoothing, optional removal of
-   * headspace / needle “open air”. Each 6-connected void cluster → `o pore_cc_NNN`.
-   */
-  exportPoresToOBJ(){
+  /** Voxel void field for pore export (OBJ mesh + CSV volumes share this). */
+  _analyzePoreVoid(){
     for(const p of this.particles) if(p.active) p.updateVisMesh(this.allPositions);
 
     const activeIdx=[];
@@ -4988,7 +4985,7 @@ class SyringeSimulator {
 
     if(activeIdx.length===0){
       head.push('# No active particles.');
-      return head.join('\n')+'\n';
+      return{status:'no_particles', head, activeIdx};
     }
 
     const apos=this.allPositions;
@@ -5008,7 +5005,6 @@ class SyringeSimulator {
     minX-=pad; minY-=pad; minZ-=pad;
     maxX+=pad; maxY+=pad; maxZ+=pad;
 
-    // Include the full container cross-section so wall-adjacent void is not clipped to the particle AABB.
     const wallA=sy.wallAllowPenetrationMm||0;
     if(!sy._boxVolume){
       const R=sy.barrelInR+wallA+pad*2;
@@ -5046,7 +5042,6 @@ class SyringeSimulator {
     let nx=Math.max(2, Math.ceil(extentX/sx));
     let ny=Math.max(2, Math.ceil(extentY/syv));
     let nz=Math.max(2, Math.ceil(extentZ/sz));
-    /** Cap total cells so the tab stays responsive; ~1.3M ≈ 110³ ray-march samples. */
     const maxCells=110*110*110;
     while(nx*ny*nz>maxCells){
       sx*=1.08; syv*=1.08; sz*=1.08;
@@ -5116,10 +5111,10 @@ class SyringeSimulator {
       let qh=0, qt=0;
       q[qt++]=s;
       comp[s]=nLab;
-      let sz=0;
+      let szV=0;
       while(qh<qt){
         const cur=q[qh++];
-        sz++;
+        szV++;
         const ix=cur % nx;
         const t=Math.floor(cur/nx);
         const iy=t % ny;
@@ -5149,7 +5144,7 @@ class SyringeSimulator {
           if(voidBit[ni] && comp[ni]===0){ comp[ni]=nLab; q[qt++]=ni; }
         }
       }
-      sizes.push(sz);
+      sizes.push(szV);
     }
 
     head.push(`# grid ${nx}x${ny}x${nz}  voxel_mm ${sx.toFixed(4)} x ${syv.toFixed(4)} x ${sz.toFixed(4)}`);
@@ -5157,19 +5152,75 @@ class SyringeSimulator {
     head.push(`# void_voxels=${voidCount}  connected_void_regions=${nLab}  stripped_open_air_voxels=${strippedVox}`);
     head.push('');
 
+    const pairs=sizes.map((szV, i)=>[szV, i+1]);
+    pairs.sort((a, b)=>b[0]-a[0]);
+    const wantSmooth=(document.getElementById('chkPoreSmooth')?.checked ?? true) && window._PORE_MC && window._PORE_MC.edgeTable;
+
     if(voidCount===0 || nLab===0){
       if(stripAir && voidPreStrip>0){
         head.push('# No void voxels left after omitting open air (gaps were connected to headspace). Uncheck Omit open air or use a sealed pack.');
       } else {
         head.push('# No void voxels (try higher Pore export voxels, or pause when gaps are wider).');
       }
+      return{
+        status:'no_void', head, activeIdx, voidBit, comp, nx, ny, nz, ox, oy, oz, sx, syv, sz,
+        voidPreStrip, voidCount, strippedVox, stripAir, nLab, sizes, pairs, VI, wantSmooth,
+      };
+    }
+
+    return{
+      status:'ok', head, activeIdx, voidBit, comp, nx, ny, nz, ox, oy, oz, sx, syv, sz,
+      voidPreStrip, voidCount, strippedVox, stripAir, nLab, sizes, pairs, VI, wantSmooth,
+    };
+  }
+
+  /** CSV: void/porosity volumes in mm³ (voxel count × voxel volume). */
+  exportPoresVolumeCSV(analysis){
+    const a=analysis||this._analyzePoreVoid();
+    const lines=[];
+    const f6=(x)=>Number.isFinite(x)?x.toFixed(6):'';
+    if(a.status==='no_particles'){
+      return 'sim_time_s,void_volume_mm3,void_voxels,note\n'+
+        `${this.simTime.toFixed(6)},,,no active particles\n`;
+    }
+    const voxVol=a.sx*a.syv*a.sz;
+    const totalVol=a.voidCount*voxVol;
+    const preStripVol=a.voidPreStrip*voxVol;
+    lines.push('# pore void volume summary (voxel approximation; each void voxel = sx×sy×sz mm³)');
+    lines.push('sim_time_s,voxel_mm_x,voxel_mm_y,voxel_mm_z,grid_nx,grid_ny,grid_nz,voxel_volume_mm3,void_voxels,void_volume_mm3,void_voxels_before_strip,void_volume_before_strip_mm3,pore_strip_open_air,connected_void_regions,stripped_open_air_voxels');
+    lines.push(
+      `${this.simTime.toFixed(6)},${f6(a.sx)},${f6(a.syv)},${f6(a.sz)},${a.nx},${a.ny},${a.nz},${f6(voxVol)},`+
+      `${a.voidCount},${f6(totalVol)},${a.voidPreStrip},${f6(preStripVol)},${a.stripAir?1:0},${a.nLab},${a.strippedVox}`
+    );
+    lines.push('');
+    lines.push('# per connected void region (matches OBJ g pore_cc_NNN, largest first)');
+    lines.push('region_rank,region_id,void_voxels,void_volume_mm3,volume_fraction');
+    if(a.pairs && a.pairs.length && totalVol>0){
+      for(let r=0;r<a.pairs.length;r++){
+        const nvox=a.pairs[r][0];
+        const vol=nvox*voxVol;
+        lines.push(`${r+1},pore_cc_${String(r+1).padStart(3,'0')},${nvox},${f6(vol)},${(vol/totalVol).toFixed(6)}`);
+      }
+    }
+    return lines.join('\n')+'\n';
+  }
+
+  /**
+   * Void between gel and container: optional marching-cubes smoothing, optional removal of
+   * headspace / needle “open air”. Each 6-connected void cluster → `o pore_cc_NNN`.
+   */
+  exportPoresToOBJ(analysis){
+    const a=analysis||this._analyzePoreVoid();
+    const head=a.head;
+
+    if(a.status==='no_particles'){
+      return head.join('\n')+'\n';
+    }
+    if(a.status==='no_void'){
       return head.join('\n')+'\n';
     }
 
-    const pairs=sizes.map((sz, i)=>[sz, i+1]);
-    pairs.sort((a, b)=>b[0]-a[0]);
-
-    const wantSmooth=(document.getElementById('chkPoreSmooth')?.checked ?? true) && window._PORE_MC && window._PORE_MC.edgeTable;
+    const {voidBit, comp, nx, ny, nz, ox, oy, oz, sx, syv, sz, voidCount, pairs, VI, wantSmooth}=a;
 
     const nx1=nx+1, ny1=ny+1;
     const CIc=(gx, gy, gz)=>gx+nx1*(gy+ny1*gz);
@@ -9165,8 +9216,11 @@ function exportPoresOBJ(){
     console.warn('Smooth pore export: marching-cubes tables missing (window._PORE_MC). Falling back to blocky voxels.');
   }
   const t0=(typeof performance!=='undefined'&&performance.now)?performance.now():Date.now();
-  const s=gSimulator.exportPoresToOBJ();
+  const analysis=gSimulator._analyzePoreVoid();
+  const s=gSimulator.exportPoresToOBJ(analysis);
+  const csv=gSimulator.exportPoresVolumeCSV(analysis);
   const ms=((typeof performance!=='undefined'&&performance.now)?performance.now():Date.now())-t0;
+  const ts=Date.now();
   if(s.length<400 && s.includes('No void voxels')){
     const vb=s.match(/void_voxels_before_strip=(\d+)/);
     const stripped=s.includes('pore_strip_open_air=1') && vb && +vb[1]>0;
@@ -9181,8 +9235,9 @@ function exportPoresOBJ(){
   if(s.includes('auto-fallback: blocky voxel')){
     console.warn('Pore export: marching cubes produced no valid triangles; exported blocky voxel mesh instead (see OBJ comments).');
   }
-  _download(s,`syringe_pores_${Date.now()}.obj`,'text/plain');
-  console.log(`Pore OBJ export done in ${ms.toFixed(0)} ms (${(s.length/1024).toFixed(1)} KB)`);
+  _download(s,`syringe_pores_${ts}.obj`,'text/plain');
+  _download(csv,`syringe_pores_volume_${ts}.csv`,'text/csv');
+  console.log(`Pore export done in ${ms.toFixed(0)} ms — OBJ ${(s.length/1024).toFixed(1)} KB, CSV ${(csv.length/1024).toFixed(1)} KB`);
 }
 
 function exportPLYColors(){
