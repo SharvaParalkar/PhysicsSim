@@ -7,10 +7,12 @@
     "taperH": 2
   },
   "particles": {
-    "maxParticles": 300,
-    "initialDrop": 1,
-    "dropMore": 1,
-    "radiusMm": 0.3,
+    "maxParticles": 50,
+    "initialDrop": 5,
+    "dropMore": 5,
+    "radiusMm": 0.2,
+    "softness": 0.4,
+    "sizeBasis": "volume",
     "edgeCompliance": 14.0,
     "volCompliance": 0.03,
     "hardenAfterStrainPct": 999,
@@ -31,15 +33,16 @@
     "radiusMm": 1.02
   },
   "physics": {
-    "containerMode": "syringe",
+    "containerMode": "volume",
     "volumeBox_mm": {
-      "widthMm": 1,
-      "heightMm": 5,
-      "depthMm": 1,
+      "widthMm": 1.5,
+      "heightMm": 3.5,
+      "depthMm": 1.5,
       "centerX_mm": 0,
       "centerY_mm": 10,
       "centerZ_mm": 0
     },
+    "volumeDropHeightMm": 0,
     "volumeOpenBottom": false,
 
     "enableEndCap": true,
@@ -70,11 +73,15 @@
   },
   "viz": {
     "showVolumeBox": true,
+    "darkBackground": false,
     "colorMode": "stress",
     "stressGain": 0.72,
     "stressDepthMix": 0.52,
     "stressPercentile": 0.9,
     "stressSampleEveryNFrames": 4,
-    "normalSampleEveryNFrames": 24
+    "normalSampleEveryNFrames": 24,
+    "poreMeasurement": {
+      "diameterMultiplier": 7
+    }
   }
 }

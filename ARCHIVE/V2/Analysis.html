@@ -1,0 +1,1501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GranularLab | Analytics Suite</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background: #f1f5f9; color: #1e293b; margin: 0; }
+
+        .glass-card {
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 14px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+        }
+
+        /* Chart containers */
+        .chart-wrap         { position: relative; height: 280px; width: 100%; }
+        .chart-wrap-lg      { position: relative; height: 380px; width: 100%; }
+        .chart-wrap-sm      { position: relative; height: 210px; width: 100%; }
+
+        /* Sidebar nav */
+        .nav-link {
+            display: flex; align-items: center; gap: 10px;
+            padding: 9px 14px; border-radius: 10px;
+            color: #64748b; font-size: 13px; font-weight: 600;
+            text-decoration: none; transition: all 0.15s; cursor: pointer;
+        }
+        .nav-link:hover  { background: #eff6ff; color: #2563eb; }
+        .nav-link.active { background: #2563eb; color: white; box-shadow: 0 4px 14px rgba(37,99,235,0.28); }
+        .nav-link svg    { flex-shrink: 0; }
+
+        /* Section titles */
+        .sec-title { font-size: 18px; font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+        .sec-sub   { font-size: 13px; color: #64748b; margin-bottom: 20px; }
+
+        /* Chart card header */
+        .chart-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+        .chart-title { font-size: 13px; font-weight: 700; color: #1e293b; }
+
+        /* Badges */
+        .badge { font-size: 10px; font-weight: 700; letter-spacing: 0.05em; padding: 3px 9px; border-radius: 9999px; }
+        .b-blue   { background: #dbeafe; color: #1d4ed8; }
+        .b-green  { background: #dcfce7; color: #15803d; }
+        .b-purple { background: #ede9fe; color: #6d28d9; }
+        .b-amber  { background: #fef3c7; color: #b45309; }
+        .b-rose   { background: #ffe4e6; color: #be123c; }
+        .b-cyan   { background: #cffafe; color: #0e7490; }
+
+        /* Metric cards */
+        .metric-card  { padding: 18px 20px; }
+        .metric-label { font-size: 10px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
+        .metric-val   { font-size: 26px; font-weight: 900; line-height: 1; }
+        .metric-sub   { font-size: 11px; color: #94a3b8; margin-top: 5px; }
+
+        /* Drop zone */
+        .drop-zone { transition: border-color 0.2s, background 0.2s; cursor: pointer; }
+        .drop-zone.drag-over { border-color: #2563eb !important; background: #eff6ff !important; }
+
+        /* Comparison */
+        .delta-up   { background: #dcfce7; color: #15803d; }
+        .delta-down { background: #fee2e2; color: #b91c1c; }
+        .delta-zero { background: #f1f5f9; color: #64748b; }
+
+        /* Scrollable table containers */
+        .tbl-wrap { overflow-x: auto; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 10px; }
+        table  { width: 100%; border-collapse: collapse; font-size: 12px; }
+        thead th { background: #f8fafc; padding: 8px 10px; text-align: left; font-size: 11px; font-weight: 700; color: #475569; white-space: nowrap; position: sticky; top: 0; border-bottom: 1px solid #e2e8f0; }
+        tbody td { padding: 6px 10px; color: #334155; border-bottom: 1px solid #f1f5f9; white-space: nowrap; font-variant-numeric: tabular-nums; }
+        tbody tr:hover td { background: #f8fafc; }
+
+        /* Ratio bar */
+        .ratio-bar-track { height: 12px; background: #e2e8f0; border-radius: 99px; overflow: hidden; margin: 6px 0 16px; }
+        .ratio-bar-fill  { height: 100%; border-radius: 99px; transition: width 0.6s ease; }
+
+        /* File chips */
+        .file-chip { display:flex; align-items:center; gap:8px; padding:8px 12px; border-radius:10px; font-size:12px; }
+        .file-chip-a { background:#eff6ff; border:1px solid #bfdbfe; color:#1e40af; }
+        .file-chip-b { background:#fffbeb; border:1px solid #fde68a; color:#92400e; }
+        .file-chip-remove { background:none; border:none; cursor:pointer; font-size:16px; color:#94a3b8; padding:0 2px; line-height:1; flex-shrink:0; font-weight:700; }
+        .file-chip-remove:hover { color:#dc2626; }
+        .file-chip-empty { padding:12px; text-align:center; color:#94a3b8; font-size:12px; border:1px dashed #e2e8f0; border-radius:10px; }
+
+        /* Dataset badge pills */
+        .ds-badge-a { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; background:#2563eb; border-radius:7px; color:white; font-weight:900; font-size:12px; flex-shrink:0; }
+        .ds-badge-b { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; background:#d97706; border-radius:7px; color:white; font-weight:900; font-size:12px; flex-shrink:0; }
+
+        /* Drop zone variants */
+        .drop-zone-a { border:2px dashed #93c5fd !important; }
+        .drop-zone-a:hover, .drop-zone-a.drag-over { border-color:#2563eb !important; background:#eff6ff !important; }
+        .drop-zone-b { border:2px dashed #fcd34d !important; }
+        .drop-zone-b:hover, .drop-zone-b.drag-over { border-color:#d97706 !important; background:#fffbeb !important; }
+
+        section { scroll-margin-top: 76px; }
+
+        @media (max-width: 768px) { aside { display: none !important; } }
+
+        /* ── PRINT ────────────────────────────────────────────────────────────── */
+        @page {
+            size: A4 landscape;
+            margin: 12mm 14mm;
+        }
+
+        /* Print-only cover header — hidden on screen */
+        #print-header { display: none; }
+
+        @media print {
+            /* Force colors in print */
+            * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+
+            body { background: white !important; display: block !important; }
+
+            /* Full-width layout — no sidebar */
+            aside   { display: none !important; }
+            main    { width: 100% !important; }
+
+            /* Sticky header → static, strip glass blur */
+            header {
+                position: static !important;
+                background: white !important;
+                backdrop-filter: none !important;
+                border-bottom: 1.5pt solid #1e293b !important;
+                padding: 10pt 0 8pt !important;
+            }
+
+            /* Show print header, hide screen-only elements */
+            #print-header         { display: block !important; }
+            #sim-banner           { display: none !important; }
+            #import               { display: none !important; }
+            .no-print             { display: none !important; }
+            .file-chip-remove     { display: none !important; }
+            .drop-zone            { display: none !important; }
+            #files-a, #files-b    { display: none !important; }
+
+            /* Content padding reset */
+            div[style*="max-width:1100px"] { padding: 0 !important; }
+
+            /* Remove decorative shadows */
+            .glass-card { box-shadow: none !important; border: 0.75pt solid #e2e8f0 !important; }
+
+            /* Section page breaks */
+            section                         { scroll-margin-top: 0 !important; margin-bottom: 18pt !important; }
+            #overview                       { page-break-before: avoid; }
+            #population                     { page-break-before: always; }
+            #contacts                       { page-break-before: always; }
+            #geometry                       { page-break-before: always; }
+            #stress                         { page-break-before: always; }
+            #comparison                     { page-break-before: always; }
+            .glass-card                     { break-inside: avoid; }
+
+            /* Chart heights for A4 landscape */
+            .chart-wrap    { height: 175pt !important; }
+            .chart-wrap-lg { height: 230pt !important; }
+            .chart-wrap-sm { height: 130pt !important; }
+
+            /* Metric cards */
+            #metric-grid { grid-template-columns: repeat(4, 1fr) !important; gap: 8pt !important; }
+            .metric-card { padding: 10pt 12pt !important; }
+            .metric-val  { font-size: 18pt !important; }
+            .metric-label{ font-size: 9pt !important; }
+            .metric-sub  { font-size: 9pt !important; }
+
+            /* Grids — keep 2-col for A4 landscape */
+            .sec-title { font-size: 13pt !important; padding-bottom: 5pt; border-bottom: 0.75pt solid #e2e8f0; margin-bottom: 8pt !important; }
+            .sec-sub   { display: none !important; }
+
+            /* Tables — allow full expansion */
+            .tbl-wrap { max-height: none !important; overflow: visible !important; border: 0.75pt solid #e2e8f0 !important; }
+            thead th  { position: static !important; background: #f8fafc !important; font-size: 9pt !important; }
+            tbody td  { font-size: 9pt !important; }
+
+            /* Ratio bars */
+            .ratio-bar-track { margin: 4pt 0 10pt !important; height: 9pt !important; }
+
+            /* Comparison delta badges */
+            .delta-up, .delta-down, .delta-zero { font-size: 9pt !important; }
+
+            /* Sidebar status in print → content comes from #print-header */
+            #sidebar-ds-a, #sidebar-ds-b, #overview-ds-indicator { display: none !important; }
+
+            /* Chart card headers */
+            .chart-head { margin-bottom: 8pt !important; }
+            .chart-title { font-size: 10pt !important; }
+            .badge { font-size: 8pt !important; }
+
+            /* Placeholder panels (comparison empty state) — hide the whole section if no B data */
+            #cmp-placeholder { display: none !important; }
+            /* If comparison content is hidden (no B data), hide the whole section */
+            #comparison:has(#cmp-content[style*="display:none"]) { display: none !important; }
+        }
+    </style>
+</head>
+<body class="flex min-h-screen">
+
+<!-- ═══════════════════ SIDEBAR ═══════════════════ -->
+<aside style="width:240px;background:white;border-right:1px solid #e2e8f0;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;flex-shrink:0;">
+    <div style="padding:28px 20px 16px;overflow-y:auto;flex:1;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:28px;">
+            <div style="width:36px;height:36px;background:#2563eb;border-radius:9px;display:flex;align-items:center;justify-content:center;color:white;font-size:17px;font-weight:900;">G</div>
+            <span style="font-size:16px;font-weight:900;color:#0f172a;letter-spacing:-0.3px;">GranularLab</span>
+        </div>
+        <!-- Dataset status -->
+        <div style="margin-bottom:20px;display:flex;flex-direction:column;gap:6px;">
+            <div id="sidebar-ds-a" style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:9px;background:#f8fafc;border:1px solid #e2e8f0;">
+                <span class="ds-badge-a" style="width:22px;height:22px;font-size:11px;border-radius:6px;">A</span>
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:11px;font-weight:700;color:#1d4ed8;">Dataset A</div>
+                    <div id="sidebar-a-status" style="font-size:10px;color:#94a3b8;">No data</div>
+                </div>
+                <div id="sidebar-a-dot" style="width:7px;height:7px;border-radius:50%;background:#e2e8f0;flex-shrink:0;"></div>
+            </div>
+            <div id="sidebar-ds-b" style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:9px;background:#f8fafc;border:1px solid #e2e8f0;">
+                <span class="ds-badge-b" style="width:22px;height:22px;font-size:11px;border-radius:6px;">B</span>
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:11px;font-weight:700;color:#b45309;">Dataset B</div>
+                    <div id="sidebar-b-status" style="font-size:10px;color:#94a3b8;">No data</div>
+                </div>
+                <div id="sidebar-b-dot" style="width:7px;height:7px;border-radius:50%;background:#e2e8f0;flex-shrink:0;"></div>
+            </div>
+        </div>
+        <p style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#94a3b8;margin:0 0 10px 4px;">Analytics</p>
+        <nav id="sidebar-nav" style="display:flex;flex-direction:column;gap:2px;">
+            <a class="nav-link active" href="#overview" data-sec="overview">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                Overview
+            </a>
+            <a class="nav-link" href="#population" data-sec="population">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                Population
+            </a>
+            <a class="nav-link" href="#contacts" data-sec="contacts">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="12" r="3"/><circle cx="16" cy="8" r="3"/><circle cx="16" cy="16" r="3"/><line x1="10.8" y1="10.8" x2="13.2" y2="9.2"/><line x1="10.8" y1="13.2" x2="13.2" y2="14.8"/></svg>
+                Contact Analysis
+            </a>
+            <a class="nav-link" href="#geometry" data-sec="geometry">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/></svg>
+                Geometry
+            </a>
+            <a class="nav-link" href="#stress" data-sec="stress">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                Stress
+            </a>
+            <a class="nav-link" href="#comparison" data-sec="comparison">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
+                Comparison
+            </a>
+        </nav>
+    </div>
+</aside>
+
+<!-- ═══════════════════ MAIN ═══════════════════ -->
+<main style="flex:1;overflow-y:auto;">
+
+    <!-- Header -->
+    <header style="background:rgba(255,255,255,0.85);backdrop-filter:blur(12px);border-bottom:1px solid #e2e8f0;padding:14px 32px;position:sticky;top:0;z-index:40;">
+        <div style="max-width:1100px;margin:0 auto;display:flex;justify-content:space-between;align-items:center;">
+            <div>
+                <h1 style="font-size:18px;font-weight:900;color:#0f172a;margin:0 0 2px;">Simulation Analytics</h1>
+                <p style="font-size:12px;color:#64748b;margin:0;">Granular Jamming Analysis Suite</p>
+            </div>
+            <div class="no-print" style="display:flex;gap:8px;">
+                <button onclick="window.print()" style="padding:8px 16px;font-size:12px;font-weight:600;border:1px solid #e2e8f0;border-radius:8px;background:white;cursor:pointer;color:#475569;display:flex;align-items:center;gap:6px;">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                    Print Report
+                </button>
+                <button onclick="window.location.reload()" style="padding:8px 16px;font-size:12px;font-weight:600;border:1px solid #e2e8f0;border-radius:8px;background:white;cursor:pointer;color:#475569;">Reset</button>
+                <button onclick="exportCSV()" style="padding:8px 16px;font-size:12px;font-weight:700;border:none;border-radius:8px;background:#0f172a;color:white;cursor:pointer;">Export CSV</button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Sim banner -->
+    <div id="sim-banner" style="display:none;background:#2563eb;color:white;text-align:center;padding:10px 32px;font-size:13px;font-weight:600;">
+        ✓ Simulation data loaded automatically into Dataset A
+    </div>
+
+    <!-- Print-only cover header (hidden on screen, shown in @media print) -->
+    <div id="print-header" style="padding:0 0 0 0;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2pt solid #0f172a;padding-bottom:10pt;margin-bottom:20pt;">
+            <div style="display:flex;align-items:center;gap:12pt;">
+                <div style="width:34pt;height:34pt;background:#2563eb;border-radius:8pt;display:flex;align-items:center;justify-content:center;color:white;font-size:18pt;font-weight:900;flex-shrink:0;">G</div>
+                <div>
+                    <div style="font-size:17pt;font-weight:900;color:#0f172a;line-height:1.1;">GranularLab Analytics Report</div>
+                    <div style="font-size:10pt;color:#64748b;margin-top:2pt;">Granular Jamming Simulation — Post-Settled Analysis</div>
+                </div>
+            </div>
+            <div style="text-align:right;font-size:9pt;color:#64748b;line-height:1.8;">
+                <div id="print-date"></div>
+                <div id="print-ds-a-summary" style="color:#1d4ed8;font-weight:600;"></div>
+                <div id="print-ds-b-summary" style="color:#b45309;font-weight:600;"></div>
+            </div>
+        </div>
+        <!-- Dataset summary cards for print -->
+        <div id="print-ds-cards" style="display:flex;gap:14pt;margin-bottom:18pt;"></div>
+    </div>
+
+    <div style="max-width:1100px;margin:0 auto;padding:32px;display:flex;flex-direction:column;gap:40px;">
+
+        <!-- ── IMPORT ─────────────────────────────────────── -->
+        <section id="import">
+            <div class="sec-title">Import Data</div>
+            <p class="sec-sub">Drop a <code>simulation_results.zip</code> (from <em>Export All Data</em>), a <code>simulation_export.json</code>, or individual CSV files. Multiple files can be added per dataset and removed individually.</p>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+
+                <!-- ── Dataset A ── -->
+                <div>
+                    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+                        <span class="ds-badge-a">A</span>
+                        <span style="font-size:16px;font-weight:900;color:#2563eb;">Dataset A</span>
+                        <span style="font-size:11px;color:#94a3b8;font-weight:500;">Primary</span>
+                    </div>
+                    <!-- Drop zone -->
+                    <div class="glass-card drop-zone drop-zone-a" id="drop-a"
+                        ondragover="ev(event,'A')" ondragleave="el(event)" ondrop="ed(event,'A')"
+                        style="text-align:center;">
+                        <input type="file" id="file-a" multiple accept=".json,.csv,.zip" style="display:none" onchange="loadFiles('A',this.files)">
+                        <div style="padding:20px 16px 16px;">
+                            <button onclick="document.getElementById('file-a').click()"
+                                style="padding:8px 22px;background:#2563eb;color:white;border:none;border-radius:9px;font-size:13px;font-weight:700;cursor:pointer;box-shadow:0 2px 8px rgba(37,99,235,0.25);">
+                                + Add Files
+                            </button>
+                            <p style="font-size:11px;color:#93c5fd;margin:8px 0 0;">or drag .zip / .json / .csv here</p>
+                        </div>
+                    </div>
+                    <!-- File list -->
+                    <div id="files-a" style="margin-top:8px;display:flex;flex-direction:column;gap:5px;">
+                        <div class="file-chip-empty">No files loaded yet</div>
+                    </div>
+                </div>
+
+                <!-- ── Dataset B ── -->
+                <div>
+                    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+                        <span class="ds-badge-b">B</span>
+                        <span style="font-size:16px;font-weight:900;color:#d97706;">Dataset B</span>
+                        <span style="font-size:11px;color:#94a3b8;font-weight:500;">Comparison (optional)</span>
+                    </div>
+                    <!-- Drop zone -->
+                    <div class="glass-card drop-zone drop-zone-b" id="drop-b"
+                        ondragover="ev(event,'B')" ondragleave="el(event)" ondrop="ed(event,'B')"
+                        style="text-align:center;">
+                        <input type="file" id="file-b" multiple accept=".json,.csv,.zip" style="display:none" onchange="loadFiles('B',this.files)">
+                        <div style="padding:20px 16px 16px;">
+                            <button onclick="document.getElementById('file-b').click()"
+                                style="padding:8px 22px;background:#d97706;color:white;border:none;border-radius:9px;font-size:13px;font-weight:700;cursor:pointer;box-shadow:0 2px 8px rgba(217,119,6,0.25);">
+                                + Add Files
+                            </button>
+                            <p style="font-size:11px;color:#fcd34d;margin:8px 0 0;">or drag .zip / .json / .csv here</p>
+                        </div>
+                    </div>
+                    <!-- File list -->
+                    <div id="files-b" style="margin-top:8px;display:flex;flex-direction:column;gap:5px;">
+                        <div class="file-chip-empty">No files loaded yet</div>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+        <!-- ── OVERVIEW ───────────────────────────────────── -->
+        <section id="overview">
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;">
+                <div class="sec-title" style="margin:0;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                    Population Overview
+                </div>
+                <div id="overview-ds-indicator" style="display:none;align-items:center;gap:8px;font-size:12px;font-weight:600;color:#64748b;">
+                    Showing:
+                    <span style="display:flex;align-items:center;gap:4px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:3px 8px;color:#1d4ed8;">
+                        <span class="ds-badge-a" style="width:18px;height:18px;font-size:10px;border-radius:4px;">A</span> Dataset A
+                    </span>
+                </div>
+            </div>
+            <p class="sec-sub">Population-level summary statistics from the settled simulation state</p>
+            <div id="metric-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;"></div>
+        </section>
+
+        <!-- ── POPULATION ANALYSIS ────────────────────────── -->
+        <section id="population">
+            <div class="sec-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.5"><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                Population Analysis
+            </div>
+            <p class="sec-sub">Per-particle coordination number distribution and jamming network characterization</p>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+                <div class="glass-card" style="padding:22px;">
+                    <div class="chart-head">
+                        <span class="chart-title">Nodal Coordination Number (per particle)</span>
+                        <div style="display:flex;gap:6px;align-items:center;">
+                            <span id="z-dist-ds-badge" class="ds-badge-a" title="Showing Dataset A (blue) and B (orange) if both loaded">A</span>
+                            <span class="badge b-blue">Bar</span>
+                        </div>
+                    </div>
+                    <div class="chart-wrap"><canvas id="chart-z-dist"></canvas></div>
+                </div>
+                <div class="glass-card" style="padding:22px;">
+                    <div class="chart-head">
+                        <span class="chart-title">Z Frequency Histogram</span>
+                        <span class="badge b-green">Histogram · A</span>
+                    </div>
+                    <div class="chart-wrap"><canvas id="chart-z-hist"></canvas></div>
+                </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 2fr;gap:16px;margin-top:16px;">
+                <div class="glass-card" style="padding:22px;">
+                    <div class="chart-head">
+                        <span class="chart-title">Isolated vs Connected</span>
+                        <span class="badge b-rose">Doughnut · A</span>
+                    </div>
+                    <div class="chart-wrap-sm"><canvas id="chart-isolated"></canvas></div>
+                </div>
+                <div class="glass-card" style="padding:22px;">
+                    <div class="chart-head">
+                        <span class="chart-title">Adjacency List (Contact Network)</span>
+                        <span class="badge b-purple">Table · A</span>
+                    </div>
+                    <div id="adjacency-table" style="max-height:210px;" class="tbl-wrap"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── CONTACT ANALYSIS ───────────────────────────── -->
+        <section id="contacts">
+            <div class="sec-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.5"><circle cx="8" cy="12" r="3"/><circle cx="16" cy="8" r="3"/><circle cx="16" cy="16" r="3"/><line x1="10.8" y1="10.8" x2="13.2" y2="9.2"/><line x1="10.8" y1="13.2" x2="13.2" y2="14.8"/></svg>
+                Contact Physics
+            </div>
+            <p class="sec-sub">Contact type distribution, force magnitudes, penetration depths, and contact normals</p>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+                <div class="glass-card" style="padding:22px;">
+                    <div class="chart-head">
+                        <span class="chart-title">P–P vs P–Container Contact Ratio</span>
+                        <span class="badge b-blue">Doughnut</span>
+                    </div>
+                    <div class="chart-wrap"><canvas id="chart-pp-pc"></canvas></div>
+                </div>
+                <div class="glass-card" style="padding:22px;">
+                    <div class="chart-head">
+                        <span class="chart-title">Contact Force Distribution</span>
+                        <span class="badge b-amber">Histogram</span>
+                    </div>
+                    <div class="chart-wrap"><canvas id="chart-force"></canvas></div>
+                </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;">
+                <div class="glass-card" style="padding:22px;">
+                    <div class="chart-head">
+                        <span class="chart-title">Penetration Depth Distribution</span>
+                        <span class="badge b-green">Histogram</span>
+                    </div>
+                    <div class="chart-wrap"><canvas id="chart-depth"></canvas></div>
+                </div>
+                <div class="glass-card" style="padding:22px;">
+                    <div class="chart-head">
+                        <span class="chart-title">Contact Normal Dominant Directions</span>
+                        <span class="badge b-cyan">Polar</span>
+                    </div>
+                    <div class="chart-wrap"><canvas id="chart-normals"></canvas></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── GEOMETRY & SURFACE ─────────────────────────── -->
+        <section id="geometry">
+            <div class="sec-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.5"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/></svg>
+                Geometry & Surface Analysis
+            </div>
+            <p class="sec-sub">Contact ratio relative to theoretical maximum, surface area utilization, and spatial distribution</p>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+                <div class="glass-card" style="padding:24px;">
+                    <div class="chart-head">
+                        <span class="chart-title">Contact Ratio (Actual / Theoretical Max)</span>
+                        <span class="badge b-blue">Efficiency</span>
+                    </div>
+                    <div id="contact-ratio-viz"></div>
+                </div>
+                <div class="glass-card" style="padding:24px;">
+                    <div class="chart-head">
+                        <span class="chart-title">Surface Area Ratio (Contact / Total)</span>
+                        <span class="badge b-green">Coverage</span>
+                    </div>
+                    <div id="surface-ratio-viz"></div>
+                </div>
+            </div>
+            <div class="glass-card" style="padding:22px;margin-top:16px;">
+                <div class="chart-head">
+                    <span class="chart-title">Particle Position Distribution — XZ Projection</span>
+                    <span class="badge b-purple">Scatter</span>
+                </div>
+                <div class="chart-wrap"><canvas id="chart-scatter"></canvas></div>
+            </div>
+        </section>
+
+        <!-- ── STRESS ─────────────────────────────────────── -->
+        <section id="stress">
+            <div class="sec-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.5"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                Stress Distribution
+            </div>
+            <p class="sec-sub">Nodal stress distribution across mesh geometry — requires <code>vertex_stress.csv</code> or full export JSON</p>
+            <div class="glass-card" style="padding:22px;">
+                <div class="chart-head">
+                    <span class="chart-title">Vertex Stress Across Mesh Nodes</span>
+                    <span class="badge b-purple">High Fidelity</span>
+                </div>
+                <div class="chart-wrap-lg"><canvas id="chart-stress"></canvas></div>
+            </div>
+            <div class="glass-card" style="padding:20px;margin-top:16px;background:#faf5ff;border-color:#e9d5ff;">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;text-align:center;">
+                    <div>
+                        <div id="stress-min" style="font-size:22px;font-weight:900;color:#6d28d9;">—</div>
+                        <div style="font-size:11px;color:#7c3aed;margin-top:2px;">Min Stress</div>
+                    </div>
+                    <div>
+                        <div id="stress-avg" style="font-size:22px;font-weight:900;color:#6d28d9;">—</div>
+                        <div style="font-size:11px;color:#7c3aed;margin-top:2px;">Avg Stress</div>
+                    </div>
+                    <div>
+                        <div id="stress-max" style="font-size:22px;font-weight:900;color:#6d28d9;">—</div>
+                        <div style="font-size:11px;color:#7c3aed;margin-top:2px;">Max Stress</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── COMPARISON ─────────────────────────────────── -->
+        <section id="comparison">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px;flex-wrap:wrap;">
+                <div class="sec-title" style="margin:0;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.5"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
+                    Dataset Comparison
+                </div>
+                <!-- Color legend -->
+                <div style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;">
+                    <span style="display:flex;align-items:center;gap:5px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:7px;padding:4px 10px;color:#1d4ed8;">
+                        <span class="ds-badge-a" style="width:18px;height:18px;font-size:10px;border-radius:4px;">A</span>
+                        <span style="display:inline-block;width:12px;height:12px;background:#3b82f6;border-radius:3px;"></span>
+                        Blue
+                    </span>
+                    <span style="display:flex;align-items:center;gap:5px;background:#fffbeb;border:1px solid #fde68a;border-radius:7px;padding:4px 10px;color:#92400e;">
+                        <span class="ds-badge-b" style="width:18px;height:18px;font-size:10px;border-radius:4px;">B</span>
+                        <span style="display:inline-block;width:12px;height:12px;background:#f97316;border-radius:3px;"></span>
+                        Orange
+                    </span>
+                </div>
+            </div>
+            <p class="sec-sub">Side-by-side A vs B — load both datasets to enable this section</p>
+            <div id="cmp-placeholder" class="glass-card" style="padding:48px;text-align:center;color:#94a3b8;">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="margin:0 auto 12px;opacity:0.3;display:block;"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
+                Load Dataset B to enable comparison
+            </div>
+            <div id="cmp-content" style="display:none;flex-direction:column;gap:16px;">
+                <div id="delta-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;"></div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+                    <div class="glass-card" style="padding:22px;">
+                        <div class="chart-head">
+                            <span class="chart-title">Coordination Z — A vs B</span>
+                            <span class="badge b-blue">Comparison</span>
+                        </div>
+                        <div class="chart-wrap"><canvas id="chart-cmp-z"></canvas></div>
+                    </div>
+                    <div class="glass-card" style="padding:22px;">
+                        <div class="chart-head">
+                            <span class="chart-title">Contact Forces — A vs B</span>
+                            <span class="badge b-amber">Comparison</span>
+                        </div>
+                        <div class="chart-wrap"><canvas id="chart-cmp-force"></canvas></div>
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+                    <div class="glass-card" style="padding:22px;">
+                        <div class="chart-head">
+                            <span class="chart-title">Depth Distribution — A vs B</span>
+                            <span class="badge b-green">Comparison</span>
+                        </div>
+                        <div class="chart-wrap"><canvas id="chart-cmp-depth"></canvas></div>
+                    </div>
+                    <div class="glass-card" style="padding:22px;">
+                        <div class="chart-head">
+                            <span class="chart-title">Particle Positions — A vs B (XZ)</span>
+                            <span class="badge b-purple">Scatter</span>
+                        </div>
+                        <div class="chart-wrap"><canvas id="chart-cmp-scatter"></canvas></div>
+                    </div>
+                </div>
+                <div class="glass-card" style="padding:22px;">
+                    <div class="chart-head">
+                        <span class="chart-title">KPI Summary Table</span>
+                        <span class="badge b-cyan">Δ Delta</span>
+                    </div>
+                    <div id="cmp-table" class="tbl-wrap"></div>
+                </div>
+            </div>
+        </section>
+
+    </div><!-- /content -->
+</main><!-- /main -->
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────────
+// FILE_MAP stores raw parsed data keyed by filename, per dataset
+const FILE_MAP = { A: {}, B: {} };
+
+const DS = {
+    A: { summary: null, particles: [], contacts: [], stress: [] },
+    B: { summary: null, particles: [], contacts: [], stress: [] },
+};
+const charts = {};
+
+const TYPE_META = {
+    full_export:    { icon: '📦', label: 'Full Export JSON' },
+    summary:        { icon: '📊', label: 'Summary JSON' },
+    particles:      { icon: '⚫', label: 'Particles CSV' },
+    contacts:       { icon: '🔗', label: 'Contact Pairs CSV' },
+    contact_points: { icon: '📍', label: 'Contact Points CSV' },
+    stress:         { icon: '⚡', label: 'Vertex Stress CSV' },
+    unknown:        { icon: '📄', label: 'Data File' },
+};
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+window.addEventListener('load', () => {
+    try {
+        const raw = localStorage.getItem('granularlab_export');
+        if (raw) {
+            localStorage.removeItem('granularlab_export');
+            const data = JSON.parse(raw);
+            _storeFile('A', 'simulation_export.json', 'full_export', data,
+                `${data.particles?.length ?? 0} particles, ${data.contacts?.length ?? 0} contacts`);
+            recomputeDS('A');
+            renderFileList('A');
+            refresh();
+            document.getElementById('sim-banner').style.display = 'block';
+        }
+    } catch (_) {}
+    setupScrollSpy();
+});
+
+// ── Drag/drop helpers ─────────────────────────────────────────────────────────
+function ev(e, v) { e.preventDefault(); e.currentTarget.classList.add('drag-over'); }
+function el(e)    { e.currentTarget.classList.remove('drag-over'); }
+function ed(e, v) { e.preventDefault(); e.currentTarget.classList.remove('drag-over'); loadFiles(v, e.dataTransfer.files); }
+
+// ── File loading ───────────────────────────────────────────────────────────────
+async function loadFiles(ver, files) {
+    for (const file of Array.from(files)) {
+        const ext = file.name.split('.').pop().toLowerCase();
+        if (ext === 'zip') {
+            await loadZip(ver, file);
+        } else {
+            await parseSingleFile(ver, file.name, await file.text());
+        }
+    }
+    recomputeDS(ver);
+    renderFileList(ver);
+    refresh();
+}
+
+async function loadZip(ver, file) {
+    if (typeof JSZip === 'undefined') { alert('JSZip library not loaded'); return; }
+    try {
+        const zip = await JSZip.loadAsync(await file.arrayBuffer());
+        for (const [zipPath, zipEntry] of Object.entries(zip.files)) {
+            if (zipEntry.dir) continue;
+            const baseName = zipPath.split('/').pop();
+            if (!baseName) continue;
+            const ext = baseName.split('.').pop().toLowerCase();
+            if (!['json', 'csv'].includes(ext)) continue;
+            if (baseName === 'manifest.json') continue;
+            await parseSingleFile(ver, baseName, await zipEntry.async('string'));
+        }
+    } catch (e) {
+        console.error('ZIP load error:', e);
+        alert('Could not read ZIP file: ' + e.message);
+    }
+}
+
+async function parseSingleFile(ver, name, text) {
+    const ext = name.split('.').pop().toLowerCase();
+    const nl  = name.toLowerCase();
+    try {
+        if (ext === 'json') {
+            const data = JSON.parse(text);
+            if (data.summary !== undefined || data.particles !== undefined || data.contacts !== undefined) {
+                const pC = data.particles?.length ?? 0, cC = data.contacts?.length ?? 0;
+                _storeFile(ver, name, 'full_export', data, `${pC} particles, ${cC} contacts`);
+            } else {
+                _storeFile(ver, name, 'summary', data, `${Object.keys(data).length} fields`);
+            }
+        } else if (ext === 'csv') {
+            const parsed = Papa.parse(text.trim(), { header: true, dynamicTyping: true, skipEmptyLines: true });
+            let type = 'unknown';
+            if      (nl.includes('vertex_stress'))                              type = 'stress';
+            else if (nl.includes('contact_pair') || nl === 'contacts.csv')      type = 'contacts';
+            else if (nl.includes('contact_point'))                              type = 'contact_points';
+            else if (nl.includes('particle'))                                   type = 'particles';
+            _storeFile(ver, name, type, parsed.data, `${parsed.data.length} rows`);
+        }
+    } catch (e) { console.error('Parse error:', name, e); }
+}
+
+function _storeFile(ver, name, type, data, count) {
+    FILE_MAP[ver][name] = { type, data, count };
+}
+
+// ── Remove a file from a dataset ──────────────────────────────────────────────
+function removeFile(ver, name) {
+    delete FILE_MAP[ver][name];
+    recomputeDS(ver);
+    renderFileList(ver);
+    refresh();
+}
+
+// ── Recompute DS from FILE_MAP ─────────────────────────────────────────────────
+function recomputeDS(ver) {
+    DS[ver] = { summary: null, particles: [], contacts: [], stress: [] };
+    const entries = Object.entries(FILE_MAP[ver]);
+    // Process full exports first (they may be overridden by individual CSVs)
+    for (const [, e] of entries.filter(([, e]) => e.type === 'full_export')) {
+        if (e.data.summary)           DS[ver].summary   = { ...(DS[ver].summary || {}), ...e.data.summary };
+        if (e.data.particles?.length) DS[ver].particles = e.data.particles;
+        if (e.data.contacts?.length)  DS[ver].contacts  = e.data.contacts;
+    }
+    for (const [, e] of entries.filter(([, e]) => e.type !== 'full_export')) {
+        if      (e.type === 'summary')        DS[ver].summary   = { ...(DS[ver].summary || {}), ...e.data };
+        else if (e.type === 'particles')      DS[ver].particles = e.data;
+        else if (e.type === 'contacts')       DS[ver].contacts  = e.data;
+        else if (e.type === 'contact_points' && !DS[ver].contacts.length) DS[ver].contacts = e.data;
+        else if (e.type === 'stress')         DS[ver].stress    = e.data;
+    }
+}
+
+// ── Render file list chips + sidebar status ────────────────────────────────────
+function renderFileList(ver) {
+    const el = document.getElementById(`files-${ver.toLowerCase()}`);
+    if (!el) return;
+    const entries = Object.entries(FILE_MAP[ver]);
+    const chipCls = ver === 'A' ? 'file-chip-a' : 'file-chip-b';
+
+    if (!entries.length) {
+        el.innerHTML = '<div class="file-chip-empty">No files loaded yet</div>';
+        _updateSidebarStatus(ver, false, 0);
+        return;
+    }
+
+    el.innerHTML = entries.map(([name, entry]) => {
+        const meta = TYPE_META[entry.type] || TYPE_META.unknown;
+        const safeN = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        return `<div class="file-chip ${chipCls}">
+            <span style="font-size:15px;flex-shrink:0;">${meta.icon}</span>
+            <div style="flex:1;min-width:0;overflow:hidden;">
+                <div style="font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${name}">${name}</div>
+                <div style="font-size:10px;opacity:0.65;margin-top:1px;">${meta.label} &nbsp;·&nbsp; ${entry.count}</div>
+            </div>
+            <button class="file-chip-remove" onclick="removeFile('${ver}','${safeN}')" title="Remove this file">×</button>
+        </div>`;
+    }).join('');
+
+    _updateSidebarStatus(ver, true, entries.length);
+}
+
+function _updateSidebarStatus(ver, loaded, fileCount) {
+    const v = ver.toLowerCase();
+    const statusEl = document.getElementById(`sidebar-${v}-status`);
+    const dotEl    = document.getElementById(`sidebar-${v}-dot`);
+    const cardEl   = document.getElementById(`sidebar-ds-${v}`);
+    if (!statusEl || !dotEl) return;
+    if (loaded) {
+        const d = DS[ver];
+        const parts = d.particles.length ? `${d.particles.length} particles` : '';
+        const conts = d.contacts.length  ? `${d.contacts.length} contacts` : '';
+        statusEl.textContent = [parts, conts].filter(Boolean).join(', ') || `${fileCount} file${fileCount > 1 ? 's' : ''} loaded`;
+        statusEl.style.color = ver === 'A' ? '#2563eb' : '#d97706';
+        dotEl.style.background = ver === 'A' ? '#22c55e' : '#22c55e';
+        if (cardEl) cardEl.style.borderColor = ver === 'A' ? '#bfdbfe' : '#fde68a';
+    } else {
+        statusEl.textContent = 'No data';
+        statusEl.style.color = '#94a3b8';
+        dotEl.style.background = '#e2e8f0';
+        if (cardEl) cardEl.style.borderColor = '#e2e8f0';
+    }
+}
+
+// ── Refresh all ────────────────────────────────────────────────────────────────
+function refresh() {
+    renderMetrics();
+    renderZDist();
+    renderZHist();
+    renderIsolatedPie();
+    renderAdjTable();
+    renderPPPC();
+    renderForceDist();
+    renderDepthDist();
+    renderNormals();
+    renderContactRatioViz();
+    renderSurfaceRatioViz();
+    renderScatter();
+    renderStress();
+    renderComparison();
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+function fmtSci(v) {
+    if (v == null || !isFinite(v)) return '—';
+    const a = Math.abs(v);
+    if (a === 0) return '0';
+    if (a >= 1e4 || (a < 0.01 && a > 0)) return v.toExponential(2);
+    return v.toFixed(4);
+}
+
+function kill(k) { if (charts[k]) { charts[k].destroy(); delete charts[k]; } }
+
+function noDataCanvas(id, msg) {
+    const canvas = document.getElementById(id);
+    if (!canvas) return;
+    // Destroy any existing Chart on this canvas
+    const existKey = Object.keys(charts).find(k => charts[k]?.canvas === canvas);
+    if (existKey) { charts[existKey].destroy(); delete charts[existKey]; }
+    const w = canvas.offsetWidth  || canvas.clientWidth  || 300;
+    const h = canvas.offsetHeight || canvas.clientHeight || 200;
+    canvas.width  = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '500 12px Inter, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(msg || 'No data available', w / 2, h / 2);
+}
+
+function mkHist(vals, bins) {
+    if (!vals.length) return { labels: [], data: [] };
+    const mn = Math.min(...vals), mx = Math.max(...vals);
+    const bw = (mx - mn) / bins || 1;
+    const counts = Array(bins).fill(0);
+    vals.forEach(v => counts[Math.min(bins - 1, Math.floor((v - mn) / bw))]++);
+    const labels = counts.map((_, i) => (mn + i * bw + bw / 2).toPrecision(3));
+    return { labels, data: counts };
+}
+
+const OPTS = {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+        y: { beginAtZero: true, grid: { color: '#f1f5f9' }, ticks: { font: { size: 10 } } },
+        x: { grid: { display: false }, ticks: { font: { size: 10 }, maxRotation: 45, maxTicksLimit: 20 } },
+    },
+};
+
+// ── Metric cards ───────────────────────────────────────────────────────────────
+function renderMetrics() {
+    const grid = document.getElementById('metric-grid');
+    grid.innerHTML = '';
+    const { summary: s, particles: p } = DS.A;
+    // Show/hide dataset indicator
+    const ind = document.getElementById('overview-ds-indicator');
+    if (ind) ind.style.display = (s || p.length) ? 'flex' : 'none';
+    if (!s && !p.length) return;
+
+    const n    = (s?.n_particles)  ?? p.length ?? 0;
+    const pp   = s?.total_pp       ?? 0;
+    const pc   = s?.total_pc       ?? 0;
+    const Z    = s?.Z              ?? 0;
+    const iso  = s?.n_isolated     ?? p.filter(x => (x.n_contacts ?? 0) === 0).length;
+    const wall = s?.n_container_touch ?? 0;
+    const eff  = s?.contact_efficiency ?? 0;
+    const prs  = s?.system_pressure ?? 0;
+    const maxPP = n > 1 ? n * (n - 1) / 2 : 1;
+
+    const metrics = [
+        { label: 'Total Particles',       val: n,                   color: '#0f172a', sub: null },
+        { label: 'P–P Contacts',          val: pp,                  color: '#2563eb', sub: `of ${maxPP} theoretical max` },
+        { label: 'P–Container Contacts',  val: pc,                  color: '#0891b2', sub: null },
+        { label: 'Avg Coordination Z',    val: Z.toFixed(3),        color: '#7c3aed', sub: 'contacts per particle' },
+        { label: 'Isolated (Rattlers)',   val: iso,                 color: '#dc2626', sub: 'Z = 0' },
+        { label: 'Container Touching',    val: wall,                color: '#d97706', sub: null },
+        { label: 'Contact Efficiency',    val: fmtSci(eff),         color: '#16a34a', sub: 'PP / total vol m³' },
+        { label: 'System Pressure',       val: fmtSci(prs),         color: '#475569', sub: 'Pa' },
+    ];
+
+    metrics.forEach(m => {
+        const c = document.createElement('div');
+        c.className = 'glass-card metric-card';
+        c.innerHTML = `<div class="metric-label">${m.label}</div>
+            <div class="metric-val" style="color:${m.color}">${m.val}</div>
+            ${m.sub ? `<div class="metric-sub">${m.sub}</div>` : ''}`;
+        grid.appendChild(c);
+    });
+}
+
+// ── Z Distribution bar ─────────────────────────────────────────────────────────
+function renderZDist() {
+    kill('zd');
+    const p = DS.A.particles;
+    if (!p.length) { noDataCanvas('chart-z-dist', 'No particle data — load particles.csv or full export JSON'); return; }
+    const hasB = DS.B.particles.length > 0;
+    // Update badge to show A or A+B
+    const badge = document.getElementById('z-dist-ds-badge');
+    if (badge) {
+        badge.textContent = hasB ? 'A+B' : 'A';
+        badge.className = hasB ? '' : 'ds-badge-a';
+        if (hasB) Object.assign(badge.style, { background: 'linear-gradient(135deg,#2563eb 50%,#d97706 50%)', width:'32px', height:'18px', fontSize:'9px', borderRadius:'5px', color:'white', display:'inline-flex', alignItems:'center', justifyContent:'center', fontWeight:'900' });
+        else badge.removeAttribute('style');
+    }
+    const ctx = document.getElementById('chart-z-dist').getContext('2d');
+    const dsets = [{
+        label: 'Dataset A',
+        data: p.map(x => x.n_contacts ?? 0),
+        backgroundColor: '#3b82f6',
+        borderRadius: 4,
+    }];
+    if (hasB) dsets.push({
+        label: 'Dataset B',
+        data: DS.B.particles.map(x => x.n_contacts ?? 0),
+        backgroundColor: '#f97316',
+        borderRadius: 4,
+    });
+    charts.zd = new Chart(ctx, {
+        type: 'bar',
+        data: { labels: p.map(x => `P${x.id}`), datasets: dsets },
+        options: { ...OPTS, plugins: { legend: { display: hasB, position: 'top', labels: { font: { size: 11 }, usePointStyle: true } } } },
+    });
+}
+
+// ── Z Histogram ────────────────────────────────────────────────────────────────
+function renderZHist() {
+    kill('zh');
+    const p = DS.A.particles;
+    if (!p.length) { noDataCanvas('chart-z-hist', 'No particle data — load particles.csv or full export JSON'); return; }
+    const maxZ = Math.max(...p.map(x => x.n_contacts ?? 0));
+    const hist = Array(maxZ + 1).fill(0);
+    p.forEach(x => hist[Math.max(0, x.n_contacts ?? 0)]++);
+    const ctx = document.getElementById('chart-z-hist').getContext('2d');
+    charts.zh = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: hist.map((_, i) => i),
+            datasets: [{ data: hist, backgroundColor: hist.map((_, i) => i === 0 ? '#fca5a5' : '#4ade80'), borderRadius: 6 }],
+        },
+        options: {
+            ...OPTS,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { ...OPTS.scales.x, title: { display: true, text: 'Coordination Number Z', font: { size: 11 } } },
+                y: { ...OPTS.scales.y, title: { display: true, text: 'Particle Count', font: { size: 11 } } },
+            },
+        },
+    });
+}
+
+// ── Isolated vs Connected pie ───────────────────────────────────────────────────
+function renderIsolatedPie() {
+    kill('iso');
+    const { summary: s, particles: p } = DS.A;
+    const n   = s?.n_particles ?? p.length;
+    const iso = s?.n_isolated  ?? p.filter(x => (x.n_contacts ?? 0) === 0).length;
+    if (!n) { noDataCanvas('chart-isolated', 'No particle data'); return; }
+    const ctx = document.getElementById('chart-isolated').getContext('2d');
+    charts.iso = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: ['Isolated (Z=0)', 'Connected (Z>0)'],
+            datasets: [{ data: [iso, n - iso], backgroundColor: ['#fca5a5', '#6ee7b7'], borderWidth: 0 }],
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { font: { size: 11 } } } } },
+    });
+}
+
+// ── Adjacency Table ────────────────────────────────────────────────────────────
+function renderAdjTable() {
+    const el = document.getElementById('adjacency-table');
+    let p = DS.A.particles;
+    const c = DS.A.contacts;
+
+    if (!p.length) {
+        el.innerHTML = '<div style="padding:20px;text-align:center;color:#94a3b8;font-size:12px;">No particle data loaded.</div>';
+        return;
+    }
+
+    // Build neighbor map from contacts when particles don't carry a neighbors field
+    // (happens when particles.csv is loaded alongside the full export JSON)
+    if (!p[0]?.neighbors) {
+        const nbMap = {};
+        for (const row of c) {
+            const a = row.particle_a ?? row.id_a;
+            const b = row.particle_b ?? row.id_b;
+            if (a == null || b == null) continue;
+            (nbMap[a] = nbMap[a] || []).push(b);
+            (nbMap[b] = nbMap[b] || []).push(a);
+        }
+        p = p.map(pt => ({ ...pt, neighbors: nbMap[pt.id] || [] }));
+    }
+
+    const rows = p.filter(x => x.neighbors?.length).slice(0, 60);
+    if (!rows.length) {
+        el.innerHTML = '<div style="padding:20px;text-align:center;color:#94a3b8;font-size:12px;">No particle–particle contacts in this simulation — adjacency list is empty.</div>';
+        return;
+    }
+    el.innerHTML = `<table>
+        <thead><tr><th>Particle</th><th>Z#</th><th>Neighbors</th></tr></thead>
+        <tbody>${rows.map((x, i) =>
+            `<tr style="background:${i%2?'#f8fafc':'white'}">
+                <td><strong>#${x.id}</strong></td>
+                <td style="color:#2563eb;font-weight:700;">${x.n_contacts ?? x.neighbors.length}</td>
+                <td style="font-family:monospace;font-size:11px;">
+                    ${x.neighbors.slice(0, 10).map(n => `#${n}`).join(', ')}${x.neighbors.length > 10 ? ' …' : ''}
+                </td>
+            </tr>`).join('')}
+        </tbody></table>`;
+}
+
+// ── P-P vs P-C Doughnut ────────────────────────────────────────────────────────
+function renderPPPC() {
+    kill('pppc');
+    const s = DS.A.summary;
+    const c = DS.A.contacts;
+    // Fall back to counting from loaded contacts when summary is absent
+    const pp = s?.total_pp ?? c.filter(x => x.particle_a != null && x.particle_b != null).length;
+    const pc = s?.total_pc ?? 0;
+    if (!s && !c.length) { noDataCanvas('chart-pp-pc', 'No contact data — load summary.json or contact CSVs'); return; }
+    if (pp === 0 && pc === 0) { noDataCanvas('chart-pp-pc', 'No contacts recorded in this simulation'); return; }
+    const ctx = document.getElementById('chart-pp-pc').getContext('2d');
+    charts.pppc = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: ['P–P Contacts', 'P–Container Contacts'],
+            datasets: [{ data: [pp, pc], backgroundColor: ['#3b82f6', '#10b981'], borderWidth: 0 }],
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { font: { size: 11 } } } } },
+    });
+}
+
+// ── Force Distribution ─────────────────────────────────────────────────────────
+function renderForceDist() {
+    kill('force');
+    const forces = DS.A.contacts.map(c => c.force).filter(f => f != null && isFinite(f) && f > 0);
+    if (!forces.length) { noDataCanvas('chart-force', 'No force data — requires contact_pairs.csv with force values'); return; }
+    const { labels, data } = mkHist(forces, 20);
+    const ctx = document.getElementById('chart-force').getContext('2d');
+    charts.force = new Chart(ctx, {
+        type: 'bar',
+        data: { labels, datasets: [{ data, backgroundColor: '#f59e0b', borderRadius: 4 }] },
+        options: {
+            ...OPTS,
+            scales: {
+                x: { ...OPTS.scales.x, title: { display: true, text: 'Force (N)', font: { size: 11 } } },
+                y: { ...OPTS.scales.y, title: { display: true, text: 'Count', font: { size: 11 } } },
+            },
+        },
+    });
+}
+
+// ── Depth Distribution ─────────────────────────────────────────────────────────
+function renderDepthDist() {
+    kill('depth');
+    const depths = DS.A.contacts
+        .map(c => (c.depth != null && isFinite(c.depth)) ? c.depth * 1000 : null)
+        .filter(d => d != null && d > 0);
+    if (!depths.length) { noDataCanvas('chart-depth', 'No penetration depth data — requires contact_pairs.csv'); return; }
+    const { labels, data } = mkHist(depths, 20);
+    const ctx = document.getElementById('chart-depth').getContext('2d');
+    charts.depth = new Chart(ctx, {
+        type: 'bar',
+        data: { labels, datasets: [{ data, backgroundColor: '#34d399', borderRadius: 4 }] },
+        options: {
+            ...OPTS,
+            scales: {
+                x: { ...OPTS.scales.x, title: { display: true, text: 'Depth (mm)', font: { size: 11 } } },
+                y: { ...OPTS.scales.y, title: { display: true, text: 'Count', font: { size: 11 } } },
+            },
+        },
+    });
+}
+
+// ── Contact Normals Polar ──────────────────────────────────────────────────────
+function renderNormals() {
+    kill('normals');
+    const nc = DS.A.contacts.filter(c => c.nx != null);
+    if (!nc.length) { noDataCanvas('chart-normals', 'No normal vector data — requires contact_points.csv'); return; }
+    const bins = { '+X': 0, '-X': 0, '+Y': 0, '-Y': 0, '+Z': 0, '-Z': 0 };
+    nc.forEach(c => {
+        const ax = Math.abs(c.nx ?? 0), ay = Math.abs(c.ny ?? 0), az = Math.abs(c.nz ?? 0);
+        if (ax >= ay && ax >= az) bins[c.nx > 0 ? '+X' : '-X']++;
+        else if (ay >= ax && ay >= az) bins[c.ny > 0 ? '+Y' : '-Y']++;
+        else bins[(c.nz ?? 0) > 0 ? '+Z' : '-Z']++;
+    });
+    const ctx = document.getElementById('chart-normals').getContext('2d');
+    charts.normals = new Chart(ctx, {
+        type: 'polarArea',
+        data: {
+            labels: Object.keys(bins),
+            datasets: [{ data: Object.values(bins), backgroundColor: ['#bfdbfe','#93c5fd','#a7f3d0','#6ee7b7','#ddd6fe','#c4b5fd'], borderWidth: 0 }],
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { font: { size: 10 } } } } },
+    });
+}
+
+// ── Contact Ratio Visual ───────────────────────────────────────────────────────
+function renderContactRatioViz() {
+    const el = document.getElementById('contact-ratio-viz');
+    const { summary: s, particles: p } = DS.A;
+    if (!s && !p.length) { el.innerHTML = '<p style="color:#94a3b8;font-size:12px;text-align:center;padding:20px;">No data</p>'; return; }
+    const n    = s?.n_particles ?? p.length;
+    const pp   = s?.total_pp    ?? 0;
+    const maxPP = n > 1 ? n * (n - 1) / 2 : 1;
+    const pct  = Math.min(100, (pp / maxPP) * 100);
+    el.innerHTML = `
+        <div style="margin-bottom:8px;display:flex;justify-content:space-between;font-size:13px;">
+            <span style="font-weight:600;color:#374151;">Actual P-P / Theoretical Max</span>
+            <span style="font-weight:900;color:#2563eb;">${pct.toFixed(3)}%</span>
+        </div>
+        <div class="ratio-bar-track">
+            <div class="ratio-bar-fill" style="width:${pct}%;background:linear-gradient(90deg,#3b82f6,#6366f1);"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;text-align:center;">
+            <div style="background:#eff6ff;border-radius:10px;padding:12px;">
+                <div style="font-size:18px;font-weight:900;color:#1d4ed8;">${pp}</div>
+                <div style="font-size:10px;color:#3b82f6;margin-top:3px;">Actual</div>
+            </div>
+            <div style="background:#f8fafc;border-radius:10px;padding:12px;">
+                <div style="font-size:18px;font-weight:900;color:#374151;">${Math.round(maxPP).toLocaleString()}</div>
+                <div style="font-size:10px;color:#64748b;margin-top:3px;">Max Possible</div>
+            </div>
+            <div style="background:#eef2ff;border-radius:10px;padding:12px;">
+                <div style="font-size:18px;font-weight:900;color:#4338ca;">${pct.toFixed(3)}%</div>
+                <div style="font-size:10px;color:#6366f1;margin-top:3px;">Ratio</div>
+            </div>
+        </div>`;
+}
+
+// ── Surface Area Ratio Visual ──────────────────────────────────────────────────
+function renderSurfaceRatioViz() {
+    const el = document.getElementById('surface-ratio-viz');
+    const { summary: s, contacts: c } = DS.A;
+    if (!s?.single_particle_volume_m3) {
+        el.innerHTML = '<p style="color:#94a3b8;font-size:12px;text-align:center;padding:20px;">Requires <code>single_particle_volume_m3</code> — load full export JSON</p>';
+        return;
+    }
+    const vol = s.single_particle_volume_m3;
+    const r   = Math.pow(3 * vol / (4 * Math.PI), 1 / 3);
+    const n   = s.n_particles ?? 1;
+    const totalSA = 4 * Math.PI * r * r * n;
+
+    let contactArea = 0;
+    c.forEach(x => {
+        const d = Math.abs(x.depth || 0);
+        if (d > 0) contactArea += Math.PI * (r * d) * 2; // Hertz approx: contact_r²= R*δ → area=πRδ×2 surfaces
+    });
+    const pct = Math.min(100, (contactArea / totalSA) * 100);
+
+    el.innerHTML = `
+        <div style="margin-bottom:8px;display:flex;justify-content:space-between;font-size:13px;">
+            <span style="font-weight:600;color:#374151;">Contact Area / Total Surface Area</span>
+            <span style="font-weight:900;color:#15803d;">${pct.toFixed(4)}%</span>
+        </div>
+        <div class="ratio-bar-track">
+            <div class="ratio-bar-fill" style="width:${pct}%;background:linear-gradient(90deg,#10b981,#34d399);"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;text-align:center;">
+            <div style="background:#f0fdf4;border-radius:10px;padding:12px;">
+                <div style="font-size:14px;font-weight:900;color:#166534;">${fmtSci(contactArea)} m²</div>
+                <div style="font-size:10px;color:#16a34a;margin-top:3px;">Contact Area (est.)</div>
+            </div>
+            <div style="background:#f8fafc;border-radius:10px;padding:12px;">
+                <div style="font-size:14px;font-weight:900;color:#374151;">${fmtSci(totalSA)} m²</div>
+                <div style="font-size:10px;color:#64748b;margin-top:3px;">Total Surface Area</div>
+            </div>
+            <div style="background:#ecfdf5;border-radius:10px;padding:12px;">
+                <div style="font-size:14px;font-weight:900;color:#065f46;">${fmtSci(r * 1000)} mm</div>
+                <div style="font-size:10px;color:#059669;margin-top:3px;">Equiv. Radius</div>
+            </div>
+        </div>`;
+}
+
+// ── Scatter plot (XZ) ──────────────────────────────────────────────────────────
+function renderScatter() {
+    kill('scatter');
+    const p = DS.A.particles;
+    if (!p.length) { noDataCanvas('chart-scatter', 'No particle data — load particles.csv or full export JSON'); return; }
+    const ctx = document.getElementById('chart-scatter').getContext('2d');
+    const dsets = [{ label: 'A', data: p.map(x => ({ x: x.x, y: x.z })), backgroundColor: '#3b82f666', pointRadius: 5 }];
+    if (DS.B.particles.length) dsets.push({ label: 'B', data: DS.B.particles.map(x => ({ x: x.x, y: x.z })), backgroundColor: '#f9741666', pointRadius: 5 });
+    charts.scatter = new Chart(ctx, {
+        type: 'scatter',
+        data: { datasets: dsets },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: dsets.length > 1, position: 'top', labels: { font: { size: 11 } } } },
+            scales: {
+                x: { grid: { color: '#f1f5f9' }, title: { display: true, text: 'X (m)', font: { size: 11 } } },
+                y: { grid: { color: '#f1f5f9' }, title: { display: true, text: 'Z (m)', font: { size: 11 } } },
+            },
+        },
+    });
+}
+
+// ── Stress chart ───────────────────────────────────────────────────────────────
+function renderStress() {
+    kill('stress');
+    const sv = DS.A.stress;
+    if (!sv.length) { noDataCanvas('chart-stress', 'No stress data — load vertex_stress.csv'); return; }
+    const samples = sv.slice(0, 1200).map(x => x.stress);
+    const ctx = document.getElementById('chart-stress').getContext('2d');
+    charts.stress = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: samples.map((_, i) => i),
+            datasets: [{
+                data: samples,
+                borderColor: '#7c3aed',
+                borderWidth: 1.5,
+                fill: true,
+                backgroundColor: 'rgba(124,58,237,0.07)',
+                pointRadius: 0,
+                tension: 0.3,
+            }],
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { display: false },
+                y: { beginAtZero: true, grid: { color: '#f1f5f9' }, title: { display: true, text: 'Stress (normalised)', font: { size: 11 } } },
+            },
+        },
+    });
+    const sorted = [...samples].sort((a, b) => a - b);
+    document.getElementById('stress-min').textContent = fmtSci(sorted[0]);
+    document.getElementById('stress-avg').textContent = fmtSci(samples.reduce((a, b) => a + b, 0) / samples.length);
+    document.getElementById('stress-max').textContent = fmtSci(sorted[sorted.length - 1]);
+}
+
+// ── Comparison ─────────────────────────────────────────────────────────────────
+function renderComparison() {
+    const hasB = DS.B.summary || DS.B.particles.length;
+    document.getElementById('cmp-placeholder').style.display = hasB ? 'none' : '';
+    const cc = document.getElementById('cmp-content');
+    cc.style.display = hasB ? 'flex' : 'none';
+    if (!hasB) return;
+
+    const sA = DS.A.summary || {}, sB = DS.B.summary || {};
+
+    // Delta cards
+    const dg = document.getElementById('delta-grid');
+    dg.innerHTML = '';
+    [
+        { label: 'P–P Contacts',    key: 'total_pp' },
+        { label: 'P–C Contacts',    key: 'total_pc' },
+        { label: 'Avg Z',           key: 'Z',  fmt: v => v?.toFixed(3) ?? '—' },
+        { label: 'Isolated',        key: 'n_isolated' },
+    ].forEach(({ label, key, fmt: f }) => {
+        const vA = sA[key], vB = sB[key];
+        const dA = f ? f(vA) : (vA ?? '—'), dB = f ? f(vB) : (vB ?? '—');
+        let badge = '';
+        if (vA != null && vB != null) {
+            const pct = ((vB - vA) / (Math.abs(vA) || 1)) * 100;
+            const cls = pct > 0.5 ? 'delta-up' : pct < -0.5 ? 'delta-down' : 'delta-zero';
+            badge = `<span class="${cls}" style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:9999px;">${pct > 0 ? '+' : ''}${pct.toFixed(1)}%</span>`;
+        }
+        dg.innerHTML += `
+            <div class="glass-card metric-card">
+                <div class="metric-label">${label}</div>
+                <div style="display:flex;align-items:baseline;gap:6px;margin-top:4px;">
+                    <span style="font-size:20px;font-weight:900;color:#2563eb;">${dA}</span>
+                    <span style="color:#cbd5e1;font-size:16px;">→</span>
+                    <span style="font-size:20px;font-weight:900;color:#ea580c;">${dB}</span>
+                    ${badge}
+                </div>
+            </div>`;
+    });
+
+    // Z Comparison chart
+    kill('cmpz');
+    const pA = DS.A.particles, pB = DS.B.particles;
+    if (pA.length && pB.length) {
+        const maxL = Math.max(pA.length, pB.length);
+        const labels = Array.from({ length: maxL }, (_, i) => `P${i}`);
+        const ctx = document.getElementById('chart-cmp-z').getContext('2d');
+        charts.cmpz = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels,
+                datasets: [
+                    { label: 'A', data: pA.map(x => x.n_contacts ?? 0), backgroundColor: '#3b82f666', borderRadius: 3 },
+                    { label: 'B', data: pB.map(x => x.n_contacts ?? 0), backgroundColor: '#f9741666', borderRadius: 3 },
+                ],
+            },
+            options: { ...OPTS, plugins: { legend: { display: true, position: 'top', labels: { font: { size: 11 } } } } },
+        });
+    }
+
+    // Force comparison
+    kill('cmpf');
+    const fA = DS.A.contacts.map(c => c.force).filter(f => f != null && isFinite(f) && f > 0);
+    const fB = DS.B.contacts.map(c => c.force).filter(f => f != null && isFinite(f) && f > 0);
+    if (fA.length && fB.length) {
+        const all = [...fA, ...fB];
+        const mn = Math.min(...all), mx = Math.max(...all), BINS = 16, bw = (mx - mn) / BINS || 1;
+        const hA = Array(BINS).fill(0), hB = Array(BINS).fill(0);
+        fA.forEach(f => hA[Math.min(BINS-1, Math.floor((f-mn)/bw))]++);
+        fB.forEach(f => hB[Math.min(BINS-1, Math.floor((f-mn)/bw))]++);
+        const labels = Array.from({length:BINS}, (_, i) => (mn+i*bw+bw/2).toPrecision(3));
+        const ctx = document.getElementById('chart-cmp-force').getContext('2d');
+        charts.cmpf = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels,
+                datasets: [
+                    { label: 'A', data: hA, backgroundColor: '#3b82f666', borderRadius: 3 },
+                    { label: 'B', data: hB, backgroundColor: '#f9741666', borderRadius: 3 },
+                ],
+            },
+            options: { ...OPTS, plugins: { legend: { display: true, position: 'top', labels: { font: { size: 11 } } } } },
+        });
+    }
+
+    // Depth comparison
+    kill('cmpd');
+    const dA2 = DS.A.contacts.map(c => c.depth != null ? c.depth * 1000 : null).filter(d => d != null && d > 0);
+    const dB2 = DS.B.contacts.map(c => c.depth != null ? c.depth * 1000 : null).filter(d => d != null && d > 0);
+    if (dA2.length && dB2.length) {
+        const all = [...dA2, ...dB2];
+        const mn = Math.min(...all), mx = Math.max(...all), BINS = 16, bw = (mx - mn) / BINS || 1;
+        const hA = Array(BINS).fill(0), hB = Array(BINS).fill(0);
+        dA2.forEach(d => hA[Math.min(BINS-1, Math.floor((d-mn)/bw))]++);
+        dB2.forEach(d => hB[Math.min(BINS-1, Math.floor((d-mn)/bw))]++);
+        const labels = Array.from({length:BINS}, (_, i) => (mn+i*bw+bw/2).toPrecision(3));
+        const ctx = document.getElementById('chart-cmp-depth').getContext('2d');
+        charts.cmpd = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels,
+                datasets: [
+                    { label: 'A (mm)', data: hA, backgroundColor: '#34d39966', borderRadius: 3 },
+                    { label: 'B (mm)', data: hB, backgroundColor: '#fb923c66', borderRadius: 3 },
+                ],
+            },
+            options: { ...OPTS, plugins: { legend: { display: true, position: 'top', labels: { font: { size: 11 } } } } },
+        });
+    }
+
+    // Scatter comparison
+    kill('cmps');
+    if (pA.length && pB.length) {
+        const ctx = document.getElementById('chart-cmp-scatter').getContext('2d');
+        charts.cmps = new Chart(ctx, {
+            type: 'scatter',
+            data: {
+                datasets: [
+                    { label: 'A', data: pA.map(x => ({ x: x.x, y: x.z })), backgroundColor: '#3b82f666', pointRadius: 4 },
+                    { label: 'B', data: pB.map(x => ({ x: x.x, y: x.z })), backgroundColor: '#f9741666', pointRadius: 4 },
+                ],
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { display: true, position: 'top', labels: { font: { size: 11 } } } },
+                scales: {
+                    x: { grid: { color: '#f1f5f9' }, title: { display: true, text: 'X (m)', font: { size: 11 } } },
+                    y: { grid: { color: '#f1f5f9' }, title: { display: true, text: 'Z (m)', font: { size: 11 } } },
+                },
+            },
+        });
+    }
+
+    // KPI table
+    const kpiDefs = [
+        { label: 'Particles',                key: 'n_particles' },
+        { label: 'P–P Contacts',             key: 'total_pp' },
+        { label: 'P–Container Contacts',     key: 'total_pc' },
+        { label: 'Avg Coordination Z',       key: 'Z',                    fmt: v => v?.toFixed(4) ?? '—' },
+        { label: 'Isolated (Rattlers)',       key: 'n_isolated' },
+        { label: 'Container Touching',       key: 'n_container_touch' },
+        { label: 'Contact Efficiency',       key: 'contact_efficiency',   fmt: fmtSci },
+        { label: 'System Pressure (Pa)',     key: 'system_pressure',      fmt: fmtSci },
+        { label: 'Total Particle Vol (m³)',  key: 'total_particle_volume',fmt: fmtSci },
+    ];
+    document.getElementById('cmp-table').innerHTML = `
+        <table>
+            <thead><tr>
+                <th>Metric</th>
+                <th style="text-align:right;color:#2563eb;">Dataset A</th>
+                <th style="text-align:right;color:#ea580c;">Dataset B</th>
+                <th style="text-align:right;">Δ (%)</th>
+            </tr></thead>
+            <tbody>${kpiDefs.map(({ label, key, fmt: f }, i) => {
+                const vA = sA[key], vB = sB[key];
+                const dA = f ? f(vA) : (vA ?? '—'), dB = f ? f(vB) : (vB ?? '—');
+                let delta = '—', dStyle = 'color:#94a3b8';
+                if (vA != null && vB != null && vA !== 0) {
+                    const pct = ((vB - vA) / Math.abs(vA)) * 100;
+                    delta = (pct > 0 ? '+' : '') + pct.toFixed(2) + '%';
+                    dStyle = pct > 0.5 ? 'color:#15803d;font-weight:700' : pct < -0.5 ? 'color:#b91c1c;font-weight:700' : 'color:#64748b';
+                }
+                return `<tr style="background:${i%2?'#f8fafc':'white'}">
+                    <td style="font-weight:600">${label}</td>
+                    <td style="text-align:right;color:#2563eb;">${dA}</td>
+                    <td style="text-align:right;color:#ea580c;">${dB}</td>
+                    <td style="text-align:right;${dStyle}">${delta}</td>
+                </tr>`;
+            }).join('')}</tbody>
+        </table>`;
+}
+
+// ── CSV Export ─────────────────────────────────────────────────────────────────
+function exportCSV() {
+    const p = DS.A.particles;
+    if (!p.length) { alert('No particle data loaded'); return; }
+    const headers = Object.keys(p[0]).join(',');
+    const rows = p.map(r => Object.values(r).map(v => Array.isArray(v) ? `"${v.join(';')}"` : v).join(','));
+    const csv = [headers, ...rows].join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    const a = Object.assign(document.createElement('a'), { href: url, download: 'particles_analysis.csv' });
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+// ── Scroll spy ─────────────────────────────────────────────────────────────────
+function setupScrollSpy() {
+    const sections = document.querySelectorAll('section[id]');
+    const links    = document.querySelectorAll('#sidebar-nav a[data-sec]');
+    const obs = new IntersectionObserver(entries => {
+        entries.forEach(e => {
+            if (e.isIntersecting) links.forEach(l => l.classList.toggle('active', l.dataset.sec === e.target.id));
+        });
+    }, { threshold: 0.25, rootMargin: '-76px 0px -55% 0px' });
+    sections.forEach(s => obs.observe(s));
+}
+
+// ── Print handling ─────────────────────────────────────────────────────────────
+function _buildPrintHeader() {
+    // Date
+    const dateEl = document.getElementById('print-date');
+    if (dateEl) dateEl.textContent = 'Generated: ' + new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric', hour:'2-digit', minute:'2-digit' });
+
+    // Dataset summaries
+    function dsSummary(ver) {
+        const d = DS[ver], s = d.summary || {};
+        const n  = d.particles.length || s.n_particles || 0;
+        const pp = s.total_pp ?? d.contacts.length;
+        const z  = s.Z != null ? ` · Z=${Number(s.Z).toFixed(2)}` : '';
+        return n ? `Dataset ${ver}: ${n} particles · ${pp} P-P contacts${z}` : '';
+    }
+    const elA = document.getElementById('print-ds-a-summary');
+    const elB = document.getElementById('print-ds-b-summary');
+    if (elA) elA.textContent = dsSummary('A');
+    if (elB) elB.textContent = dsSummary('B');
+
+    // Dataset mini KPI cards for print
+    const cardsEl = document.getElementById('print-ds-cards');
+    if (cardsEl) {
+        const sA = DS.A.summary || {}, sB = DS.B.summary || {};
+        const hasB = DS.B.particles.length > 0 || DS.B.summary;
+        const kpis = [
+            { label: 'Particles',       a: sA.n_particles ?? DS.A.particles.length, b: sB.n_particles ?? DS.B.particles.length },
+            { label: 'P–P Contacts',    a: sA.total_pp ?? DS.A.contacts.length, b: sB.total_pp ?? DS.B.contacts.length },
+            { label: 'Avg Z',           a: sA.Z != null ? Number(sA.Z).toFixed(3) : '—', b: sB.Z != null ? Number(sB.Z).toFixed(3) : '—' },
+            { label: 'Isolated',        a: sA.n_isolated ?? '—', b: sB.n_isolated ?? '—' },
+            { label: 'P–C Contacts',    a: sA.total_pc ?? '—', b: sB.total_pc ?? '—' },
+            { label: 'Sys. Pressure',   a: sA.system_pressure != null ? sA.system_pressure.toExponential(2) : '—', b: sB.system_pressure != null ? sB.system_pressure.toExponential(2) : '—' },
+        ];
+        cardsEl.innerHTML = kpis.map(k => `
+            <div style="flex:1;background:#f8fafc;border:0.75pt solid #e2e8f0;border-radius:6pt;padding:8pt 10pt;min-width:0;">
+                <div style="font-size:8pt;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4pt;">${k.label}</div>
+                <div style="display:flex;gap:8pt;align-items:baseline;">
+                    <div style="display:flex;align-items:center;gap:4pt;">
+                        <span style="font-size:7pt;font-weight:900;background:#2563eb;color:white;border-radius:3pt;padding:1pt 4pt;">A</span>
+                        <span style="font-size:13pt;font-weight:900;color:#1d4ed8;">${k.a ?? '—'}</span>
+                    </div>
+                    ${hasB ? `<div style="display:flex;align-items:center;gap:4pt;">
+                        <span style="font-size:7pt;font-weight:900;background:#d97706;color:white;border-radius:3pt;padding:1pt 4pt;">B</span>
+                        <span style="font-size:13pt;font-weight:900;color:#b45309;">${k.b ?? '—'}</span>
+                    </div>` : ''}
+                </div>
+            </div>`).join('');
+    }
+}
+
+window.addEventListener('beforeprint', () => {
+    _buildPrintHeader();
+    // Resize all active charts so they re-render at the new print dimensions
+    Object.values(charts).forEach(c => { try { c?.resize?.(); } catch(_) {} });
+});
+
+window.addEventListener('afterprint', () => {
+    // Restore chart sizing after print dialog closes
+    setTimeout(() => {
+        Object.values(charts).forEach(c => { try { c?.resize?.(); } catch(_) {} });
+    }, 100);
+});
+</script>
+</body>
+</html>

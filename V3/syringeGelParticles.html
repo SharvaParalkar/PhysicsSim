@@ -84,7 +84,11 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
 .statVal{color:#ffd080;font-weight:bold;min-width:64px;text-align:right;font-size:12px}
 #infoBox{position:absolute;bottom:10px;left:10px;background:rgba(10,15,30,.75);
          padding:6px 10px;border-radius:5px;font-size:11px;color:#aab;
-         pointer-events:none;line-height:1.6}
+         pointer-events:auto;line-height:1.6;display:flex;align-items:center;gap:8px;
+         z-index:5}
+#infoBox label{color:#8ab;white-space:nowrap;margin:0}
+#infoBox select{background:#1a2030;color:#cce;border:1px solid #3a4560;border-radius:4px;
+                padding:3px 6px;font-size:11px;max-width:200px}
 #settleHud{position:absolute;top:10px;right:10px;background:rgba(10,15,30,.82);
            padding:8px 12px;border-radius:6px;font-size:11px;color:#cce;
            pointer-events:none;line-height:1.55;min-width:168px;
@@ -111,9 +115,11 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
   <button class="btn"        onclick="focusBarrel()" title="Center camera on barrel (mid height)">Focus barrel</button>
   <button class="btn"        onclick="focusPicked()" title="Center camera on picked particle">Focus picked</button>
   <button class="btn"        onclick="exportOBJ()">Export OBJ</button>
-  <button class="btn"        onclick="exportPoresOBJ()" title="Empty space inside the fluid domain minus gel (void mesh + CSV volumes in mm³). Smooth isosurface via marching cubes + vertex normals when Performance → Smooth pore mesh is on.">Export pores (OBJ+CSV)</button>
+  <button class="btn"        onclick="exportPoresOBJ()" title="Empty space inside the fluid domain minus gel (void mesh + CSV porosity). Requires settled/jammed pack. Smooth isosurface via marching cubes when Performance → Smooth pore mesh is on.">Export pores (OBJ+CSV)</button>
   <button class="btn"        onclick="exportPLYColors()" title="Exports particles with vertex colors (stress/contact gradient)">Export PLY (colors)</button>
   <button class="btn"        onclick="exportMetricsCSV()" title="CSV: P2P contacts, contact area, force stats, porosity (box), motion &amp; strain, settle flags. Timer mode logs for a wall-clock window after Run / Drop.">Export metrics CSV</button>
+  <button class="btn" id="btnMetricsAllBase" onclick="onExportMetricsAllBase()"
+          title="Standardized metrics for all base library shapes (not HIRES): 1.5×3.5×1.5 mm box, soft 0.4, start 5 then +5 every 0.5 s until 50, auto-CSV at 10 s real time.">Export metrics (all base)</button>
   <button class="btn" id="btnExport4kVideo" onclick="onExport4kVideo()" disabled
           title="Invisible box: records while Run is active — export anytime. Fill sequence / bronchial tree: pre-compute first.">Export 4K video</button>
   <label>Library:
@@ -215,18 +221,21 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
              title="Semi-transparent preview when Invisible box mode is on"></div>
     <div class="row"><label>Show volume box</label>
       <input type="checkbox" id="chkVolumeOutlineShow" checked onchange="onVolumeOutlineShowChange()"
-             title="Wireframe outline of the invisible box / bronchial bounds (visible while paused)"></div>
+             title="Dashed bounds for invisible box / fill sequence / bronchial tree (while paused) and star interlock"></div>
+    <div class="row"><label>Black background</label>
+      <input type="checkbox" id="chkDarkBackground" onchange="onDarkBackgroundChange()"
+             title="Dark canvas: white silhouette outlines and dashed bounding boxes (default is white canvas with black strokes)"></div>
     <div class="row"><label></label>
       <button type="button" class="btn" onclick="clearFillVolumeObj()">Clear fill mesh</button></div>
     <div class="row"><label></label>
       <span style="font-size:11px;color:#7a9abd">For a lung shape without OBJ import, use <b>Bronchial tree (Y-tubes)</b>. Box mode can load a fill OBJ or spawn JSON.</span></div>
     <div id="wrapVolumeDims" style="display:none">
     <div class="row"><label>Width X (mm)</label>
-      <input type="number" id="pVolW" value="1" min="0.5" max="400" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
+      <input type="number" id="pVolW" value="1.5" min="0.5" max="400" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
     <div class="row"><label>Height Y (mm)</label>
-      <input type="number" id="pVolH" value="20" min="0.5" max="400" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
+      <input type="number" id="pVolH" value="3.5" min="0.5" max="400" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
     <div class="row"><label>Depth Z (mm)</label>
-      <input type="number" id="pVolD" value="1" min="0.5" max="400" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
+      <input type="number" id="pVolD" value="1.5" min="0.5" max="400" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
     <div class="row"><label>Center X</label>
       <input type="number" id="pVolCx" value="0" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
     <div class="row"><label>Center Y</label>
@@ -236,7 +245,7 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
     <div class="row"><label>Drop height (mm)</label>
       <input type="number" id="pVolDropH" value="0" min="0" max="200" step="0.5"
              oninput="onVolDropHeightInput()"
-             title="Extra height above the box inner top for Drop / spawns (mm). Timer mode defaults this to 20 mm."></div>
+             title="Extra height above the box inner top for Drop / spawns (mm). Metrics timer mode defaults this to 0 mm."></div>
     <div class="row"><label>Open bottom</label>
       <input type="checkbox" id="chkVolumeOpenBottom" onchange="onToggleVolumeOpenBottom(this.checked)"
              title="Remove the floor so particles can freefall out the bottom (side walls and ceiling remain)"></div>
@@ -383,11 +392,11 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
     <summary class="section-summary">Particles</summary>
     <div class="section-inner">
     <div class="row"><label>Max particles</label>
-      <input type="number" id="pCount"  value="300" min="10" max="5000" step="10" title="Pre-allocated max count (not shown until dropped)"></div>
+      <input type="number" id="pCount"  value="50" min="10" max="5000" step="10" title="Pre-allocated max count (not shown until dropped)"></div>
     <div class="row"><label>Initial drop</label>
-      <input type="number" id="pInitCount" value="1" min="0" max="5000" step="1" title="Spawn this many particles at restart"></div>
+      <input type="number" id="pInitCount" value="5" min="0" max="5000" step="1" title="Spawn this many particles at restart"></div>
     <div class="row"><label>Drop more</label>
-      <input type="number" id="pDropCount" value="1" min="1" max="2000" step="1" title="How many to add when pressing Drop"></div>
+      <input type="number" id="pDropCount" value="5" min="1" max="2000" step="1" title="How many to add when pressing Drop (timer mode also auto-drops this many every 0.5 s until 50)"></div>
     <div class="row"><label></label>
       <button class="btn" id="btnDropMore" onclick="onDropMore()" title="Activate more particles without rebuilding the sim">Drop</button></div>
     <div class="row"><label>Box fill sequence</label>
@@ -395,23 +404,30 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
              title="Same as Container → Invisible box fill sequence. Pre-compute repeated Drop-more until ~half full, then optional 4K export."></div>
     <div class="row"><label>Timer export mode</label>
       <input type="checkbox" id="chkTimerExport" onchange="onTimerExportModeChange(this.checked)"
-             title="After each Drop: log for 60 s wall-clock time (settle auto-pause off), then pause and auto-download CSV. Defaults to invisible box and 20 mm drop height."></div>
-    <div class="row"><label>Capture window (real s)</label>
-      <input type="number" id="pTimerCaptureS" value="60" min="0.25" max="3600" step="0.25"
+             title="Standardized metrics: 1.5×3.5×1.5 mm box @ (0,10,0), drop height 0, soft 0.4, start with 5 particles then +5 every 0.5 sim-s until 50. On Run: log until 10 sim-s elapse, then pause and auto-download CSV. All timing is simulated-time based so shapes stay comparable even if one runs slower per-frame."></div>
+    <div class="row"><label>Capture window (sim s)</label>
+      <input type="number" id="pTimerCaptureS" value="10" min="0.1" max="3600" step="0.25"
              oninput="onTimerCaptureInput()"
-             title="Wall-clock seconds after each Drop: metrics + physics run until this real-time limit, then pause and auto-download CSV (independent of sim time / speed)"></div>
+             title="Simulated seconds after Run: metrics + physics run until this much sim time has elapsed, then pause and auto-download CSV. Sim-time based (not wall-clock) so a slower-running shape just takes longer in real time — the protocol stays identical."></div>
     <div class="row"><label>Auto-save CSV</label>
       <input type="checkbox" id="chkTimerAutoCsv" checked onchange="onTimerAutoCsvChange(this.checked)"
              title="When the capture window ends, download the metrics CSV automatically"></div>
+    <div class="row"><label>Mesh interlock metric</label>
+      <input type="checkbox" id="chkMeshInterlock" onchange="onMeshInterlockToggle(this.checked)"
+             title="True surface-geometry P2P metric: counts each particle's surface vertices found actually inside a neighbor's deformed mesh (ray-parity point-in-mesh), instead of the sphere-proxy test the solver uses. Lets interlocking shapes (e.g. stars) show more contact than the sphere-proxy columns. Expensive — throttled by the sample-rate field below."></div>
+    <div class="row"><label>Interlock sample (every N frames)</label>
+      <input type="number" id="pMeshInterlockEveryN" value="6" min="1" max="60" step="1"
+             oninput="onMeshInterlockEveryNInput()"
+             title="Recompute the mesh interlock metric every N physics steps (1=every step, most accurate but slowest). Safe to set to 1 since capture duration is sim-time based."></div>
     <div class="row"><label>Nominal radius (mm)</label>
       <input type="range" id="sRadius" min="0.05" max="2.00" step="0.01" value="0.30"
              oninput="onRadiusChange(this.value)" title="Particle size; changing restarts the simulation"></div>
     <div class="row"><label></label><span id="lblNomRadius" class="statVal">0.300</span></div>
     <div class="row"><label>Softness</label>
-      <input type="range" id="sSoftness" min="0" max="100" value="50" step="1"
+      <input type="range" id="sSoftness" min="0" max="100" value="40" step="1"
              oninput="onSoftnessChange(this.value)"
-             title="Convenience control: drives edge + volume compliance (higher = more flexible)"></div>
-    <div class="row"><label></label><span id="lblSoftness" class="statVal">0.50</span></div>
+             title="Convenience control: drives edge + volume compliance (higher = more flexible). Metrics default = 0.40."></div>
+    <div class="row"><label></label><span id="lblSoftness" class="statVal">0.40</span></div>
     <div class="row"><label>Edge compliance</label>
       <input type="range"  id="sEdgeC" min="0" max="2" value="0.41" step="0.001"
              oninput="onEdgeCChange(this.value)"></div>
@@ -420,6 +436,11 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
       <input type="range"  id="sVolC"  min="0" max="50" value="0"
              oninput="onVolCChange(this.value)"></div>
     <div class="row"><label></label><span id="lblVolC" class="statVal">0</span></div>
+    <div class="row"><label>P2P radius blend</label>
+      <input type="range" id="sContactBoundWeight" min="0" max="100" step="1" value="5"
+             oninput="onContactBoundWeightChange(this.value)"
+             title="P2P sphere-proxy contact radius = nominalRadius + weight×(boundingRadius−nominalRadius). 0%=all shapes tested at the SAME nominal radius (fairest cross-shape comparison); 100%=each particle's own farthest vertex sets its contact radius (favors shapes whose bounding sphere is set by a few thin tips, e.g. stars, with an artificially small trigger radius). Config default: 5%."></div>
+    <div class="row"><label></label><span id="lblContactBoundWeight" class="statVal">0.05</span></div>
     <div class="row"><label>Harden after strain</label>
       <input type="range" id="sHardStrain" min="0" max="60" value="18"
              oninput="onHardStrainChange(this.value)" title="Max edge strain (%) before particle becomes more rigid"></div>
@@ -512,6 +533,9 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
     <div class="row"><label>Omit open air</label>
       <input type="checkbox" id="chkPoreStripAir"
              title="Removes void that connects (through gaps) to free air above the particle tops or the needle. Loose piles almost always connect, so this can delete every pore voxel — leave off to export all empty space in the barrel, then clip in CAD if needed."></div>
+    <div class="row"><label>Porosity sample ×D</label>
+      <input type="number" id="pPoreMeasDiamMult" value="7" min="4" max="12" step="0.5"
+             title="Interior measurement cube edge = REGION_MULTIPLIER × particle diameter (default 7). Centered on cluster centroid; shrinks to stay off container walls."></div>
     </div>
   </details>
 
@@ -757,7 +781,23 @@ details.section[open] > summary.section-summary::after{transform:rotate(0)}
 
 <div id="canvasWrap">
   <div id="settleHud">Time to settle<br><span class="hudVal" id="hudSettle">—</span><br><span class="hudSub" id="hudSettleSub"></span><br>Particles released<br><span class="hudVal" id="hudReleased">0</span><br><span class="hudSub" id="hudDropHint"></span></div>
-  <div id="infoBox">Drag to orbit · Scroll to zoom · Load particle JSON for custom shapes</div>
+  <div id="infoBox">
+    <label for="selIsoView">View</label>
+    <select id="selIsoView" onchange="onIsoViewSnap(this.value)"
+            title="Snap camera to an isometric or axis-aligned preset. Drag to orbit returns to Free.">
+      <option value="free">Free orbit</option>
+      <option value="iso">Isometric</option>
+      <option value="iso_nw">Isometric NW</option>
+      <option value="iso_se">Isometric SE</option>
+      <option value="iso_sw">Isometric SW</option>
+      <option value="front">Front (+Z)</option>
+      <option value="back">Back (−Z)</option>
+      <option value="right">Right (+X)</option>
+      <option value="left">Left (−X)</option>
+      <option value="top">Top (+Y)</option>
+      <option value="bottom">Bottom (−Y)</option>
+    </select>
+  </div>
 </div>
 </div><!-- end main -->
 
@@ -1436,14 +1476,14 @@ class Syringe {
   /** Build Three.js meshes for rendering. Returns array of {name, mesh}. */
   buildMeshes(scene){
     this.meshes=[];
-    // Transparent syringe: be careful with depthWrite + multiple shells.
-    // At extreme zoom, rendering both the outer + inner needle shells can "stack" alpha and
-    // appear as a white blur/glow near the tip. We keep the outer shell depth-writing so
-    // the inner shell doesn't double-blend from the outside.
+    // Outer shell matches bronchial style: FrontSide + depthWrite so a BackSide
+    // inflated outline only peeks at the silhouette rim (no black fill-through).
     const barrelMat=new THREE.MeshPhongMaterial(
-      {color:0x9bbfd4,transparent:true,opacity:0.25,side:THREE.DoubleSide,depthWrite:true,depthTest:true});
+      {color:0xc8dff0,transparent:true,opacity:0.42,side:THREE.FrontSide,depthWrite:true,depthTest:true,
+       shininess:45,specular:0x88aacc});
     const needleMat=new THREE.MeshPhongMaterial(
-      {color:0xaad4f5,transparent:true,opacity:0.30,side:THREE.DoubleSide,depthWrite:true,depthTest:true});
+      {color:0xc8dff0,transparent:true,opacity:0.42,side:THREE.FrontSide,depthWrite:true,depthTest:true,
+       shininess:45,specular:0x88aacc});
     const wallMat =new THREE.MeshPhongMaterial({color:0x6699bb,transparent:true,opacity:0.12,side:THREE.BackSide,depthWrite:false,depthTest:true});
 
     const seg=this.seg, nl=this.needleLen, tp=this.taperH,
@@ -1470,17 +1510,25 @@ class Syringe {
     scene.add(niMesh);
     this.meshes.push({name:'needle_inner',mesh:niMesh});
 
-    // --- taper (frustum) ---
-    const taperGeo=new THREE.CylinderGeometry(bir,nir,tp,seg,1,true);
-    taperGeo.translate(0,nl+tp/2,0);
-    const taperMesh=new THREE.Mesh(taperGeo,barrelMat);
+    // --- taper: outer frustum for silhouette continuity, plus inner wall ---
+    const taperOutGeo=new THREE.CylinderGeometry(bor,nor,tp,seg,1,true);
+    taperOutGeo.translate(0,nl+tp/2,0);
+    const taperMesh=new THREE.Mesh(taperOutGeo,barrelMat);
+    taperMesh.renderOrder=1;
     scene.add(taperMesh);
     this.meshes.push({name:'taper',mesh:taperMesh});
+
+    const taperInGeo=new THREE.CylinderGeometry(bir,nir,tp,seg,1,true);
+    taperInGeo.translate(0,nl+tp/2,0);
+    const taperInMesh=new THREE.Mesh(taperInGeo,wallMat);
+    scene.add(taperInMesh);
+    this.meshes.push({name:'taper_inner',mesh:taperInMesh});
 
     // --- barrel outer cylinder ---
     const barrelGeo=new THREE.CylinderGeometry(bor,bor,bl,seg,1,true);
     barrelGeo.translate(0,tEnd+bl/2,0);
     const barrelMesh=new THREE.Mesh(barrelGeo,barrelMat);
+    barrelMesh.renderOrder=1;
     scene.add(barrelMesh);
     this.meshes.push({name:'barrel',mesh:barrelMesh});
 
@@ -1490,6 +1538,47 @@ class Syringe {
     const biMesh=new THREE.Mesh(biGeo,wallMat);
     scene.add(biMesh);
     this.meshes.push({name:'barrel_inner',mesh:biMesh});
+
+    // Drafted silhouette rim (same idea as airway outline).
+    // Needle side outline overlaps the tip torus so the stroke reads continuous.
+    // A color-less depth disc clears the tip aperture so looking into the bore
+    // is see-through (otherwise the open BackSide shell reads as a black plug).
+    {
+      const thick=Math.max(0.14, bor*0.03);
+      const needleThick=Math.max(0.06, nor*0.28);
+      const tubeR=needleThick*0.55;
+      const addOutline=(geo,name,t=thick)=>{
+        const om=_syringeOutlineMesh(geo,t);
+        if(!om) return;
+        om.name=name;
+        scene.add(om);
+        this.meshes.push({name,mesh:om});
+      };
+      const tipClear=Math.max(0.02, tubeR*0.35);
+      const nOutlineLen=Math.max(0.5, nl-tipClear);
+      const needleOutlineGeo=new THREE.CylinderGeometry(nor,nor,nOutlineLen,seg,1,true);
+      needleOutlineGeo.translate(0, tipClear+nOutlineLen*0.5, 0);
+      addOutline(needleOutlineGeo,'needle_outline',needleThick);
+      needleOutlineGeo.dispose();
+
+      const tipMajor=nor+needleThick;
+      const tipRim=_syringeRimOutlineMesh(tipMajor, 0, needleThick, seg);
+      if(tipRim){
+        tipRim.name='needle_tip_outline';
+        scene.add(tipRim);
+        this.meshes.push({name:'needle_tip_outline',mesh:tipRim});
+      }
+      const holeR=Math.max(0.02, tipMajor-tubeR-0.02);
+      const tipHole=_syringeTipHoleDepthMask(holeR, -0.03, seg);
+      if(tipHole){
+        tipHole.name='needle_tip_hole_mask';
+        scene.add(tipHole);
+        this.meshes.push({name:'needle_tip_hole_mask',mesh:tipHole});
+      }
+
+      addOutline(taperOutGeo,'taper_outline');
+      addOutline(barrelGeo,'barrel_outline');
+    }
 
     const tty=this.catchTrayTopY;
     const trayR=this.catchTrayRadius;
@@ -2088,7 +2177,7 @@ function _airwayOutlineMesh(srcGeo, thicknessMm=0.18){
   geo.computeBoundingSphere();
   geo.computeBoundingBox();
   const mat=new THREE.MeshBasicMaterial({
-    color:0x111111,
+    color:_vizAccentHex(),
     side:THREE.BackSide,
     transparent:true,
     opacity:1.0,
@@ -2098,6 +2187,83 @@ function _airwayOutlineMesh(srcGeo, thicknessMm=0.18){
   const mesh=new THREE.Mesh(geo,mat);
   mesh.name='airway_outline';
   mesh.renderOrder=2;
+  return mesh;
+}
+
+/**
+ * Syringe outline: radially expand, render BackSide after the depth-writing
+ * shell so only the silhouette rim shows (same look as bronchial outline).
+ */
+function _syringeOutlineMesh(srcGeo, thicknessMm=0.18){
+  const posAttr=srcGeo?.getAttribute?.('position');
+  if(!posAttr||posAttr.count<3) return null;
+  const geo=srcGeo.clone();
+  const pos=geo.getAttribute('position');
+  const t=Math.max(0.05, +thicknessMm||0.18);
+  for(let i=0;i<pos.count;i++){
+    const x=pos.getX(i), y=pos.getY(i), z=pos.getZ(i);
+    const r=Math.hypot(x,z);
+    if(r>1e-8){
+      const s=(r+t)/r;
+      pos.setXYZ(i, x*s, y, z*s);
+    }
+  }
+  pos.needsUpdate=true;
+  if(geo.getAttribute('normal')) geo.deleteAttribute('normal');
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  geo.computeBoundingBox();
+  const mat=new THREE.MeshBasicMaterial({
+    color:_vizAccentHex(),
+    side:THREE.BackSide,
+    transparent:true,
+    opacity:1.0,
+    depthTest:true,
+    depthWrite:false,
+  });
+  const mesh=new THREE.Mesh(geo,mat);
+  mesh.name='syringe_outline';
+  mesh.renderOrder=2;
+  return mesh;
+}
+
+/** Black circular stroke around an open tube end (needle tip, etc.). */
+function _syringeRimOutlineMesh(radiusMm, yMm, strokeMm, radialSeg=32){
+  const R=Math.max(1e-4, +radiusMm||1e-4);
+  const stroke=Math.max(0.045, +strokeMm||0.08);
+  const geo=new THREE.TorusGeometry(R, stroke*0.55, 12, Math.max(24, radialSeg|0));
+  geo.rotateX(Math.PI*0.5);
+  geo.translate(0, +yMm||0, 0);
+  const mat=new THREE.MeshBasicMaterial({
+    color:_vizAccentHex(),
+    side:THREE.DoubleSide,
+    depthTest:true,
+    depthWrite:false,
+  });
+  const mesh=new THREE.Mesh(geo,mat);
+  mesh.name='syringe_rim_outline';
+  mesh.renderOrder=2;
+  return mesh;
+}
+
+/**
+ * Invisible depth disc over the tip aperture. Blocks the needle outline's open
+ * end from painting a solid black plug when looking into the bore.
+ */
+function _syringeTipHoleDepthMask(radiusMm, yMm, radialSeg=32){
+  const R=Math.max(1e-4, +radiusMm||1e-4);
+  const geo=new THREE.CircleGeometry(R, Math.max(24, radialSeg|0));
+  geo.rotateX(-Math.PI*0.5);
+  geo.translate(0, +yMm||0, 0);
+  const mat=new THREE.MeshBasicMaterial({
+    colorWrite:false,
+    depthWrite:true,
+    depthTest:true,
+    side:THREE.DoubleSide,
+  });
+  const mesh=new THREE.Mesh(geo,mat);
+  mesh.name='syringe_tip_hole_mask';
+  mesh.renderOrder=1;
   return mesh;
 }
 
@@ -2607,6 +2773,65 @@ function _fillMeshCountBoundaryEdges(tris){
   let boundary=0;
   for(const c of edgeCount.values())if(c===1)boundary++;
   return boundary;
+}
+
+/** Squared distance from point P to the closest point on triangle ABC (Ericson RTCD method). */
+function _closestPtPointTriangleSq(px,py,pz, ax,ay,az, bx,by,bz, cx,cy,cz){
+  const abx=bx-ax, aby=by-ay, abz=bz-az;
+  const acx=cx-ax, acy=cy-ay, acz=cz-az;
+  const apx=px-ax, apy=py-ay, apz=pz-az;
+  const d1=abx*apx+aby*apy+abz*apz;
+  const d2=acx*apx+acy*apy+acz*apz;
+  if(d1<=0&&d2<=0) return apx*apx+apy*apy+apz*apz;
+  const bpx=px-bx, bpy=py-by, bpz=pz-bz;
+  const d3=abx*bpx+aby*bpy+abz*bpz;
+  const d4=acx*bpx+acy*bpy+acz*bpz;
+  if(d3>=0&&d4<=d3) return bpx*bpx+bpy*bpy+bpz*bpz;
+  const vc=d1*d4-d3*d2;
+  if(vc<=0&&d1>=0&&d3<=0){
+    const v=d1/(d1-d3);
+    const qx=ax+v*abx, qy=ay+v*aby, qz=az+v*abz;
+    const dx=px-qx, dy=py-qy, dz=pz-qz;
+    return dx*dx+dy*dy+dz*dz;
+  }
+  const cpx=px-cx, cpy=py-cy, cpz=pz-cz;
+  const d5=abx*cpx+aby*cpy+abz*cpz;
+  const d6=acx*cpx+acy*cpy+acz*cpz;
+  if(d6>=0&&d5<=d6) return cpx*cpx+cpy*cpy+cpz*cpz;
+  const vb=d5*d2-d1*d6;
+  if(vb<=0&&d2>=0&&d6<=0){
+    const w=d2/(d2-d6);
+    const qx=ax+w*acx, qy=ay+w*acy, qz=az+w*acz;
+    const dx=px-qx, dy=py-qy, dz=pz-qz;
+    return dx*dx+dy*dy+dz*dz;
+  }
+  const va=d3*d6-d5*d4;
+  if(va<=0&&(d4-d3)>=0&&(d5-d6)>=0){
+    const denomBC=(d4-d3)+(d5-d6);
+    const w=denomBC>1e-18?(d4-d3)/denomBC:0;
+    const qx=bx+w*(cx-bx), qy=by+w*(cy-by), qz=bz+w*(cz-bz);
+    const dx=px-qx, dy=py-qy, dz=pz-qz;
+    return dx*dx+dy*dy+dz*dz;
+  }
+  const denom=1/Math.max(1e-18,(va+vb+vc));
+  const v=vb*denom, w=vc*denom;
+  const qx=ax+abx*v+acx*w, qy=ay+aby*v+acy*w, qz=az+abz*v+acz*w;
+  const dx=px-qx, dy=py-qy, dz=pz-qz;
+  return dx*dx+dy*dy+dz*dz;
+}
+
+/** Min distance from point to a flat [x,y,z]*3-per-tri soup — used to measure penetration DEPTH
+ *  (mm) for vertices already confirmed inside a mesh, not just whether they are inside. */
+function _minDistPointToSoup(px,py,pz,tris){
+  let best=Infinity;
+  for(let i=0;i<tris.length;i+=9){
+    const d2=_closestPtPointTriangleSq(px,py,pz,
+      tris[i],tris[i+1],tris[i+2],
+      tris[i+3],tris[i+4],tris[i+5],
+      tris[i+6],tris[i+7],tris[i+8]);
+    if(d2<best) best=d2;
+  }
+  return Math.sqrt(best);
 }
 
 function _fillRayParity(px,py,pz,tris,dx,dy,dz){
@@ -3204,6 +3429,144 @@ function _poreStripOpenAir(voidBit, nx, ny, nz, VI, ox, oy, oz, sx, syv, sz, sy,
   return cleared;
 }
 
+/** Default edge length = particle diameter × this (interior porosity sample cube). */
+const PORE_MEAS_REGION_DIAMETER_MULTIPLIER=7;
+
+function readPoreMeasRegionMultiplier(){
+  const v=+document.getElementById('pPoreMeasDiamMult')?.value;
+  return Number.isFinite(v)?Math.max(4, Math.min(12, v)):PORE_MEAS_REGION_DIAMETER_MULTIPLIER;
+}
+
+function readPoreMeasWallMarginMm(nomR){
+  return Math.max(0.08, (nomR||0.3)*0.5);
+}
+
+/** True when (x,y,z) lies inside the container with at least margin mm clearance from walls. */
+function _porePointInContainerInterior(sy, x, y, z, margin){
+  margin=Math.max(0, margin||0);
+  if(sy._airwayVolume){
+    return sy.pointInside(x, y, z);
+  }
+  if(sy._boxVolume){
+    const cx=sy.centerX, cy=sy.centerY, cz=sy.centerZ;
+    return x>=cx-sy.halfX+margin && x<=cx+sy.halfX-margin &&
+           (sy.openBottom ? y<=cy+sy.halfY-margin : y>=cy-sy.halfY+margin && y<=cy+sy.halfY-margin) &&
+           z>=cz-sy.halfZ+margin && z<=cz+sy.halfZ-margin;
+  }
+  if(y>sy._barrelTop-margin) return false;
+  if(sy.capActive && y<margin) return false;
+  if(sy.needleInletCapActive && y<sy.needleLen+margin) return false;
+  const r=Math.hypot(x, z);
+  const rMax=Math.max(0, sy.getRadiusAtY(y)-margin);
+  return r<=rMax;
+}
+
+function _poreMeasCubeFits(sy, cx, cy, cz, half, margin){
+  if(half<=0) return false;
+  for(let dz=-1; dz<=1; dz+=2)for(let dy=-1; dy<=1; dy+=2)for(let dx=-1; dx<=1; dx+=2){
+    if(!_porePointInContainerInterior(sy, cx+dx*half, cy+dy*half, cz+dz*half, margin)) return false;
+  }
+  return true;
+}
+
+function _poreParticlePackStats(particles, activeIdx){
+  const n=activeIdx.length;
+  if(n===0) return{count:0, avgNnDist:NaN};
+  let sumNn=0;
+  for(let ai=0; ai<n; ai++){
+    const A=particles[activeIdx[ai]];
+    let best=Infinity;
+    for(let bi=0; bi<n; bi++){
+      if(ai===bi) continue;
+      const B=particles[activeIdx[bi]];
+      const dx=A.center[0]-B.center[0];
+      const dy=A.center[1]-B.center[1];
+      const dz=A.center[2]-B.center[2];
+      const d=Math.hypot(dx, dy, dz);
+      if(d<best) best=d;
+    }
+    if(Number.isFinite(best)) sumNn+=best;
+  }
+  return{count:n, avgNnDist:n>1?sumNn/n:NaN};
+}
+
+/** Axis-aligned cube at particle-cluster centroid; shrinks to stay off container walls. */
+function _poreComputeMeasurementRegion(particles, activeIdx, sy, particleDiameterMm, regionMultiplier, wallMargin){
+  const warnings=[];
+  let cx=0, cy=0, cz=0;
+  for(const pi of activeIdx){
+    const p=particles[pi];
+    cx+=p.center[0]; cy+=p.center[1]; cz+=p.center[2];
+  }
+  const n=activeIdx.length;
+  cx/=n; cy/=n; cz/=n;
+  // region_size_mm = particle_diameter_mm * REGION_MULTIPLIER (full edge, not half/radius)
+  const requestedSize=particleDiameterMm*regionMultiplier;
+  const requestedHalf=requestedSize*0.5;
+  let half=requestedHalf;
+  let clamped=false;
+  if(!_poreMeasCubeFits(sy, cx, cy, cz, half, wallMargin)){
+    clamped=true;
+    let lo=0, hi=half;
+    for(let it=0; it<40; it++){
+      const mid=(lo+hi)*0.5;
+      if(_poreMeasCubeFits(sy, cx, cy, cz, mid, wallMargin)) lo=mid;
+      else hi=mid;
+    }
+    half=lo;
+  }
+  const actualSize=2*half;
+  if(clamped || actualSize+1e-6<requestedSize){
+    clamped=true;
+    const msg=
+      `MEASUREMENT REGION CLAMPED: requested ${requestedSize.toFixed(4)} mm `+
+      `(particle_diameter_mm=${particleDiameterMm.toFixed(4)} × REGION_MULTIPLIER=${regionMultiplier}) `+
+      `→ actual ${actualSize.toFixed(4)} mm — container too narrow for the interior sample cube. `+
+      `Widen the volume box (need ≥ ~${(requestedSize+2*wallMargin+0.5).toFixed(1)} mm clear span) or lower Porosity sample ×D.`;
+    warnings.push(msg);
+    console.warn(`Pore porosity: ${msg}`);
+  }
+  if(actualSize<particleDiameterMm){
+    warnings.push(`measurement region (${actualSize.toFixed(4)} mm) is smaller than one particle diameter (${particleDiameterMm.toFixed(4)} mm) — porosity_pct will not be trustworthy`);
+  }
+  let particlesInRegion=0;
+  for(const pi of activeIdx){
+    const p=particles[pi];
+    if(Math.abs(p.center[0]-cx)<=half && Math.abs(p.center[1]-cy)<=half && Math.abs(p.center[2]-cz)<=half)
+      particlesInRegion++;
+  }
+  if(particlesInRegion===0){
+    warnings.push('measurement region contains no particle centers — cluster may be off-center or too sparse');
+  } else if(particlesInRegion<n){
+    warnings.push(`only ${particlesInRegion}/${n} particle centers lie inside the ${actualSize.toFixed(2)} mm measurement cube`);
+  }
+  return{
+    cx, cy, cz, half, size:actualSize, requestedSize, clamped:clamped?1:0,
+    particleDiameterMm, regionMultiplier,
+    minX:cx-half, maxX:cx+half, minY:cy-half, maxY:cy+half, minZ:cz-half, maxZ:cz+half,
+    particlesInRegion, warnings,
+  };
+}
+
+function _poreVoxelCenterInMeasBox(px, py, pz, meas){
+  return px>=meas.minX && px<=meas.maxX &&
+         py>=meas.minY && py<=meas.maxY &&
+         pz>=meas.minZ && pz<=meas.maxZ;
+}
+
+function _poreCountRegionVoxels(voidBit, nx, ny, nz, ox, oy, oz, sx, syv, sz, sy, VI, meas){
+  let totalInRegion=0, voidInRegion=0;
+  for(let iz=0; iz<nz; iz++)for(let iy=0; iy<ny; iy++)for(let ix=0; ix<nx; ix++){
+    const px=ox+(ix+0.5)*sx, py=oy+(iy+0.5)*syv, pz=oz+(iz+0.5)*sz;
+    if(!_poreVoxelCenterInMeasBox(px, py, pz, meas)) continue;
+    if(!_porePointInFluidDomain(sy, px, py, pz)) continue;
+    totalInRegion++;
+    if(voidBit[VI(ix, iy, iz)]) voidInRegion++;
+  }
+  const porosityPct=totalInRegion>0?(voidInRegion/totalInRegion)*100:NaN;
+  return{totalInRegion, voidInRegion, porosityPct};
+}
+
 /** Corner field (0..1): average of cell flags [void & comp==k] over the 8 incident cells. */
 function _poreBuildCornerPhiK(voidBit, comp, nx, ny, nz, k, VI){
   const nx1=nx+1, ny1=ny+1, nz1=nz+1;
@@ -3465,17 +3828,25 @@ class SyringeSimulator {
     // metrics log + settlement (updated each physics step)
     this.particlesDroppedViaUi=0;
     this._autoPauseAfterSettle=false;
-    /** Timer export: fixed wall-clock window after each Drop; see timerExportMode. */
+    /** Timer export: fixed sim-time window after Run/Drop; see timerExportMode.
+     *  Duration is measured in simulated seconds (this.simTime), NOT wall-clock —
+     *  this keeps the protocol identical across shapes even if one runs slower per-frame
+     *  (e.g. due to the mesh-interlock metric or a heavier mesh). */
     this.timerExportMode=false;
-    this.timerWallDurationS=60;
+    this.timerWallDurationS=10; // target sim-seconds for the capture window (name kept for compat)
     this.timerAutoExportCsv=true;
-    /** Sim time at Drop (CSV / correlation). */
+    /** Sim time at window start — the sole source of truth for capture-window + drop-schedule timing. */
     this._timerAnchorSim=null;
-    /** performance.now() at Drop — capture ends after timerWallDurationS wall seconds. */
+    /** performance.now() at window start — kept only for wall_elapsed_s diagnostics, not gating. */
     this._timerWallAnchorMs=null;
     this._timerCaptureDone=false;
-    /** Extra mm above box inner top for volume-mode Drop slot (timer mode defaults UI to 20). */
+    /** Extra mm above box inner top for volume-mode Drop slot (metrics timer mode defaults UI to 0). */
     this.volumeDropHeightMm=Math.max(0,+syringeParams.volumeDropHeightMm||0);
+    /** Mesh-aware P2P interlock metric (expensive; throttled + off by default outside metrics protocol). */
+    this.meshInterlockEnabled=false;
+    this.meshInterlockSampleEveryN=6;
+    this._meshInterlockFrameCounter=0;
+    this._lastMeshInterlock=null;
     this._lastMetrics={
       p2pUniquePairs:0,
       p2pSumOverlapMm:0,
@@ -3487,7 +3858,14 @@ class SyringeSimulator {
       p2pForcePerPairStd:0,
       maxPenetrationMm:0,
       meanCmSpeedMmS:0,
-      meanMaxEdgeStrain:0};
+      meanMaxEdgeStrain:0,
+      meshContactPairs:0,
+      meshPenetratingVerts:0,
+      meshInterlockIndex:0,
+      avgMeshContactsPerParticle:0,
+      meshInterlockDepthMeanMm:0,
+      meshInterlockDepthMaxMm:0,
+      meshInterlockDepthMeanFrac:0};
     this._settleHistory=[];
     this.physicsFixedDt=1/60;
     // Elapsed sim time since last settle reset must exceed _settleMinTimeS (so new drops restart the clock).
@@ -3764,7 +4142,8 @@ class SyringeSimulator {
     if(spawned>0){
       this.particlesDroppedViaUi+=spawned;
       this._resetSettle();
-      if(this.timerExportMode){
+      // Start the capture window once; staggered auto-drops must not reset metrics mid-run.
+      if(this.timerExportMode && this._timerAnchorSim==null){
         this._timerAnchorSim=this.simTime;
         this._timerWallAnchorMs=(typeof performance!=='undefined'&&performance.now)?performance.now():Date.now();
         this._timerCaptureDone=false;
@@ -3839,7 +4218,9 @@ class SyringeSimulator {
       'container_volume_mm3,solid_volume_nominal_mm3,porosity_void_volume_mm3,porosity_fraction,'+
       'dispensed,particles_active,particles_dropped_via_ui,particles_released_total,settled,time_to_settle_s,settle_eta_sim_s,'+
       'predicted_settle_at_sim_s,needle_inlet_blocked,'+
-      'timer_window_start_sim_s,timer_capture_wall_s'];
+      'timer_window_start_sim_s,timer_capture_window_sim_s,wall_elapsed_s,'+
+      'mesh_contacts_count,mesh_contacts_penetrating_verts,avg_mesh_contacts_per_particle,mesh_interlock_index,'+
+      'mesh_interlock_depth_mean_mm,mesh_interlock_depth_max_mm,mesh_interlock_depth_mean_frac'];
   }
 
   /** One broadphase pass on current centers: unique touching pairs + overlap/Hertz-area / XPBD-ish force proxy. */
@@ -3910,6 +4291,115 @@ class SyringeSimulator {
     }
     if(uniquePairs===0){fpMin=0;fpMax=0;fpSumSq=0;}
     return{uniquePairs,sumOverlap,sumArea,sumForceProxy,maxPen,fpMin,fpMax,fpSumSq};
+  }
+
+  /**
+   * True mesh-aware P2P interlock: counts actual surface vertices of one particle found
+   * INSIDE the deformed visual mesh of a neighbor (ray-parity point-in-mesh, same test used
+   * for pore-void classification), instead of the centroid/sphere-proxy test used by the
+   * physics solver and _measureP2PContactsGeometry. This can detect genuine geometric
+   * interlocking (e.g. a star's points nesting into a neighbor's concavity) that the sphere
+   * proxy is blind to. Expensive (O(pairs × verts × tris)); caller should throttle/sample.
+   * Requires updateVisMesh() to already have been called this step (done earlier in simulate()).
+   *
+   * IMPORTANT caveat (do not use interlockIndex alone as a "grip strength" metric): counting
+   * penetrating VERTICES is a coverage measure, not a depth/strength measure. A shape whose
+   * contact patch happens to carry more roughly-coplanar mesh vertices (e.g. a flat prism face)
+   * will rack up more vertex "hits" from a shallow graze than a thin-armed shape (e.g. a star)
+   * gets from a single deep, mechanically-strong interlock along one arm — independent of how
+   * strong either contact actually is. For that reason we ALSO measure true penetration DEPTH
+   * (mm, via point-to-triangle-soup distance) for every vertex found inside a neighbor, and
+   * report mean/max depth plus a size-normalized depth fraction (depth / nominal radius) — these
+   * are the metrics to use when comparing "how strongly do these shapes interlock", since they
+   * don't scale with how many vertices a mesh happens to have near its own contact surface.
+   */
+  _measureMeshInterlock(){
+    const ps=this.particles;
+    const apos=this.allPositions;
+    const activeIdx=[];
+    for(let i=0;i<ps.length;i++) if(ps[i].active) activeIdx.push(i);
+    const n=activeIdx.length;
+    let totalVerts=0;
+    for(const idx of activeIdx) totalVerts+=ps[idx].numVisVerts;
+    if(n<2||totalVerts===0){
+      return{contactPairs:0,penetratingVerts:0,interlockIndex:0,activeCount:n,totalVerts,
+        depthMeanMm:0,depthMaxMm:0,depthMeanFrac:0};
+    }
+    // Lazily build per-particle world-space triangle soups (flat [x,y,z]*3 per tri) for the
+    // point-in-mesh / point-to-surface tests, reusing the ray-parity routine used for pore-void
+    // classification plus a closest-point-on-triangle distance for depth.
+    const soups=new Map();
+    const buildSoup=(pi)=>{
+      let tri=soups.get(pi);
+      if(tri)return tri;
+      const p=ps[pi];
+      const ids=p.visTriIds;
+      const vo=p.visVertOffset;
+      tri=new Float32Array(ids.length*3);
+      for(let i=0;i<ids.length;i++){
+        const b=(vo+ids[i])*3;
+        tri[3*i]=apos[b]; tri[3*i+1]=apos[b+1]; tri[3*i+2]=apos[b+2];
+      }
+      soups.set(pi,tri);
+      return tri;
+    };
+    let contactPairs=0, penetratingVerts=0;
+    let depthSum=0, depthMax=0, depthFracSum=0;
+    // Gate on the DEFORMED bounding sphere (not nominal radius) so tips/corners that extend
+    // past the nominal sphere still get tested — this is what lets true interlock exceed the
+    // sphere-proxy contact count for shapes like stars.
+    const CONTACT_MARGIN=1.15;
+    for(let a=0;a<n;a++){
+      const pi=activeIdx[a];
+      const A=ps[pi];
+      const rA=Math.max(A.boundingRadius||0, A.nominalRadius||0);
+      for(let b=a+1;b<n;b++){
+        const pj=activeIdx[b];
+        const B=ps[pj];
+        const dx=A.center[0]-B.center[0], dy=A.center[1]-B.center[1], dz=A.center[2]-B.center[2];
+        const d2=dx*dx+dy*dy+dz*dz;
+        const rB=Math.max(B.boundingRadius||0, B.nominalRadius||0);
+        const gate=(rA+rB)*CONTACT_MARGIN;
+        if(d2>=gate*gate) continue;
+        const soupA=buildSoup(pi);
+        const soupB=buildSoup(pj);
+        const nomAvg=Math.max(1e-6, 0.5*((A.nominalRadius||0)+(B.nominalRadius||0)));
+        let hitCount=0;
+        const vbA=A.visVertOffset*3;
+        for(let k=0;k<A.numVisVerts;k++){
+          const vb=vbA+3*k;
+          const px=apos[vb],py=apos[vb+1],pz=apos[vb+2];
+          if(_fillPointInsideMesh(px,py,pz, soupB)){
+            hitCount++;
+            const depth=_minDistPointToSoup(px,py,pz, soupB);
+            depthSum+=depth;
+            depthFracSum+=depth/nomAvg;
+            if(depth>depthMax) depthMax=depth;
+          }
+        }
+        const vbB=B.visVertOffset*3;
+        for(let k=0;k<B.numVisVerts;k++){
+          const vb=vbB+3*k;
+          const px=apos[vb],py=apos[vb+1],pz=apos[vb+2];
+          if(_fillPointInsideMesh(px,py,pz, soupA)){
+            hitCount++;
+            const depth=_minDistPointToSoup(px,py,pz, soupA);
+            depthSum+=depth;
+            depthFracSum+=depth/nomAvg;
+            if(depth>depthMax) depthMax=depth;
+          }
+        }
+        if(hitCount>0){
+          contactPairs++;
+          penetratingVerts+=hitCount;
+        }
+      }
+    }
+    const interlockIndex=totalVerts>0 ? penetratingVerts/totalVerts : 0;
+    const depthMeanMm=penetratingVerts>0 ? depthSum/penetratingVerts : 0;
+    const depthMeanFrac=penetratingVerts>0 ? depthFracSum/penetratingVerts : 0;
+    return{contactPairs,penetratingVerts,interlockIndex,activeCount:n,totalVerts,
+      depthMeanMm,depthMaxMm:depthMax,depthMeanFrac};
   }
 
   /** Nominal solid / container volume in box or airway mode (0..1); NaN in syringe mode. */
@@ -4488,6 +4978,16 @@ class SyringeSimulator {
     const np=g.uniquePairs|0;
     const fmean=np>0?g.sumForceProxy/np:0;
     const fstd=np>0?Math.sqrt(Math.max(0,(g.fpSumSq/np)-fmean*fmean)):0;
+    // Mesh-aware interlock (vertex-in-mesh, true surface geometry) — expensive, throttled.
+    if(this.meshInterlockEnabled){
+      const everyN=Math.max(1,this.meshInterlockSampleEveryN|0);
+      if(((this._meshInterlockFrameCounter++)%everyN)===0){
+        this._lastMeshInterlock=this._measureMeshInterlock();
+      }
+    }else{
+      this._lastMeshInterlock=null;
+    }
+    const mi=this._lastMeshInterlock||{contactPairs:0,penetratingVerts:0,interlockIndex:0,activeCount:0};
     this._lastMetrics={
       p2pUniquePairs:g.uniquePairs,
       p2pSumOverlapMm:g.sumOverlap,
@@ -4499,7 +4999,14 @@ class SyringeSimulator {
       p2pForcePerPairStd:fstd,
       maxPenetrationMm:g.maxPen,
       meanCmSpeedMmS:this._meanCentroidSpeedActive(),
-      meanMaxEdgeStrain:meanStrainCnt>0?meanStrainSum/meanStrainCnt:0};
+      meanMaxEdgeStrain:meanStrainCnt>0?meanStrainSum/meanStrainCnt:0,
+      meshContactPairs:mi.contactPairs,
+      meshPenetratingVerts:mi.penetratingVerts,
+      meshInterlockIndex:mi.interlockIndex,
+      avgMeshContactsPerParticle:mi.activeCount>0?(mi.contactPairs*2/mi.activeCount):0,
+      meshInterlockDepthMeanMm:mi.depthMeanMm||0,
+      meshInterlockDepthMaxMm:mi.depthMaxMm||0,
+      meshInterlockDepthMeanFrac:mi.depthMeanFrac||0};
     this.simTime+=dt;
     this._updateSettleAfterStep();
     if(gAirwayPlayback.mode==='baking') _airwayBakeOnStep();
@@ -4726,8 +5233,9 @@ class SyringeSimulator {
       `— modulus map has ${p._modulusMap.length} values (${pinnedCount} substrate vertices were pinned).`);
   }
 
-  timerWallDurationMs(){
-    return Math.max(250,this.timerWallDurationS*1000);
+  /** Target capture-window length in simulated seconds (name kept for compat with old field). */
+  timerCaptureSimS(){
+    return Math.max(0.1,this.timerWallDurationS);
   }
 
   // ── Particle–particle contact (centroid-level XPBD) ───────────
@@ -4931,14 +5439,14 @@ class SyringeSimulator {
     return s;
   }
 
-  /** Append one metrics row (call once per fixed physics step). */
+  /** Append one metrics row (call once per fixed physics step). Capture window is gated on
+   *  simulated time (this.simTime), not wall-clock, so runs are apples-to-apples across shapes
+   *  regardless of per-frame cost (mesh interlock metric, heavier meshes, etc). */
   pushMetricsRow(frameIdx){
     if(this.timerExportMode){
       if(this._timerAnchorSim==null)return;
-      if(this._timerWallAnchorMs==null)return;
       if(this._timerCaptureDone)return;
-      const now=(typeof performance!=='undefined'&&performance.now)?performance.now():Date.now();
-      if(now-this._timerWallAnchorMs>this.timerWallDurationMs()+1e-3)return;
+      if(this.simTime-this._timerAnchorSim>this.timerCaptureSimS()+1e-6)return;
     }
     const m=this._lastMetrics;
     const n=this.particles.reduce((a,p)=>a+(p.active?1:0),0);
@@ -4951,7 +5459,10 @@ class SyringeSimulator {
     const por=this._porositySnapshot();
     const fmtNum=x=>(Number.isFinite(x)?x.toFixed(6):'');
     const tw=this._timerAnchorSim!=null?this._timerAnchorSim.toFixed(6):'';
-    const td=this.timerExportMode?this.timerWallDurationS.toFixed(4):'';
+    const td=this.timerExportMode?this.timerCaptureSimS().toFixed(4):'';
+    const wallEl=(this.timerExportMode&&this._timerWallAnchorMs!=null)
+      ? (((typeof performance!=='undefined'&&performance.now)?performance.now():Date.now())-this._timerWallAnchorMs)/1000
+      : NaN;
     this._metricsRows.push(
       `${frameIdx},${this.simTime.toFixed(4)},${m.p2pUniquePairs},`+
       `${m.p2pSumOverlapMm.toFixed(6)},${m.p2pEstContactAreaMm2.toFixed(6)},${m.p2pForceProxy.toFixed(6)},`+
@@ -4960,7 +5471,9 @@ class SyringeSimulator {
       `${m.meanCmSpeedMmS.toFixed(6)},${m.meanMaxEdgeStrain.toFixed(6)},`+
       `${fmtNum(por.containerVolMm3)},${fmtNum(por.solidNominalMm3)},${fmtNum(por.voidMm3)},${fmtNum(por.porosityFraction)},`+
       `${this.dispensed},${n},${this.particlesDroppedViaUi},${this.spawnCursor|0},`+
-      `${st.settled?1:0},${tts},${eta},${pred},${nib},${tw},${td}`);}
+      `${st.settled?1:0},${tts},${eta},${pred},${nib},${tw},${td},${fmtNum(wallEl)},`+
+      `${m.meshContactPairs|0},${m.meshPenetratingVerts|0},${(m.avgMeshContactsPerParticle||0).toFixed(4)},${(m.meshInterlockIndex||0).toFixed(6)},`+
+      `${(m.meshInterlockDepthMeanMm||0).toFixed(6)},${(m.meshInterlockDepthMaxMm||0).toFixed(6)},${(m.meshInterlockDepthMeanFrac||0).toFixed(6)}`);}
 
   getMetricsCSV(){
     return(this._metricsRows||[]).join('\n');
@@ -4968,6 +5481,58 @@ class SyringeSimulator {
 
   /** @deprecated name kept for callers */
   getContactCSV(){return this.getMetricsCSV();}
+
+  /** Gate pore export until the pack is jammed/settled enough for interstitial porosity. */
+  checkPoreExportReadiness(){
+    const issues=[];
+    const PORE_MIN_ACTIVE=100;
+    let activeCount=0;
+    for(const p of this.particles) if(p.active) activeCount++;
+    if(activeCount===0){
+      issues.push('no active particles');
+      return{ok:false, issues, activeCount, settled:false, meanSpeedMmS:NaN};
+    }
+    if(activeCount<PORE_MIN_ACTIVE){
+      issues.push(
+        `only ${activeCount} active particles (need ≥${PORE_MIN_ACTIVE} for a jammed interior; `+
+        `set Initial drop high enough for a jammed interior, Restart, Run until settled)`
+      );
+    }
+    const st=this.settleState;
+    const m=this._lastMetrics||{};
+    const meanSpeed=Number.isFinite(m.meanCmSpeedMmS)?m.meanCmSpeedMmS:Infinity;
+    const speedThr=this._settleThrMeanSpeed;
+    // Always require low mean CM speed (jammed steady state), not only in timer mode.
+    if(meanSpeed>speedThr){
+      issues.push(
+        `mean particle speed ${meanSpeed.toFixed(4)} mm/s > settle threshold ${speedThr.toFixed(4)} mm/s — wait for the pack to stop moving`
+      );
+    }
+    if(!this.timerExportMode && !st?.settled){
+      const eta=st?.etaCountdownSim;
+      issues.push(
+        eta!=null && Number.isFinite(eta)
+          ? `pack not settled (~${eta.toFixed(1)} s sim remaining on settle HUD)`
+          : 'pack not settled — run until the settle HUD shows settled, then pause before pore export'
+      );
+    }
+    if(!this._allActiveHaveParticleParticleContact()){
+      issues.push('not all active particles have particle–particle contacts (pack too loose / not jammed)');
+    }
+    const sy=this.syringe;
+    if(sy?._boxVolume){
+      const clearX=2*sy.halfX, clearY=2*sy.halfY, clearZ=2*sy.halfZ;
+      const nomR=this.tmpl.nominalRadius||0.3;
+      const need=(2*nomR)*readPoreMeasRegionMultiplier()+2*readPoreMeasWallMarginMm(nomR);
+      if(clearX<need || clearY<need || clearZ<need){
+        issues.push(
+          `volume box ${clearX.toFixed(2)}×${clearY.toFixed(2)}×${clearZ.toFixed(2)} mm is too small for a `+
+          `${need.toFixed(2)} mm interior sample (raise Width/Height/Depth to ≥12 mm, then Restart)`
+        );
+      }
+    }
+    return{ok:issues.length===0, issues, activeCount, settled:!!st?.settled, meanSpeedMmS:meanSpeed};
+  }
 
   /** Voxel void field for pore export (OBJ mesh + CSV volumes share this). */
   _analyzePoreVoid(){
@@ -4985,8 +5550,21 @@ class SyringeSimulator {
 
     if(activeIdx.length===0){
       head.push('# No active particles.');
-      return{status:'no_particles', head, activeIdx};
+      return{status:'no_particles', head, activeIdx, packStats:{count:0, avgNnDist:NaN}};
     }
+
+    const nomR=this.tmpl.nominalRadius||0.3;
+    const particleDiameterMm=2*nomR;
+    const regionMultiplier=readPoreMeasRegionMultiplier();
+    const requestedRegionSizeMm=particleDiameterMm*regionMultiplier;
+    console.log(
+      `Pore measurement region: particle_diameter_mm=${particleDiameterMm.toFixed(4)} `+
+      `REGION_MULTIPLIER=${regionMultiplier} → requested region_size_mm=${requestedRegionSizeMm.toFixed(4)}`
+    );
+    const packStats=_poreParticlePackStats(this.particles, activeIdx);
+    const wallMargin=readPoreMeasWallMarginMm(nomR);
+    const measRegion=_poreComputeMeasurementRegion(
+      this.particles, activeIdx, this.syringe, particleDiameterMm, regionMultiplier, wallMargin);
 
     const apos=this.allPositions;
     const sy=this.syringe;
@@ -5091,10 +5669,13 @@ class SyringeSimulator {
     let voidPreStrip=0;
     for(let i=0;i<n;i++) if(voidBit[i]) voidPreStrip++;
 
+    const voidBitMetric=new Uint8Array(voidBit);
+    const metricStrippedVox=_poreStripOpenAir(voidBitMetric, nx, ny, nz, VI, ox, oy, oz, sx, syv, sz, sy, yTopParticles, nomR, true, true);
+    const regionMetrics=_poreCountRegionVoxels(voidBitMetric, nx, ny, nz, ox, oy, oz, sx, syv, sz, sy, VI, measRegion);
+
     const stripAir=document.getElementById('chkPoreStripAir')?.checked ?? false;
     let strippedVox=0;
     if(stripAir){
-      const nomR=this.tmpl.nominalRadius||0.3;
       strippedVox=_poreStripOpenAir(voidBit, nx, ny, nz, VI, ox, oy, oz, sx, syv, sz, sy, yTopParticles, nomR, true, true);
     }
 
@@ -5147,14 +5728,21 @@ class SyringeSimulator {
       sizes.push(szV);
     }
 
-    head.push(`# grid ${nx}x${ny}x${nz}  voxel_mm ${sx.toFixed(4)} x ${syv.toFixed(4)} x ${sz.toFixed(4)}`);
-    head.push(`# void_voxels_before_strip=${voidPreStrip}  pore_strip_open_air=${stripAir ? 1 : 0}`);
-    head.push(`# void_voxels=${voidCount}  connected_void_regions=${nLab}  stripped_open_air_voxels=${strippedVox}`);
-    head.push('');
-
     const pairs=sizes.map((szV, i)=>[szV, i+1]);
     pairs.sort((a, b)=>b[0]-a[0]);
     const wantSmooth=(document.getElementById('chkPoreSmooth')?.checked ?? true) && window._PORE_MC && window._PORE_MC.edgeTable;
+
+    head.push(`# grid ${nx}x${ny}x${nz}  voxel_mm ${sx.toFixed(4)} x ${syv.toFixed(4)} x ${sz.toFixed(4)}`);
+    head.push(`# void_voxels_before_strip=${voidPreStrip}  pore_strip_open_air=${stripAir ? 1 : 0}`);
+    head.push(`# void_voxels=${voidCount}  connected_void_regions=${nLab}  stripped_open_air_voxels=${strippedVox}`);
+    head.push(`# porosity_sample cube ${measRegion.size.toFixed(4)} mm @ (${measRegion.cx.toFixed(3)},${measRegion.cy.toFixed(3)},${measRegion.cz.toFixed(3)})  metric_strip=${metricStrippedVox}  porosity_pct=${Number.isFinite(regionMetrics.porosityPct)?regionMetrics.porosityPct.toFixed(2):'NaN'}`);
+    head.push('');
+
+    const analysisBase={
+      head, activeIdx, voidBit, comp, nx, ny, nz, ox, oy, oz, sx, syv, sz,
+      voidPreStrip, voidCount, strippedVox, stripAir, nLab, sizes, pairs, VI, wantSmooth,
+      nomR, packStats, measRegion, metricStrippedVox, regionMetrics,
+    };
 
     if(voidCount===0 || nLab===0){
       if(stripAir && voidPreStrip>0){
@@ -5162,16 +5750,10 @@ class SyringeSimulator {
       } else {
         head.push('# No void voxels (try higher Pore export voxels, or pause when gaps are wider).');
       }
-      return{
-        status:'no_void', head, activeIdx, voidBit, comp, nx, ny, nz, ox, oy, oz, sx, syv, sz,
-        voidPreStrip, voidCount, strippedVox, stripAir, nLab, sizes, pairs, VI, wantSmooth,
-      };
+      return Object.assign({status:'no_void'}, analysisBase);
     }
 
-    return{
-      status:'ok', head, activeIdx, voidBit, comp, nx, ny, nz, ox, oy, oz, sx, syv, sz,
-      voidPreStrip, voidCount, strippedVox, stripAir, nLab, sizes, pairs, VI, wantSmooth,
-    };
+    return Object.assign({status:'ok'}, analysisBase);
   }
 
   /** CSV: void/porosity volumes in mm³ (voxel count × voxel volume). */
@@ -5179,21 +5761,62 @@ class SyringeSimulator {
     const a=analysis||this._analyzePoreVoid();
     const lines=[];
     const f6=(x)=>Number.isFinite(x)?x.toFixed(6):'';
+    const f2=(x)=>Number.isFinite(x)?x.toFixed(2):'';
+
     if(a.status==='no_particles'){
-      return 'sim_time_s,void_volume_mm3,void_voxels,note\n'+
-        `${this.simTime.toFixed(6)},,,no active particles\n`;
+      console.warn('Pore porosity CSV: no active particles.');
+      return 'porosity_pct,note\n,no active particles\n';
     }
+
+    const ps=a.packStats||{count:a.activeIdx?.length||0, avgNnDist:NaN};
+    console.log(`Pore porosity: ${ps.count} active particles, avg nearest-neighbor center distance ${Number.isFinite(ps.avgNnDist)?ps.avgNnDist.toFixed(4):'NaN'} mm`);
+    if(ps.count<20){
+      console.warn(`Pore porosity: only ${ps.count} active particles (< 20) — bulk packing scale may be unreliable; expect inflated porosity readings.`);
+    }
+
+    const meas=a.measRegion;
+    if(meas){
+      console.log(
+        `Pore porosity: measurement cube actual=${meas.size.toFixed(4)} mm `+
+        `requested=${meas.requestedSize.toFixed(4)} mm `+
+        `(particle_diameter_mm=${Number(meas.particleDiameterMm).toFixed(4)} × REGION_MULTIPLIER=${meas.regionMultiplier}) `+
+        `clamped=${meas.clamped?1:0} @ (${meas.cx.toFixed(3)}, ${meas.cy.toFixed(3)}, ${meas.cz.toFixed(3)})`
+      );
+      for(const w of meas.warnings||[]) console.warn(`Pore porosity: ${w}`);
+    }
+    const voidPre=a.voidPreStrip|0;
+    const metricStrip=a.metricStrippedVox|0;
+    const stripPct=voidPre>0?(metricStrip/voidPre)*100:NaN;
+    console.log(
+      `Pore porosity: open-air strip removed ${metricStrip}/${voidPre} void voxels `+
+      `(${Number.isFinite(stripPct)?stripPct.toFixed(1):'NaN'}%, always on for CSV metric)`
+    );
+    if(Number.isFinite(stripPct) && stripPct>50){
+      console.warn(
+        `Pore porosity: ${stripPct.toFixed(1)}% of void voxels were open air (>50%) — pack is likely too sparse/loose for a meaningful interstitial porosity reading; drop more particles and wait for settle`
+      );
+    } else if(metricStrip===0 && voidPre>0){
+      console.warn('Pore porosity: open-air strip removed 0 voxels — void may not connect to headspace/needle seeds, or pack is fully sealed.');
+    }
+
+    const rm=a.regionMetrics||{totalInRegion:0, voidInRegion:0, porosityPct:NaN};
+    console.log(`Pore porosity: region ${rm.voidInRegion}/${rm.totalInRegion} void voxels → porosity_pct=${f2(rm.porosityPct)}`);
+
     const voxVol=a.sx*a.syv*a.sz;
     const totalVol=a.voidCount*voxVol;
     const preStripVol=a.voidPreStrip*voxVol;
-    lines.push('# pore void volume summary (voxel approximation; each void voxel = sx×sy×sz mm³)');
-    lines.push('sim_time_s,voxel_mm_x,voxel_mm_y,voxel_mm_z,grid_nx,grid_ny,grid_nz,voxel_volume_mm3,void_voxels,void_volume_mm3,void_voxels_before_strip,void_volume_before_strip_mm3,pore_strip_open_air,connected_void_regions,stripped_open_air_voxels');
+    lines.push('# PRIMARY METRIC: porosity_pct = void voxels / fluid voxels inside the interior measurement cube (open air always stripped)');
+    lines.push('# Full-grid void_volume_mm3 uses UI “Omit open air” toggle; porosity_pct does not.');
+    lines.push('# If measurement_region_clamped=1, actual size < requested — widen container or lower region_multiplier.');
+    lines.push('porosity_pct,measurement_region_size_mm,measurement_region_requested_mm,measurement_region_clamped,particle_diameter_mm,region_multiplier,total_voxels_in_region,void_voxels_in_region,active_particles,avg_nn_dist_mm,metric_stripped_open_air_voxels,metric_stripped_open_air_pct,sim_time_s,voxel_mm_x,voxel_mm_y,voxel_mm_z,grid_nx,grid_ny,grid_nz,voxel_volume_mm3,void_voxels,void_volume_mm3,void_voxels_before_strip,void_volume_before_strip_mm3,pore_strip_open_air_ui,connected_void_regions,stripped_open_air_voxels_ui,meas_cx_mm,meas_cy_mm,meas_cz_mm');
     lines.push(
+      `${f2(rm.porosityPct)},${f6(meas?.size)},${f6(meas?.requestedSize)},${meas?.clamped|0},${f6(meas?.particleDiameterMm)},${f6(meas?.regionMultiplier)},${rm.totalInRegion|0},${rm.voidInRegion|0},${ps.count},${f6(ps.avgNnDist)},${metricStrip},${Number.isFinite(stripPct)?stripPct.toFixed(2):''},`+
       `${this.simTime.toFixed(6)},${f6(a.sx)},${f6(a.syv)},${f6(a.sz)},${a.nx},${a.ny},${a.nz},${f6(voxVol)},`+
-      `${a.voidCount},${f6(totalVol)},${a.voidPreStrip},${f6(preStripVol)},${a.stripAir?1:0},${a.nLab},${a.strippedVox}`
+      `${a.voidCount},${f6(totalVol)},${a.voidPreStrip},${f6(preStripVol)},${a.stripAir?1:0},${a.nLab|0},${a.strippedVox|0},`+
+      `${f6(meas?.cx)},${f6(meas?.cy)},${f6(meas?.cz)}`
     );
     lines.push('');
-    lines.push('# per connected void region (matches OBJ g pore_cc_NNN, largest first)');
+    lines.push('# per connected void region (full grid, UI strip state; matches OBJ g pore_cc_NNN, largest first)');
     lines.push('region_rank,region_id,void_voxels,void_volume_mm3,volume_fraction');
     if(a.pairs && a.pairs.length && totalVol>0){
       for(let r=0;r<a.pairs.length;r++){
@@ -5572,6 +6195,7 @@ function _showcaseApplyStressColors(item, tSec){
 }
 
 function disposeShowcase(){
+  _detachVolumeOutlineToScene();
   if(gShowcase.root&&gScene){
     gScene.remove(gShowcase.root);
     for(const item of gShowcase.items||[]){
@@ -5802,6 +6426,7 @@ async function initShowcase(){
     for(const item of items) _showcaseApplyStressColors(item, 0);
   }
   _showcaseFocusCamera();
+  syncVolumeOutlinePreview();
   if(lbl){
     lbl.textContent=interlockMode
       ? gShowcaseInterlockObj?.soup
@@ -5987,6 +6612,7 @@ function initThreeScene(){
   gScene=new THREE.Scene();
   gScene.background=new THREE.Color(0xffffff);
   gScene.fog=new THREE.Fog(0xffffff,60,250);
+  // Theme (white/black canvas + accent strokes) applied after UI config loads.
 
   // Lights
   gScene.add(new THREE.AmbientLight(0x404060,0.8));
@@ -6066,19 +6692,33 @@ function initThreeScene(){
   gScene.add(gPickMarker);
 
   {
-    const unitBox=new THREE.BoxGeometry(1,1,1);
-    const edgeGeo=new THREE.EdgesGeometry(unitBox);
-    unitBox.dispose();
-    gVolumeOutline=new THREE.LineSegments(edgeGeo,new THREE.LineBasicMaterial({
-      color:0x6ab0e8,
-      transparent:true,
-      opacity:0.42,
-      depthTest:true,
-      depthWrite:false}));
+    // World-space sized edges (not a unit box + scale) so dash/gap stay
+    // identical on short and long sides under non-uniform box dimensions.
+    gVolumeOutline=new THREE.LineSegments(
+      _makeVolumeOutlineGeometry(false,1,1,1),
+      new THREE.LineDashedMaterial({
+        color:_vizAccentHex(),
+        dashSize:0.55,
+        gapSize:0.35,
+        transparent:true,
+        opacity:0.9,
+        depthTest:true,
+        depthWrite:false,
+        linewidth:1}));
+    gVolumeOutline.computeLineDistances();
     gVolumeOutline.visible=false;
     gVolumeOutline.renderOrder=2;
+    gVolumeOutline.userData.openBottom=false;
+    gVolumeOutline.userData.boxW=1;
+    gVolumeOutline.userData.boxH=1;
+    gVolumeOutline.userData.boxD=1;
     gScene.add(gVolumeOutline);
   }
+
+  gCamCtrl.addEventListener('start', ()=>{
+    const sel=document.getElementById('selIsoView');
+    if(sel && sel.value!=='free') sel.value='free';
+  });
 
   // ── Nanoindentation probe: sphere tip + cylindrical shaft ──
   {
@@ -6165,61 +6805,177 @@ function _focusTarget(x,y,z, keepDistance=true){
   gCamCtrl.update();
 }
 
-/** Wireframe for volume box preview; open bottom omits the floor square. */
-function _makeVolumeOutlineGeometry(openBottom){
+/** Wireframe for volume box preview; sized in world units (scale stays 1). Open bottom omits the floor square. */
+function _makeVolumeOutlineGeometry(openBottom,w=1,h=1,d=1){
+  const bw=Math.max(1e-4,+w||1e-4);
+  const bh=Math.max(1e-4,+h||1e-4);
+  const bd=Math.max(1e-4,+d||1e-4);
   if(!openBottom){
-    const unitBox=new THREE.BoxGeometry(1,1,1);
-    const geo=new THREE.EdgesGeometry(unitBox);
-    unitBox.dispose();
+    const box=new THREE.BoxGeometry(bw,bh,bd);
+    const geo=new THREE.EdgesGeometry(box);
+    box.dispose();
     return geo;
   }
-  const h=0.5;
+  const hx=bw*0.5, hy=bh*0.5, hz=bd*0.5;
   const verts=new Float32Array([
-    -h,h,-h, h,h,-h,
-    h,h,-h, h,h,h,
-    h,h,h, -h,h,h,
-    -h,h,h, -h,h,-h,
-    -h,h,-h, -h,-h,-h,
-    h,h,-h, h,-h,-h,
-    h,h,h, h,-h,h,
-    -h,h,h, -h,-h,h,
+    -hx, hy,-hz,  hx, hy,-hz,
+     hx, hy,-hz,  hx, hy, hz,
+     hx, hy, hz, -hx, hy, hz,
+    -hx, hy, hz, -hx, hy,-hz,
+    -hx, hy,-hz, -hx,-hy,-hz,
+     hx, hy,-hz,  hx,-hy,-hz,
+     hx, hy, hz,  hx,-hy, hz,
+    -hx, hy, hz, -hx,-hy, hz,
   ]);
   const geo=new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
   return geo;
 }
 
-function _setVolumeOutlineOpenBottom(openBottom){
-  if(!gVolumeOutline)return;
-  const open=!!openBottom;
-  if(gVolumeOutline.userData.openBottom===open)return;
-  gVolumeOutline.userData.openBottom=open;
-  const old=gVolumeOutline.geometry;
-  gVolumeOutline.geometry=_makeVolumeOutlineGeometry(open);
-  if(old)old.dispose();
+function _refreshVolumeOutlineDashes(){
+  if(!gVolumeOutline) return;
+  gVolumeOutline.computeLineDistances();
 }
 
-/** Show wireframe box from sidebar volume fields when paused; hides while sim is running. */
+/** Rebuild outline at world size so dashes match on every edge. */
+function _setVolumeOutlineBox(w,h,d,openBottom){
+  if(!gVolumeOutline)return;
+  const open=!!openBottom;
+  const bw=Math.max(1e-4,+w||1e-4);
+  const bh=Math.max(1e-4,+h||1e-4);
+  const bd=Math.max(1e-4,+d||1e-4);
+  const ud=gVolumeOutline.userData;
+  if(ud.openBottom===open && ud.boxW===bw && ud.boxH===bh && ud.boxD===bd
+     && gVolumeOutline.scale.x===1 && gVolumeOutline.scale.y===1 && gVolumeOutline.scale.z===1){
+    return;
+  }
+  ud.openBottom=open;
+  ud.boxW=bw; ud.boxH=bh; ud.boxD=bd;
+  const old=gVolumeOutline.geometry;
+  gVolumeOutline.geometry=_makeVolumeOutlineGeometry(open,bw,bh,bd);
+  if(old)old.dispose();
+  gVolumeOutline.scale.set(1,1,1);
+  _refreshVolumeOutlineDashes();
+}
+
+function _detachVolumeOutlineToScene(){
+  if(!gVolumeOutline||!gScene) return;
+  if(gVolumeOutline.parent===gScene) return;
+  if(gVolumeOutline.parent) gVolumeOutline.parent.remove(gVolumeOutline);
+  gVolumeOutline.rotation.set(0,0,0);
+  gScene.add(gVolumeOutline);
+}
+
+/** Local AABB of star-interlock cluster; outline parented so it spins with the object. */
+function _syncStarInterlockVolumeOutline(){
+  if(!gVolumeOutline||!gShowcase.cluster) return false;
+  const cluster=gShowcase.cluster;
+  if(gVolumeOutline.parent!==cluster){
+    if(gVolumeOutline.parent) gVolumeOutline.parent.remove(gVolumeOutline);
+    const savedY=cluster.rotation.y;
+    cluster.rotation.y=0;
+    cluster.updateMatrixWorld(true);
+    const box=new THREE.Box3().setFromObject(cluster);
+    if(box.isEmpty()){
+      cluster.rotation.y=savedY;
+      cluster.updateMatrixWorld(true);
+      gScene.add(gVolumeOutline);
+      return false;
+    }
+    const center=new THREE.Vector3();
+    const size=new THREE.Vector3();
+    box.getCenter(center);
+    box.getSize(size);
+    if(size.x<1e-6||size.y<1e-6||size.z<1e-6){
+      cluster.rotation.y=savedY;
+      cluster.updateMatrixWorld(true);
+      gScene.add(gVolumeOutline);
+      return false;
+    }
+    cluster.worldToLocal(center);
+    _setVolumeOutlineBox(size.x,size.y,size.z,false);
+    gVolumeOutline.position.copy(center);
+    gVolumeOutline.rotation.set(0,0,0);
+    cluster.add(gVolumeOutline);
+    cluster.rotation.y=savedY;
+    cluster.updateMatrixWorld(true);
+    gVolumeOutline.userData.interlockBound=true;
+  }
+  return true;
+}
+
+/** Show wireframe box from sidebar volume fields when paused; star interlock while active. */
 function syncVolumeOutlinePreview(){
   if(!gVolumeOutline)return;
   const mv=_containerModeRaw();
   const volMode=_isVolumeContainerMode();
   const airwayMode=mv==='airway';
+  const interlockMode=_isShowcaseStarInterlockMode()&&gShowcase.active&&!!gShowcase.cluster;
   const wantOutline=!!(document.getElementById('chkVolumeOutlineShow')?.checked);
-  const show=wantOutline && gPaused && (volMode||airwayMode) && !gPerfSkipDraw;
-  gVolumeOutline.visible=show;
-  if(!show)return;
+  const show=wantOutline && !gPerfSkipDraw && (
+    (gPaused && (volMode||airwayMode)) || interlockMode
+  );
+  if(!show){
+    gVolumeOutline.visible=false;
+    if(gVolumeOutline.userData.interlockBound){
+      _detachVolumeOutlineToScene();
+      gVolumeOutline.userData.interlockBound=false;
+    }
+    return;
+  }
+  if(interlockMode){
+    gVolumeOutline.visible=_syncStarInterlockVolumeOutline();
+    return;
+  }
+  if(gVolumeOutline.userData.interlockBound){
+    _detachVolumeOutlineToScene();
+    gVolumeOutline.userData.interlockBound=false;
+  }
+  gVolumeOutline.visible=true;
   if(airwayMode&&gSimulator&&gSimulator.syringe&&gSimulator.syringe._airwayVolume){
     const b=gSimulator.syringe;
-    gVolumeOutline.scale.set(b.halfX*2,b.halfY*2,b.halfZ*2);
+    _setVolumeOutlineBox(b.halfX*2,b.halfY*2,b.halfZ*2,false);
     gVolumeOutline.position.set(b.centerX,b.centerY,b.centerZ);
   }else{
-    _setVolumeOutlineOpenBottom(!!document.getElementById('chkVolumeOpenBottom')?.checked);
     const vb=readVolumeBoxParams();
-    gVolumeOutline.scale.set(vb.widthMm,vb.heightMm,vb.depthMm);
+    _setVolumeOutlineBox(
+      vb.widthMm,vb.heightMm,vb.depthMm,
+      !!document.getElementById('chkVolumeOpenBottom')?.checked);
     gVolumeOutline.position.set(vb.centerX_mm,vb.centerY_mm,vb.centerZ_mm);
   }
   syncFillMeshPreviewVisibility();
+}
+
+/** Snap camera to an isometric / axis-aligned preset around the current look-at. */
+function onIsoViewSnap(mode){
+  if(!gCamera||!gCamCtrl) return;
+  const key=String(mode||'free');
+  if(key==='free') return;
+  if(gContainerOrbitState) _stopContainerOrbit();
+  const target=gCamCtrl.target.clone();
+  let dist=gCamera.position.distanceTo(target);
+  if(!Number.isFinite(dist)||dist<0.5){
+    const c=_containerOrbitCenter();
+    const diag=Math.sqrt(c.w*c.w+c.h*c.h+c.d*c.d);
+    dist=Math.max(6, diag*1.25);
+  }
+  const dirs={
+    iso:new THREE.Vector3(1,1,1),
+    iso_nw:new THREE.Vector3(-1,1,1),
+    iso_se:new THREE.Vector3(1,1,-1),
+    iso_sw:new THREE.Vector3(-1,1,-1),
+    front:new THREE.Vector3(0,0.12,1),
+    back:new THREE.Vector3(0,0.12,-1),
+    right:new THREE.Vector3(1,0.12,0),
+    left:new THREE.Vector3(-1,0.12,0),
+    top:new THREE.Vector3(0.001,1,0.001),
+    bottom:new THREE.Vector3(0.001,-1,0.001),
+  };
+  const dir=(dirs[key]||dirs.iso).clone().normalize();
+  gCamera.position.copy(target).addScaledVector(dir, dist);
+  gCamera.up.set(0,1,0);
+  gCamCtrl.update();
+  _applyContainerOrbitMode();
 }
 
 function syncFillMeshPreviewVisibility(){
@@ -6275,6 +7031,43 @@ function onFillMeshShowChange(){
 
 function onVolumeOutlineShowChange(){
   syncVolumeOutlinePreview();
+}
+
+/** White canvas → dark strokes; black canvas → light strokes. */
+function _vizDarkBackground(){
+  return !!document.getElementById('chkDarkBackground')?.checked;
+}
+function _vizAccentHex(){
+  return _vizDarkBackground() ? 0xffffff : 0x111111;
+}
+function _vizBackgroundHex(){
+  return _vizDarkBackground() ? 0x000000 : 0xffffff;
+}
+
+/** Apply canvas background + silhouette / bounding-box stroke colors. */
+function applyVizBackgroundTheme(){
+  const bg=_vizBackgroundHex();
+  const accent=_vizAccentHex();
+  if(gScene){
+    if(gScene.background) gScene.background.setHex(bg);
+    else gScene.background=new THREE.Color(bg);
+    if(gScene.fog) gScene.fog.color.setHex(bg);
+  }
+  if(gVolumeOutline?.material?.color) gVolumeOutline.material.color.setHex(accent);
+  const meshes=gSimulator?.syringe?.meshes;
+  if(meshes){
+    for(const entry of meshes){
+      const m=entry?.mesh;
+      if(!m) continue;
+      const n=String(m.name||entry.name||'');
+      if(!/outline/i.test(n)) continue;
+      if(m.material?.color) m.material.color.setHex(accent);
+    }
+  }
+}
+
+function onDarkBackgroundChange(){
+  applyVizBackgroundTheme();
 }
 
 function onToggleVolumeOpenBottom(on){
@@ -6923,9 +7716,9 @@ function readVolumeBoxParams(){
     const v=+el.value;
     return Number.isFinite(v)?v:NaN;
   };
-  const w=Math.max(0.5, g('pVolW')||1);
-  const h=Math.max(0.5, g('pVolH')||20);
-  const d=Math.max(0.5, g('pVolD')||1);
+  const w=Math.max(0.5, g('pVolW')||12);
+  const h=Math.max(0.5, g('pVolH')||12);
+  const d=Math.max(0.5, g('pVolD')||12);
   let cx=g('pVolCx'); if(!Number.isFinite(cx))cx=0;
   let cy=g('pVolCy'); if(!Number.isFinite(cy))cy=h*0.5;
   let cz=g('pVolCz'); if(!Number.isFinite(cz))cz=0;
@@ -7099,11 +7892,15 @@ function initSimulation(){
   _airwayBakeReset();
   gSimulator.volumeDropHeightMm=readVolumeDropHeightMm();
   gSimulator.timerExportMode=!!document.getElementById('chkTimerExport')?.checked;
-  gSimulator.timerWallDurationS=Math.max(0.25,+document.getElementById('pTimerCaptureS')?.value||60);
+  gSimulator.timerWallDurationS=Math.max(0.25,+document.getElementById('pTimerCaptureS')?.value||METRICS_EXPORT_DEFAULTS.captureS);
   gSimulator.timerAutoExportCsv=!!document.getElementById('chkTimerAutoCsv')?.checked;
   gSimulator._timerAnchorSim=null;
   gSimulator._timerWallAnchorMs=null;
   gSimulator._timerCaptureDone=false;
+  gSimulator.meshInterlockEnabled=!!document.getElementById('chkMeshInterlock')?.checked;
+  gSimulator.meshInterlockSampleEveryN=Math.max(1,+document.getElementById('pMeshInterlockEveryN')?.value||6);
+  gSimulator._meshInterlockFrameCounter=0;
+  gSimulator._lastMeshInterlock=null;
   // Nanoindent mode uses zero gravity; other modes use the gravity slider.
   if(!nanoMode){
     gSimulator.gravity=[0,-Math.abs(+document.getElementById('pGravity').value),0];
@@ -7119,7 +7916,13 @@ function initSimulation(){
     if(Number.isFinite(+o.contactIterations)) gSimulator.contactIterations=Math.max(1,Math.floor(+o.contactIterations));
     if(Number.isFinite(+o.maxContactCorrFrac)) gSimulator.maxContactCorrFrac=Math.max(0,Math.min(1,+o.maxContactCorrFrac));
     if(Number.isFinite(+o.contactRestDistFactor)) gSimulator.contactRestDistFactor=+o.contactRestDistFactor;
-    if(Number.isFinite(+o.contactBoundingWeight)) gSimulator.contactBoundingWeight=Math.max(0,Math.min(1,+o.contactBoundingWeight));
+    if(Number.isFinite(+o.contactBoundingWeight)){
+      gSimulator.contactBoundingWeight=Math.max(0,Math.min(1,+o.contactBoundingWeight));
+      const cbEl=document.getElementById('sContactBoundWeight');
+      const cbLbl=document.getElementById('lblContactBoundWeight');
+      if(cbEl) cbEl.value=String(Math.round(gSimulator.contactBoundingWeight*100));
+      if(cbLbl) cbLbl.textContent=gSimulator.contactBoundingWeight.toFixed(2);
+    }
     if(Number.isFinite(+o.wallAllowPenetrationMm) && gSimulator?.syringe){
       gSimulator.syringe.wallAllowPenetrationMm=Math.max(0,+o.wallAllowPenetrationMm);
     }
@@ -7147,6 +7950,7 @@ function initSimulation(){
   // apply current UI-controlled material params
   onEdgeCChange(document.getElementById('sEdgeC').value);
   onVolCChange(document.getElementById('sVolC').value);
+  onContactBoundWeightChange(document.getElementById('sContactBoundWeight')?.value ?? 5);
   onHardStrainChange(document.getElementById('sHardStrain').value);
   onHardFactorChange(document.getElementById('sHardFactor').value);
   onToggleParticleLock(document.getElementById('chkParticleLock')?.checked ?? false);
@@ -7156,7 +7960,9 @@ function initSimulation(){
   onStressGainChange(document.getElementById('sStressGain')?.value ?? 120);
   onColorModeChange(document.getElementById('selColorMode')?.value ?? 'contact');
   document.getElementById('lblNomRadius').textContent=
-    gParticleTemplate.nominalRadius.toFixed(3);}
+    gParticleTemplate.nominalRadius.toFixed(3);
+  applyVizBackgroundTheme();
+}
 
 // ═══════════════════════════════════════════════════════════════
 // 9.  UI HANDLERS
@@ -7177,9 +7983,9 @@ function onRun(){
   const pb=document.getElementById('btnPause');
   if(pb)pb.textContent=gPaused?'Resume':'Pause';
   _volumeLiveOnSimActiveChange(wasPaused, !gPaused);
-  // Timer export: if nothing has called Drop yet, start the wall-clock window on first Run
+  // Timer export: if nothing has called Drop yet, start the sim-time capture window on first Run
   // (initial particles already spawned at restart).
-  if(!gPaused&&gSimulator&&gSimulator.timerExportMode&&gSimulator._timerWallAnchorMs==null){
+  if(!gPaused&&gSimulator&&gSimulator.timerExportMode&&gSimulator._timerAnchorSim==null){
     const released=(gSimulator.spawnCursor|0)>0;
     if(released){
       gSimulator._timerAnchorSim=gSimulator.simTime;
@@ -7424,6 +8230,41 @@ function _buildScaledTemplateFromBase(base, targetRadiusMm){
   return out;
 }
 
+/**
+ * Diagnostic requested when auditing mesh_interlock_index / P2P contact fairness across shapes:
+ * logs raw (pre-scale) vertex/triangle counts and how far the mesh's own bounding radius sits
+ * from its declared meta.nominalRadius. A big ratio spread across shapes means the sphere-proxy
+ * contact test (and to a lesser extent the mesh-interlock vertex-density) are not comparing
+ * like-for-like — see chat notes on p2p_contacts_count / mesh_interlock_index fairness.
+ */
+function _logParticleGeometryDiagnostics(baseTmpl, sourceLabel){
+  try{
+    const verts=baseTmpl.verts, n=baseTmpl.numVerts;
+    let cx=0,cy=0,cz=0;
+    for(let i=0;i<n;i++){cx+=verts[3*i];cy+=verts[3*i+1];cz+=verts[3*i+2];}
+    cx/=n;cy/=n;cz/=n;
+    let rMax=0;
+    for(let i=0;i<n;i++){
+      const dx=verts[3*i]-cx,dy=verts[3*i+1]-cy,dz=verts[3*i+2]-cz;
+      const d=Math.sqrt(dx*dx+dy*dy+dz*dz);
+      if(d>rMax)rMax=d;
+    }
+    const nomR=baseTmpl.nominalRadius||0.3;
+    const visN=baseTmpl.hasSkinning?(baseTmpl.visVerts.length/3):baseTmpl.numVerts;
+    const visTri=baseTmpl.hasSkinning?(baseTmpl.visTriIds.length/3):baseTmpl.numSurfTris;
+    console.log(
+      `[geometry] ${sourceLabel||'(unnamed)'}: tetVerts=${n} surfTris=${baseTmpl.numSurfTris} `+
+      `visVerts=${visN} visTris=${visTri} metaNominalR=${nomR.toFixed(4)}mm `+
+      `boundingR(raw)=${rMax.toFixed(4)}mm ratio(boundR/nomR)=${(rMax/nomR).toFixed(3)} — `+
+      `higher ratio = "spikier" mesh (thin tips extend further past its own nominal radius); `+
+      `compare this ratio across the 5 base shapes before trusting p2p_contacts_count or `+
+      `mesh_interlock_index as a fair cross-shape comparison.`
+    );
+  }catch(err){
+    console.warn('geometry diagnostic failed', err);
+  }
+}
+
 function onRadiusChange(v){
   const r=Math.max(0.01, +v);
   if(!Number.isFinite(r))return;
@@ -7542,6 +8383,7 @@ async function loadUIConfig(){
         if(vb.centerZ_mm!==undefined) setVol('pVolCz', vb.centerZ_mm);
         if(vb.openBottom!==undefined) setBool('chkVolumeOpenBottom', vb.openBottom);
       }
+      if(cfg.physics.volumeDropHeightMm!==undefined) setNum('pVolDropH', cfg.physics.volumeDropHeightMm);
       if(cfg.physics.volumeOpenBottom!==undefined) setBool('chkVolumeOpenBottom', cfg.physics.volumeOpenBottom);
       setBool('chkCap',    cfg.physics.enableEndCap);
       if(cfg.physics.blockNeedleInlet!==undefined) setBool('chkNeedleInlet', cfg.physics.blockNeedleInlet);
@@ -7605,6 +8447,16 @@ async function loadUIConfig(){
       if(cfg.viz.stressSampleEveryNFrames!==undefined) gTuningOverrides.stressSampleEveryNFrames=+cfg.viz.stressSampleEveryNFrames;
       if(cfg.viz.normalSampleEveryNFrames!==undefined) gTuningOverrides.normalSampleEveryNFrames=+cfg.viz.normalSampleEveryNFrames;
       if(cfg.viz.showVolumeBox!==undefined) setBool('chkVolumeOutlineShow', cfg.viz.showVolumeBox);
+      if(cfg.viz.darkBackground!==undefined) setBool('chkDarkBackground', cfg.viz.darkBackground);
+      if(cfg.viz.background!==undefined){
+        const b=String(cfg.viz.background).toLowerCase();
+        if(b==='black'||b==='dark') setBool('chkDarkBackground', true);
+        else if(b==='white'||b==='light') setBool('chkDarkBackground', false);
+      }
+      if(cfg.viz.poreMeasurement?.diameterMultiplier!==undefined){
+        const el=document.getElementById('pPoreMeasDiamMult');
+        if(el) el.value=Math.max(4, Math.min(12, +cfg.viz.poreMeasurement.diameterMultiplier));
+      }
     }
 
     // Ensure labels reflect whatever we set (even before initSimulation()).
@@ -7618,7 +8470,7 @@ async function loadUIConfig(){
     }
     onEdgeCChange(document.getElementById('sEdgeC')?.value ?? 0);
     onVolCChange(document.getElementById('sVolC')?.value ?? 0);
-    onSoftnessChange(document.getElementById('sSoftness')?.value ?? 50);
+    onSoftnessChange(document.getElementById('sSoftness')?.value ?? 40);
     onLockStrainChange(document.getElementById('sLockStrain')?.value ?? 35);
     onToggleParticleLock(document.getElementById('chkParticleLock')?.checked ?? false);
     onPickModeChange(document.getElementById('selPickMode')?.value ?? 'inspect');
@@ -7798,21 +8650,7 @@ function onTimerExportModeChange(on){
     }
     const sel=document.getElementById('selContainerMode');
     if(sel) sel.value='volume';
-    const vh=document.getElementById('pVolH');
-    if(vh) vh.value='20';
-    const h=document.getElementById('pVolDropH');
-    if(h) h.value='20';
-    const initEl=document.getElementById('pInitCount');
-    if(initEl) initEl.value='30';
-    const capS=document.getElementById('pTimerCaptureS');
-    if(capS) capS.value='60';
-    const autoCsv=document.getElementById('chkTimerAutoCsv');
-    if(autoCsv) autoCsv.checked=true;
-    const soft=document.getElementById('sSoftness');
-    if(soft){
-      soft.value='83';
-      onSoftnessChange(83);
-    }
+    applyMetricsExportDefaults();
     onContainerModeChange(true);
     syncVolumeOutlinePreview();
     focusVolumeBox();
@@ -7825,8 +8663,8 @@ function onTimerExportModeChange(on){
 }
 
 function onTimerCaptureInput(){
-  const t=Math.max(0.25,+document.getElementById('pTimerCaptureS')?.value||60);
-  if(gSimulator) gSimulator.timerWallDurationS=t;
+  const t=Math.max(0.1,+document.getElementById('pTimerCaptureS')?.value||METRICS_EXPORT_DEFAULTS.captureS);
+  if(gSimulator) gSimulator.timerWallDurationS=t; // interpreted as simulated seconds (see timerCaptureSimS())
 }
 
 function onTimerAutoCsvChange(on){
@@ -7835,6 +8673,87 @@ function onTimerAutoCsvChange(on){
 
 function onVolDropHeightInput(){
   if(gSimulator) gSimulator.volumeDropHeightMm=readVolumeDropHeightMm();
+}
+
+function onContactBoundWeightChange(v){
+  const pct=Math.max(0,Math.min(100,+v));
+  const w=pct/100;
+  const lbl=document.getElementById('lblContactBoundWeight');
+  if(lbl) lbl.textContent=w.toFixed(2);
+  if(gSimulator) gSimulator.contactBoundingWeight=w;
+}
+
+function onMeshInterlockToggle(on){
+  if(gSimulator) gSimulator.meshInterlockEnabled=!!on;
+}
+
+function onMeshInterlockEveryNInput(){
+  const n=Math.max(1,Math.round(+document.getElementById('pMeshInterlockEveryN')?.value||6));
+  if(gSimulator) gSimulator.meshInterlockSampleEveryN=n;
+}
+
+/** Standardized metrics-export protocol (timer mode + all-base batch).
+ *  captureS / dropIntervalS are SIMULATED seconds (this.simTime), not wall-clock — this
+ *  guarantees every shape gets the identical particle-release schedule and total simulated
+ *  duration regardless of how fast/slow it happens to run in real time. */
+const METRICS_EXPORT_DEFAULTS={
+  widthMm:1.5, heightMm:3.5, depthMm:1.5,
+  centerX_mm:0, centerY_mm:10, centerZ_mm:0,
+  volumeDropHeightMm:0,
+  maxParticles:50, initialDrop:5, dropMore:5,
+  targetParticles:50, dropIntervalS:0.5,
+  captureS:10, softnessPct:40,
+  meshInterlockEnabled:true, meshInterlockSampleEveryN:3,
+};
+
+function applyMetricsExportDefaults(){
+  const d=METRICS_EXPORT_DEFAULTS;
+  const setNum=(id,v)=>{const el=document.getElementById(id); if(el) el.value=String(v);};
+  setNum('pVolW', d.widthMm);
+  setNum('pVolH', d.heightMm);
+  setNum('pVolD', d.depthMm);
+  setNum('pVolCx', d.centerX_mm);
+  setNum('pVolCy', d.centerY_mm);
+  setNum('pVolCz', d.centerZ_mm);
+  setNum('pVolDropH', d.volumeDropHeightMm);
+  setNum('pCount', d.maxParticles);
+  setNum('pInitCount', d.initialDrop);
+  setNum('pDropCount', d.dropMore);
+  setNum('pTimerCaptureS', d.captureS);
+  const autoCsv=document.getElementById('chkTimerAutoCsv');
+  if(autoCsv) autoCsv.checked=true;
+  const soft=document.getElementById('sSoftness');
+  if(soft){
+    soft.value=String(d.softnessPct);
+    onSoftnessChange(d.softnessPct);
+  }
+  if(gSimulator){
+    gSimulator.meshInterlockEnabled=!!d.meshInterlockEnabled;
+    gSimulator.meshInterlockSampleEveryN=Math.max(1,d.meshInterlockSampleEveryN|0);
+  }
+  const chkMi=document.getElementById('chkMeshInterlock');
+  if(chkMi) chkMi.checked=!!d.meshInterlockEnabled;
+  const nMi=document.getElementById('pMeshInterlockEveryN');
+  if(nMi) nMi.value=String(d.meshInterlockSampleEveryN);
+}
+
+/** During timer capture: ramp active count from initialDrop toward target every dropIntervalS
+ *  of SIMULATED time (this.simTime), not wall-clock — see METRICS_EXPORT_DEFAULTS comment. */
+function _timerStaggeredDropTick(){
+  if(!gSimulator||!gSimulator.timerExportMode) return;
+  if(gSimulator._timerCaptureDone) return;
+  if(gSimulator._timerAnchorSim==null) return;
+  const d=METRICS_EXPORT_DEFAULTS;
+  const intervalS=Math.max(0.05, d.dropIntervalS);
+  const targetMax=Math.max(1, d.targetParticles|0);
+  const dropN=Math.max(1, +document.getElementById('pDropCount')?.value||d.dropMore);
+  const initN=Math.max(0, +document.getElementById('pInitCount')?.value||d.initialDrop);
+  const elapsed=gSimulator.simTime-gSimulator._timerAnchorSim;
+  const steps=Math.max(0, Math.floor(elapsed/intervalS+1e-9));
+  const target=Math.min(targetMax, initN + steps*dropN);
+  const have=gSimulator.spawnCursor|0;
+  if(have>=target) return;
+  gSimulator.dropMore(target-have);
 }
 
 /** Bronchial-tree mode only — does not change syringe / box defaults. */
@@ -7846,10 +8765,10 @@ const AIRWAY_UI_DEFAULTS={
 
 /** Invisible box fill sequence — fixed environment from reference setup. */
 const BOX_FILL_UI_DEFAULTS={
-  widthMm:8, heightMm:5, depthMm:1,
+  widthMm:12, heightMm:12, depthMm:12,
   centerX_mm:0, centerY_mm:10, centerZ_mm:0,
   volumeDropHeightMm:0,
-  maxParticles:300, initialDrop:50, dropMore:50,
+  maxParticles:300, initialDrop:175, dropMore:25,
   radiusMm:0.3, softness:50, edgeCompliance:0.515, volCompliance:13,
   hardStrainPct:18, hardFactorPct:15, particleLock:false,
   targetFill:0.5, pauseS:3, bakeMaxS:10, playFps:60,
@@ -7963,6 +8882,12 @@ function _volumeLiveCaptureFrame(){
 
 function _volumeLiveOnSimActiveChange(wasPaused, nowRunning){
   if(!_isPlainVolumeMode()) return;
+  // Timer metrics capture must log CSV rows; volume 4K frame capture was suppressing them.
+  if(gSimulator&&gSimulator.timerExportMode){
+    gVolumeLiveRecord.recording=false;
+    _syncExport4kVideoButton();
+    return;
+  }
   gVolumeLiveRecord.recording=nowRunning;
   if(nowRunning && wasPaused && gVolumeLiveRecord.frames.length===0 && gSimulator)
     _volumeLiveCaptureFrame();
@@ -9181,6 +10106,7 @@ function applyParticleTemplateFromJSON(data, sourceLabel){
   gParticleTemplate=_buildScaledTemplateFromBase(baseTmpl, r);
   console.log(`Loaded particle: ${(m.source||sourceLabel||'unknown')}  `
     +`${gParticleTemplate.numTets} tets, ${gParticleTemplate.numVerts} tet-verts`);
+  _logParticleGeometryDiagnostics(baseTmpl, sourceLabel);
   document.getElementById('lblNomRadius').textContent=
     gParticleTemplate.nominalRadius.toFixed(3);
   // auto-restart
@@ -9212,6 +10138,12 @@ function exportOBJ(){
 
 function exportPoresOBJ(){
   if(!gSimulator)return;
+  const readiness=gSimulator.checkPoreExportReadiness();
+  if(!readiness.ok){
+    alert('Pore export blocked — pack not ready for interstitial porosity:\n\n• '+readiness.issues.join('\n• '));
+    console.warn('Pore export blocked:', readiness.issues);
+    return;
+  }
   if((document.getElementById('chkPoreSmooth')?.checked ?? true) && !(window._PORE_MC && window._PORE_MC.edgeTable)){
     console.warn('Smooth pore export: marching-cubes tables missing (window._PORE_MC). Falling back to blocky voxels.');
   }
@@ -9246,10 +10178,149 @@ function exportPLYColors(){
   _download(s,`syringe_particles_${Date.now()}.ply`,'application/octet-stream');
 }
 
-function exportMetricsCSV(){
+function exportMetricsCSV(nameHint){
   if(!gSimulator)return;
   const s=gSimulator.getMetricsCSV();
-  _download(s,`syringe_metrics_${Date.now()}.csv`,'text/csv');}
+  const base=_metricsExportBasename(nameHint);
+  _download(s,`syringe_metrics_${base}_${Date.now()}.csv`,'text/csv');
+}
+
+function _metricsExportBasename(nameHint){
+  if(nameHint){
+    return String(nameHint).replace(/^.*[\\/]/,'').replace(/\.json$/i,'').replace(/[^\w.\-]+/g,'_')||'particle';
+  }
+  const lib=document.getElementById('particleLibrary')?.value||'';
+  if(!lib||lib==='__default__') return 'default_sphere';
+  return String(lib).replace(/^.*[\\/]/,'').replace(/\.json$/i,'').replace(/[^\w.\-]+/g,'_')||'particle';
+}
+
+let gMetricsBatch={running:false, cancel:false};
+
+async function onExportMetricsAllBase(){
+  const btn=document.getElementById('btnMetricsAllBase');
+  if(gMetricsBatch.running){
+    gMetricsBatch.cancel=true;
+    if(btn) btn.textContent='Cancelling…';
+    return;
+  }
+  gMetricsBatch.running=true;
+  gMetricsBatch.cancel=false;
+  if(btn) btn.textContent='Cancel metrics batch…';
+
+  const files=SHOWCASE_LIBRARY_FILES.slice();
+  try{
+    const timer=document.getElementById('chkTimerExport');
+    if(timer){
+      if(!timer.checked){
+        timer.checked=true;
+        onTimerExportModeChange(true);
+      }else{
+        applyMetricsExportDefaults();
+        const sel=document.getElementById('selContainerMode');
+        if(sel) sel.value='volume';
+        onContainerModeChange(true);
+        syncVolumeOutlinePreview();
+      }
+    }
+
+    for(let i=0;i<files.length;i++){
+      if(gMetricsBatch.cancel) break;
+      const fname=files[i];
+      const value=`assets/${fname}`;
+      if(btn) btn.textContent=`Metrics ${i+1}/${files.length}: ${fname.replace(/\.json$/i,'')}…`;
+      console.log(`[metrics batch] ${i+1}/${files.length} ${fname}`);
+
+      const selLib=document.getElementById('particleLibrary');
+      if(selLib){
+        // Ensure option exists (library may list HIRES too; base files should be present).
+        let found=false;
+        for(const opt of selLib.options){ if(opt.value===value){ found=true; break; } }
+        if(!found){
+          const opt=document.createElement('option');
+          opt.value=value;
+          opt.textContent=fname.replace(/\.json$/i,'');
+          selLib.appendChild(opt);
+        }
+        selLib.value=value;
+      }
+      await onSelectLibrary(value);
+      if(gMetricsBatch.cancel) break;
+
+      // Fresh timer window for this shape.
+      if(gSimulator){
+        gSimulator.timerExportMode=true;
+        gSimulator.timerWallDurationS=METRICS_EXPORT_DEFAULTS.captureS;
+        gSimulator.timerAutoExportCsv=true;
+        gSimulator._timerAnchorSim=null;
+        gSimulator._timerWallAnchorMs=null;
+        gSimulator._timerCaptureDone=false;
+      }
+      const autoCsv=document.getElementById('chkTimerAutoCsv');
+      if(autoCsv) autoCsv.checked=true;
+      const cap=document.getElementById('pTimerCaptureS');
+      if(cap) cap.value=String(METRICS_EXPORT_DEFAULTS.captureS);
+
+      if(gPaused) onRun();
+      else if(gSimulator&&gSimulator._timerAnchorSim==null){
+        // Already running: force window start.
+        onRun(); // Stop
+        onRun(); // Run again
+      }
+
+      // Capture-window length is SIMULATED time, so a shape running slower per-frame (heavier
+      // mesh, mesh-interlock metric, etc.) just takes longer in wall-clock — that's correct and
+      // must NOT truncate the run. We only bail out if sim time stops advancing entirely
+      // (STALL_LIMIT_MS with zero progress), which indicates a real hang, not a slow-but-alive run.
+      const outcome=await new Promise((resolve)=>{
+        const STALL_LIMIT_MS=20000;
+        let lastSimT=gSimulator?gSimulator.simTime:0;
+        let lastProgressMs=(typeof performance!=='undefined'&&performance.now)?performance.now():Date.now();
+        let lastLogMs=lastProgressMs;
+        const poll=()=>{
+          if(gMetricsBatch.cancel){ resolve('cancel'); return; }
+          if(gSimulator&&gSimulator._timerCaptureDone){ resolve('done'); return; }
+          const now=(typeof performance!=='undefined'&&performance.now)?performance.now():Date.now();
+          const simT=gSimulator?gSimulator.simTime:0;
+          if(simT>lastSimT+1e-4){
+            lastSimT=simT;
+            lastProgressMs=now;
+          }else if(now-lastProgressMs>STALL_LIMIT_MS){
+            resolve('stalled');
+            return;
+          }
+          if(now-lastLogMs>4000){
+            lastLogMs=now;
+            const target=gSimulator?gSimulator.timerCaptureSimS():METRICS_EXPORT_DEFAULTS.captureS;
+            console.log(`[metrics batch] ${fname}: sim ${simT.toFixed(2)}/${target.toFixed(2)} s, active ${gSimulator?.spawnCursor|0}`);
+          }
+          setTimeout(poll, 60);
+        };
+        poll();
+      });
+
+      if(outcome==='stalled'){
+        console.error(`[metrics batch] ${fname}: no sim-time progress for ${20}s — treating as stalled, skipping without export.`);
+        alert(`Metrics batch: "${fname}" appears stalled (physics not advancing). Skipped without exporting a partial CSV.`);
+      }
+      if(!gPaused){
+        gPaused=true;
+        const rb=document.getElementById('btnRun');
+        if(rb) rb.textContent='Run';
+        const pb=document.getElementById('btnPause');
+        if(pb) pb.textContent='Resume';
+      }
+      // Let the browser finish the CSV download before the next shape.
+      await new Promise(r=>setTimeout(r, 400));
+    }
+  }catch(err){
+    console.error('[metrics batch] failed', err);
+    alert('Metrics batch failed:\n'+err);
+  }finally{
+    gMetricsBatch.running=false;
+    gMetricsBatch.cancel=false;
+    if(btn) btn.textContent='Export metrics (all base)';
+  }
+}
 
 function _download(content,filename,type){
   const blob=new Blob([content],{type});
@@ -10441,8 +11512,18 @@ function _stepPhysics(dt){
   _physicsAcc = Math.min(_physicsAcc, MAX_CATCHUP_SEC);
   while(_physicsAcc >= FIXED_DT){
     gSimulator.simulate(FIXED_DT);
+    // Staggered drop schedule + capture-window end are both driven by sim time (this.simTime),
+    // checked once per fixed physics step, so the protocol is identical across shapes no matter
+    // how slow/fast a given step is in wall-clock time.
+    if(gSimulator.timerExportMode&&gSimulator._timerAnchorSim!=null&&!gSimulator._timerCaptureDone){
+      _timerStaggeredDropTick();
+    }
     if(_volumeLiveRecording()) _volumeLiveCaptureFrame();
-    else if(gAirwayPlayback.mode!=='baking') gSimulator.pushMetricsRow(gFrameIdx);
+    // Always log metrics unless baking. Volume 4K live-record used to skip this via else-if,
+    // which left timer-export CSVs with only the header row.
+    if(gAirwayPlayback.mode!=='baking' && (!_volumeLiveRecording() || gSimulator.timerExportMode)){
+      gSimulator.pushMetricsRow(gFrameIdx);
+    }
     gFrameIdx++;
     _physicsAcc -= FIXED_DT;
     if(gSimulator._autoPauseAfterSettle){
@@ -10456,9 +11537,8 @@ function _stepPhysics(dt){
       }
       break;
     }
-    if(gSimulator.timerExportMode&&gSimulator._timerWallAnchorMs!=null&&!gSimulator._timerCaptureDone){
-      const now=(typeof performance!=='undefined'&&performance.now)?performance.now():Date.now();
-      if(now-gSimulator._timerWallAnchorMs>=gSimulator.timerWallDurationMs()){
+    if(gSimulator.timerExportMode&&gSimulator._timerAnchorSim!=null&&!gSimulator._timerCaptureDone){
+      if(gSimulator.simTime-gSimulator._timerAnchorSim>=gSimulator.timerCaptureSimS()){
         gSimulator._timerCaptureDone=true;
         if(!gPaused){
           gPaused=true;
@@ -10620,6 +11700,7 @@ function onPerfSimMulChange(v){
   onContainerModeChange();
   _syncBoxFillSequenceUi();
   initSimulation();
+  applyVizBackgroundTheme();
   _syncExport4kVideoButton();
   onResize();
   onPerfSimMulChange(document.getElementById('sPerfSimMul')?.value ?? 2);

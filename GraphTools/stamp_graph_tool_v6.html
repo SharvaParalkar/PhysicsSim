@@ -1,0 +1,1527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>STAMP Graph Export Tool</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Times New Roman', Times, serif;
+    background: #f4f4f0;
+    color: #1a1a1a;
+    min-height: 100vh;
+  }
+  .app { display: flex; height: 100vh; overflow: hidden; }
+
+  /* SIDEBAR */
+  .sidebar {
+    width: 360px;
+    min-width: 320px;
+    background: #fff;
+    border-right: 1px solid #ccc;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    padding: 18px 16px;
+    gap: 14px;
+  }
+  .sidebar h1 {
+    font-size: 15px;
+    font-weight: bold;
+    letter-spacing: 0.04em;
+    border-bottom: 1.5px solid #1a1a1a;
+    padding-bottom: 8px;
+    margin-bottom: 4px;
+  }
+  .section-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #555;
+    margin-bottom: 6px;
+    font-family: Arial, sans-serif;
+  }
+  .field-row {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  }
+  .field-row label {
+    font-size: 12px; color: #333; min-width: 90px;
+    font-family: Arial, sans-serif;
+  }
+  .field-row input[type=text], .field-row input[type=number], .field-row select {
+    flex: 1; padding: 4px 7px; border: 1px solid #bbb; border-radius: 3px;
+    font-size: 12px; font-family: Arial, sans-serif; background: #fafafa;
+  }
+  .field-row input[type=color] {
+    width: 36px; height: 26px; border: 1px solid #bbb; border-radius: 3px; padding: 2px; cursor: pointer;
+  }
+  .field-row input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; }
+
+  .btn {
+    font-family: Arial, sans-serif;
+    font-size: 12px;
+    padding: 6px 12px;
+    border-radius: 3px;
+    cursor: pointer;
+    border: 1px solid #999;
+    background: #f0f0f0;
+    transition: background 0.15s;
+  }
+  .btn:hover { background: #e0e0e0; }
+  .btn-primary { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
+  .btn-primary:hover { background: #333; }
+  .btn-danger { background: #fff; color: #c00; border-color: #c00; }
+  .btn-danger:hover { background: #fdeaea; }
+  .btn-sm { padding: 3px 8px; font-size: 11px; }
+
+  .dataset-card {
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 10px 12px;
+    background: #fafafa;
+    position: relative;
+  }
+  .dataset-card .ds-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  }
+  .ds-color-swatch {
+    width: 22px; height: 14px; border-radius: 2px; border: 1px solid #aaa; flex-shrink: 0;
+  }
+  .ds-name { font-size: 13px; font-weight: bold; flex: 1; }
+  .ds-file { font-size: 10px; color: #888; font-family: Arial, sans-serif; margin-bottom: 6px; }
+  .col-map { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .col-map label { font-size: 11px; color: #555; font-family: Arial, sans-serif; }
+  .col-map select { width: 100%; padding: 3px 5px; font-size: 11px; font-family: Arial, sans-serif; border: 1px solid #bbb; border-radius: 3px; }
+
+  .graph-tabs {
+    display: flex; gap: 4px; border-bottom: 1px solid #ccc; padding-bottom: 6px; flex-wrap: wrap;
+  }
+  .tab-btn {
+    font-size: 11px; padding: 4px 10px; border-radius: 3px 3px 0 0;
+    border: 1px solid #ccc; border-bottom: none; cursor: pointer;
+    background: #f0f0f0; font-family: Arial, sans-serif;
+    transition: background 0.12s;
+  }
+  .tab-btn.active { background: #fff; border-color: #ccc; color: #1a1a1a; font-weight: bold; }
+
+  hr { border: none; border-top: 1px solid #e0e0e0; }
+
+  /* MAIN */
+  .main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: #e8e8e4;
+  }
+  .toolbar {
+    background: #fff;
+    border-bottom: 1px solid #ccc;
+    padding: 10px 18px;
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  }
+  .preview-area {
+    flex: 1;
+    overflow: auto;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 30px;
+  }
+  #svg-container {
+    background: white;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.18);
+  }
+  #svg-container svg {
+    display: block;
+  }
+
+  .active-graph-label {
+    font-size: 12px; color: #555; font-family: Arial, sans-serif;
+    font-style: italic;
+  }
+
+  .drop-zone {
+    border: 2px dashed #bbb;
+    border-radius: 4px;
+    padding: 12px;
+    text-align: center;
+    font-size: 12px;
+    color: #888;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    font-family: Arial, sans-serif;
+  }
+  .drop-zone:hover, .drop-zone.drag-over { border-color: #555; background: #f5f5f5; color: #333; }
+
+  .axis-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .axis-grid label { font-size: 11px; color: #555; font-family: Arial, sans-serif; }
+  .axis-grid input, .axis-grid select { width: 100%; padding: 3px 5px; font-size: 11px; font-family: Arial, sans-serif; border: 1px solid #bbb; border-radius: 3px; }
+  .axis-grid input[type=checkbox] { width: 16px; height: 16px; }
+
+  .notice { font-size: 11px; color: #888; font-family: Arial, sans-serif; font-style: italic; }
+</style>
+</head>
+<body>
+<div class="app">
+
+<!-- ========== SIDEBAR ========== -->
+<div class="sidebar">
+  <h1>Scientific Graph Tool</h1>
+  <div class="notice">Publication-quality vector export · Matches journal style</div>
+
+  <!-- Graph selector -->
+  <div>
+    <div class="section-title">Active Graph</div>
+    <div class="graph-tabs" id="graphTabs">
+      <button class="tab-btn active" onclick="switchGraph(0)">Surface Area</button>
+      <button class="tab-btn" onclick="switchGraph(1)">Force Dist.</button>
+      <button class="tab-btn" onclick="switchGraph(2)">P-P Contacts</button>
+      <button class="tab-btn" onclick="switchGraph(3)">E Distribution</button>
+      <button class="tab-btn" onclick="switchGraph(4)">Region Stress</button>
+      <button class="tab-btn" onclick="switchGraph(5)">Plateau Summary</button>
+    </div>
+    <div id="graphHint" class="notice" style="margin-top:6px;display:none;"></div>
+  </div>
+
+  <!-- Canvas size -->
+  <div>
+    <div class="section-title">Canvas Size (inches)</div>
+    <div class="field-row">
+      <label>Width (in)</label>
+      <input type="number" id="canvasW" value="5.0" step="0.1" min="1" max="20" onchange="renderAll()">
+    </div>
+    <div class="field-row">
+      <label>Height (in)</label>
+      <input type="number" id="canvasH" value="4.0" step="0.1" min="1" max="20" onchange="renderAll()">
+    </div>
+    <div class="notice" style="margin-top:4px">SVG is vector — physical size (inches) controls output scale in Illustrator. No DPI setting needed.</div>
+  </div>
+
+  <hr>
+
+  <!-- Per-graph axis settings -->
+  <div id="axisPanel">
+    <div class="section-title">Axis Settings — <span id="axisGraphName">Surface Area</span></div>
+    <div class="axis-grid">
+      <label>X Label</label>
+      <input type="text" id="xLabel" value="Time (s)" onchange="renderAll()">
+      <label>Y Label</label>
+      <input type="text" id="yLabel" value="Surface Area Contact (mm²)" onchange="renderAll()">
+      <label>X Min</label>
+      <input type="number" id="xMin" value="" placeholder="auto" onchange="renderAll()">
+      <label>X Max</label>
+      <input type="number" id="xMax" value="" placeholder="auto" onchange="renderAll()">
+      <label>Y Min</label>
+      <input type="number" id="yMin" value="" placeholder="auto" onchange="renderAll()">
+      <label>Y Max</label>
+      <input type="number" id="yMax" value="" placeholder="auto" onchange="renderAll()">
+      <label>X Log scale</label>
+      <input type="checkbox" id="xLog" onchange="renderAll()">
+      <label>Y Log scale</label>
+      <input type="checkbox" id="yLog" onchange="renderAll()">
+      <label>Sub-panel label</label>
+      <input type="text" id="panelLabel" value="(a)" onchange="renderAll()">
+    </div>
+  </div>
+
+  <hr>
+
+  <!-- Font scale -->
+  <div>
+    <div class="section-title">Label Font Scale</div>
+    <div class="field-row">
+      <label>Scale ×</label>
+      <input type="number" id="fontScale" value="1.3" step="0.1" min="0.5" max="3" style="flex:1" onchange="renderAll()">
+    </div>
+    <div class="notice" style="margin-top:4px">Multiplies axis-label &amp; tick font sizes on the time-series and plateau-summary panels — use for reviewer requests for larger, more legible labels.</div>
+  </div>
+
+  <hr>
+
+  <!-- Early-stage inset -->
+  <div>
+    <div class="section-title">Early-Stage Inset (Zoom)</div>
+    <div class="field-row">
+      <label>Show inset</label>
+      <input type="checkbox" id="insetShow" onchange="renderAll()">
+    </div>
+    <div class="axis-grid" style="margin-top:6px">
+      <label>Inset X Min</label>
+      <input type="number" id="insetXMin" value="0" step="0.1" onchange="renderAll()">
+      <label>Inset X Max</label>
+      <input type="number" id="insetXMax" value="2" step="0.1" onchange="renderAll()">
+      <label>Position</label>
+      <select id="insetPos" onchange="renderAll()">
+        <option value="tr">Top-right</option>
+        <option value="tl">Top-left</option>
+        <option value="br" selected>Bottom-right</option>
+        <option value="bl">Bottom-left</option>
+      </select>
+      <label>Size (% panel)</label>
+      <input type="number" id="insetSize" value="42" step="1" min="20" max="70" onchange="renderAll()">
+    </div>
+    <div class="notice" style="margin-top:4px">Zoomed callout of the chosen time window, auto-scaled to its own y-range, with a dashed box marking the region on the main panel. Applies to Surface Area / Force Dist. / P–P Contacts panels.</div>
+  </div>
+
+  <hr>
+
+  <!-- Plateau summary metric -->
+  <div id="plateauMetricSection" style="display:none">
+    <div class="section-title">Plateau Summary — Metric</div>
+    <div class="field-row">
+      <label>Metric</label>
+      <select id="plateauMetric" onchange="renderAll()">
+        <option value="0">Surface Area Contact</option>
+        <option value="1">Force per Pair</option>
+        <option value="2">P–P Contact Count</option>
+      </select>
+    </div>
+    <div class="notice" style="margin-top:4px">Bars show plateau mean ± SD per geometry (points at/after the plateau cutoff set below, using the same detector as Plateau Trimming). Letters mark Holm-adjusted pairwise Welch t-test groups — geometries sharing a letter are not significantly different (α = 0.05). Because the "replicates" here are timepoints within one run per geometry rather than independent repeats, treat these as a quick manuscript-figure summary, not a substitute for a proper replicated-trial ANOVA.</div>
+  </div>
+
+  <hr>
+
+  <!-- Plateau trimming -->
+  <div>
+    <div class="section-title">Plateau Trimming</div>
+    <div class="field-row">
+      <label>Trim plateau</label>
+      <input type="checkbox" id="trimPlateau" onchange="renderAll()">
+      <span style="font-size:11px;color:#777;font-family:Arial,sans-serif;margin-left:4px">Cut flat tail from data</span>
+    </div>
+    <div class="field-row">
+      <label>Sensitivity</label>
+      <input type="number" id="plateauThresh" value="1" step="0.1" min="0.01" max="20" style="flex:1"
+        title="% of total Y range — smaller = more sensitive" onchange="renderAll()">
+      <span style="font-size:10px;color:#888;font-family:Arial,sans-serif">% of Y range</span>
+    </div>
+    <div class="field-row">
+      <label>Keep after (s)</label>
+      <input type="number" id="plateauKeep" value="3" step="0.5" min="0" max="30" style="flex:1"
+        title="Seconds of plateau to keep after it's detected" onchange="renderAll()">
+      <span style="font-size:10px;color:#888;font-family:Arial,sans-serif">s past plateau</span>
+    </div>
+    <div class="notice" style="margin-top:4px">Works per-dataset; X Max auto-clips to shortest trimmed time if enabled.</div>
+  </div>
+
+  <hr>
+
+  <!-- Region Stress threshold -->
+  <div>
+    <div class="section-title">Region Stress — Threshold</div>
+    <div class="field-row">
+      <label>E_Pa threshold</label>
+      <input type="number" id="stressThreshold" value="500000" step="50000" min="0" style="flex:1" onchange="renderAll()">
+    </div>
+    <div class="notice" style="margin-top:4px">Vertices above this E_Pa value count as high-stress. Default: 500,000 Pa (500 kPa). Applies to E Distribution and Region Stress graphs.</div>
+  </div>
+
+  <hr>
+  <div>
+    <div class="section-title">Datasets</div>
+    <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+      Drop CSV files here or click to browse
+    </div>
+    <input type="file" id="fileInput" multiple accept=".csv" style="display:none" onchange="handleFiles(this.files)">
+    <div id="datasetList" style="margin-top:10px; display:flex; flex-direction:column; gap:8px;"></div>
+  </div>
+
+  <hr>
+
+  <!-- Legend -->
+  <div>
+    <div class="section-title">Legend</div>
+    <div class="field-row">
+      <label>Position</label>
+      <select id="legendPos" onchange="renderAll()">
+        <option value="inside-tr">Inside top-right</option>
+        <option value="inside-tl">Inside top-left</option>
+        <option value="inside-br">Inside bottom-right</option>
+        <option value="inside-bl">Inside bottom-left</option>
+        <option value="none">Hidden</option>
+      </select>
+    </div>
+  </div>
+
+</div>
+
+<!-- ========== MAIN ========== -->
+<div class="main">
+  <div class="toolbar">
+    <span class="active-graph-label" id="activeGraphLabel">Previewing: Surface Area Contact over Time</span>
+    <div style="flex:1"></div>
+    <button class="btn" onclick="switchGraph((activeGraph+1)%6)">Next Graph →</button>
+    <button class="btn btn-primary" onclick="exportSVG()">Export SVG</button>
+    <button class="btn btn-primary" onclick="exportAllSVG()">Export All 6 SVGs</button>
+    <button class="btn" onclick="exportPlateauTableCSV()">Export Plateau Table (CSV)</button>
+  </div>
+  <div class="preview-area">
+    <div id="svg-container"></div>
+  </div>
+</div>
+
+</div>
+
+<script>
+// ─── State ────────────────────────────────────────────────────────────────────
+const PALETTE = ['#c0392b','#e67e22','#f1c40f','#2c3e50','#27ae60','#8e44ad','#2980b9','#16a085'];
+const MARKERS = ['circle','square','triangle','diamond','cross','star'];
+const DASH_PATTERNS = ['none','6,3','3,3','8,2,3,2'];
+
+let datasets = []; // { id, name, file, data, color, dash, marker, colX, colY, columns, perGraph: [{colX,colY}] }
+let activeGraph = 0;
+
+const GRAPH_DEFS = [
+  { name: 'Surface Area Contact', defaultXCol: 'time_s', defaultYCol: 'surface_area_contact_p2p_mm2',
+    xLabel: 'Time (s)', yLabel: 'Surface Area Contact (mm²)', panelLabel: '(a)' },
+  { name: 'Force Distribution', defaultXCol: 'time_s', defaultYCol: 'p2p_force_per_pair_mean',
+    xLabel: 'Time (s)', yLabel: 'Force per Pair (proxy)', panelLabel: '(b)' },
+  { name: 'P-P Contacts', defaultXCol: 'time_s', defaultYCol: 'p2p_contacts_count',
+    xLabel: 'Time (s)', yLabel: 'P–P Contact Count', panelLabel: '(c)' },
+  { name: 'E Distribution', defaultXCol: 'geometry', defaultYCol: 'E_Pa',
+    xLabel: 'STAMP Geometry', yLabel: 'E (Pa)', panelLabel: '(d)',
+    hint: 'Upload one CSV per geometry. Required columns: E_Pa, region. Optional: geometry (label).' },
+  { name: 'Region Stress', defaultXCol: 'region', defaultYCol: 'E_Pa',
+    xLabel: 'STAMP Geometry', yLabel: 'High-Stress Vertices (%)', panelLabel: '(e)',
+    hint: 'Upload one CSV per geometry. Same CSV as E Distribution — needs E_Pa and region columns. Threshold is set in the sidebar.' },
+  { name: 'Plateau Summary', defaultXCol: 'time_s', defaultYCol: 'surface_area_contact_p2p_mm2',
+    xLabel: 'STAMP Geometry', yLabel: 'Plateau Value', panelLabel: '(f)',
+    hint: 'Uses the same datasets/columns already mapped on the Surface Area / Force Dist. / P–P Contacts tabs — no separate upload needed. Pick the metric below.' },
+];
+
+// Per-graph axis state
+let graphStates = GRAPH_DEFS.map((g,i) => ({
+  xLabel: g.xLabel, yLabel: g.yLabel,
+  xMin:'', xMax:'', yMin:'', yMax:'',
+  xLog: false, yLog: false,
+  panelLabel: ['(a)','(b)','(c)','(d)','(e)','(f)'][i]
+}));
+
+// ─── File handling ─────────────────────────────────────────────────────────────
+function handleFiles(files) {
+  Array.from(files).forEach(file => {
+    Papa.parse(file, {
+      header: true, dynamicTyping: true, skipEmptyLines: true,
+      complete: (result) => {
+        const cols = result.meta.fields || [];
+        const id = Date.now() + Math.random();
+        const colorIdx = datasets.length % PALETTE.length;
+        const ds = {
+          id, name: file.name.replace('.csv',''),
+          file: file.name, data: result.data,
+          color: PALETTE[colorIdx],
+          dash: DASH_PATTERNS[datasets.length % DASH_PATTERNS.length],
+          marker: MARKERS[datasets.length % MARKERS.length],
+          columns: cols,
+          perGraph: GRAPH_DEFS.map(g => ({
+            colX: cols.includes(g.defaultXCol) ? g.defaultXCol : cols[0] || '',
+            colY: cols.includes(g.defaultYCol) ? g.defaultYCol : cols[1] || ''
+          }))
+        };
+        datasets.push(ds);
+        renderDatasetList();
+        renderAll();
+      }
+    });
+  });
+}
+
+const dz = document.getElementById('dropZone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag-over'); handleFiles(e.dataTransfer.files); });
+
+function renderDatasetList() {
+  const el = document.getElementById('datasetList');
+  el.innerHTML = '';
+  datasets.forEach((ds, di) => {
+    const card = document.createElement('div');
+    card.className = 'dataset-card';
+    const g = activeGraph;
+    const pgX = ds.perGraph[g].colX;
+    const pgY = ds.perGraph[g].colY;
+
+    card.innerHTML = `
+      <div class="ds-header">
+        <div class="ds-color-swatch" style="background:${ds.color}"></div>
+        <input type="text" class="ds-name" value="${ds.name}" style="border:none;background:transparent;font-weight:bold;font-size:13px;flex:1;font-family:'Times New Roman',serif;"
+          onchange="datasets[${di}].name=this.value; renderAll()">
+        <button class="btn btn-danger btn-sm" onclick="removeDataset(${di})">✕</button>
+      </div>
+      <div class="ds-file">${ds.file}</div>
+      <div class="field-row" style="margin-bottom:6px">
+        <label style="font-size:11px;color:#555;min-width:70px;font-family:Arial,sans-serif">Color</label>
+        <input type="color" value="${ds.color}" onchange="datasets[${di}].color=this.value; renderAll()">
+        <label style="font-size:11px;color:#555;font-family:Arial,sans-serif">Dash</label>
+        <select style="flex:1;font-size:11px;font-family:Arial,sans-serif;padding:2px 4px;border:1px solid #bbb;border-radius:3px" onchange="datasets[${di}].dash=this.value; renderAll()">
+          ${DASH_PATTERNS.map(d=>`<option value="${d}" ${ds.dash===d?'selected':''}>${d==='none'?'Solid':d}</option>`).join('')}
+        </select>
+        <label style="font-size:11px;color:#555;font-family:Arial,sans-serif">Marker</label>
+        <select style="flex:1;font-size:11px;font-family:Arial,sans-serif;padding:2px 4px;border:1px solid #bbb;border-radius:3px" onchange="datasets[${di}].marker=this.value; renderAll()">
+          ${MARKERS.map(m=>`<option value="${m}" ${ds.marker===m?'selected':''}>${m}</option>`).join('')}
+        </select>
+      </div>
+      ${g === 5 ? `<div style="font-size:11px;color:#888;font-family:Arial,sans-serif;font-style:italic">Column mapping is taken from the metric chosen in the Plateau Summary — Metric selector above.</div>` : `
+      <div style="font-size:11px;color:#555;font-family:Arial,sans-serif;margin-bottom:4px">Column mapping for active graph:</div>
+      <div class="col-map">
+        <div>
+          <label>X column</label>
+          <select onchange="datasets[${di}].perGraph[${g}].colX=this.value; renderAll()">
+            ${ds.columns.map(c=>`<option value="${c}" ${pgX===c?'selected':''}>${c}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label>Y column</label>
+          <select onchange="datasets[${di}].perGraph[${g}].colY=this.value; renderAll()">
+            ${ds.columns.map(c=>`<option value="${c}" ${pgY===c?'selected':''}>${c}</option>`).join('')}
+          </select>
+        </div>
+      </div>`}`;
+    el.appendChild(card);
+  });
+}
+
+function removeDataset(di) {
+  datasets.splice(di, 1);
+  renderDatasetList();
+  renderAll();
+}
+
+// ─── Graph switching ───────────────────────────────────────────────────────────
+function switchGraph(idx) {
+  // Save current state
+  saveAxisState();
+  activeGraph = idx;
+  // Load new state
+  loadAxisState();
+  // Update tabs
+  document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('active', i===idx));
+  document.getElementById('activeGraphLabel').textContent = 'Previewing: ' + GRAPH_DEFS[idx].name;
+  document.getElementById('axisGraphName').textContent = GRAPH_DEFS[idx].name;
+  // Show/hide hint
+  const hintEl = document.getElementById('graphHint');
+  const hint = GRAPH_DEFS[idx].hint;
+  if (hint) { hintEl.textContent = hint; hintEl.style.display = 'block'; }
+  else { hintEl.style.display = 'none'; }
+  document.getElementById('plateauMetricSection').style.display = (idx === 5) ? 'block' : 'none';
+  renderDatasetList();
+  renderAll();
+}
+
+function saveAxisState() {
+  const g = activeGraph;
+  graphStates[g] = {
+    xLabel: document.getElementById('xLabel').value,
+    yLabel: document.getElementById('yLabel').value,
+    xMin: document.getElementById('xMin').value,
+    xMax: document.getElementById('xMax').value,
+    yMin: document.getElementById('yMin').value,
+    yMax: document.getElementById('yMax').value,
+    xLog: document.getElementById('xLog').checked,
+    yLog: document.getElementById('yLog').checked,
+    panelLabel: document.getElementById('panelLabel').value,
+  };
+}
+
+function loadAxisState() {
+  const s = graphStates[activeGraph];
+  document.getElementById('xLabel').value = s.xLabel;
+  document.getElementById('yLabel').value = s.yLabel;
+  document.getElementById('xMin').value = s.xMin;
+  document.getElementById('xMax').value = s.xMax;
+  document.getElementById('yMin').value = s.yMin;
+  document.getElementById('yMax').value = s.yMax;
+  document.getElementById('xLog').checked = s.xLog;
+  document.getElementById('yLog').checked = s.yLog;
+  document.getElementById('panelLabel').value = s.panelLabel;
+}
+
+// Bind axis inputs to live re-render
+['xLabel','yLabel','xMin','xMax','yMin','yMax','xLog','yLog','panelLabel'].forEach(id => {
+  const el = document.getElementById(id);
+  el.addEventListener('change', () => { saveAxisState(); renderAll(); });
+  el.addEventListener('input', () => { saveAxisState(); renderAll(); });
+});
+
+// Bind plateau controls
+['trimPlateau','plateauThresh','plateauKeep'].forEach(id => {
+  const el = document.getElementById(id);
+  el.addEventListener('change', renderAll);
+  el.addEventListener('input', renderAll);
+});
+
+// ─── Plateau detection ────────────────────────────────────────────────────────
+// Returns the X cutoff value after which data is considered plateaued.
+function findPlateauX(pts, threshPct, keepExtraS) {
+  if (pts.length < 10) return null;
+  const ys = pts.map(p => p.y);
+  const yRange = Math.max(...ys) - Math.min(...ys);
+  if (yRange === 0) return pts[0].x + keepExtraS;
+  const thresh = (threshPct / 100) * yRange;
+  const windowPts = Math.max(5, Math.floor(pts.length * 0.04));
+  for (let i = windowPts; i < pts.length - windowPts; i++) {
+    const window = ys.slice(i, i + windowPts);
+    const delta = Math.max(...window) - Math.min(...window);
+    if (delta < thresh) {
+      return pts[i].x + keepExtraS;
+    }
+  }
+  return null;
+}
+
+// ─── Statistics helpers (Welch t-test, one-way ANOVA, Holm-Bonferroni, CLD) ────
+function lgamma(x) {
+  const g = 7;
+  const c = [0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+    771.32342877765313, -176.61502916214059, 12.507343278686905,
+    -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
+  if (x < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * x)) - lgamma(1 - x);
+  x -= 1;
+  let a = c[0];
+  const t = x + g + 0.5;
+  for (let i = 1; i < g + 2; i++) a += c[i] / (x + i);
+  return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(a);
+}
+function betacf(x, a, b) {
+  const MAXIT = 200, EPS = 3e-7, FPMIN = 1e-30;
+  const qab = a + b, qap = a + 1, qam = a - 1;
+  let c = 1, d = 1 - qab * x / qap;
+  if (Math.abs(d) < FPMIN) d = FPMIN;
+  d = 1 / d; let h = d;
+  for (let m = 1; m <= MAXIT; m++) {
+    const m2 = 2 * m;
+    let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+    d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
+    c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+    d = 1 / d; h *= d * c;
+    aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+    d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
+    c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+    d = 1 / d; const del = d * c; h *= del;
+    if (Math.abs(del - 1) < EPS) break;
+  }
+  return h;
+}
+function betai(a, b, x) {
+  if (x <= 0) return 0; if (x >= 1) return 1;
+  const bt = Math.exp(lgamma(a + b) - lgamma(a) - lgamma(b) + a * Math.log(x) + b * Math.log(1 - x));
+  if (x < (a + 1) / (a + b + 2)) return bt * betacf(x, a, b) / a;
+  return 1 - bt * betacf(1 - x, b, a) / b;
+}
+function tTestPValue(t, df) { return betai(df / 2, 0.5, df / (df + t * t)); } // two-tailed
+function fTestPValue(F, d1, d2) { if (F <= 0) return 1; const x = d1 * F / (d1 * F + d2); return 1 - betai(d1 / 2, d2 / 2, x); }
+
+function meanOf(a) { return a.reduce((s, v) => s + v, 0) / a.length; }
+function sdOf(a, m) { const mm = m ?? meanOf(a); return a.length > 1 ? Math.sqrt(a.reduce((s, v) => s + (v - mm) ** 2, 0) / (a.length - 1)) : 0; }
+
+function welchTTest(a, b) {
+  const na = a.length, nb = b.length;
+  const ma = meanOf(a), mb = meanOf(b);
+  const va = sdOf(a, ma) ** 2, vb = sdOf(b, mb) ** 2;
+  const se2 = va / na + vb / nb;
+  if (se2 === 0) return { t: 0, df: na + nb - 2, p: 1 };
+  const t = (ma - mb) / Math.sqrt(se2);
+  const df = (se2 * se2) / ((va / na) ** 2 / (na - 1 || 1) + (vb / nb) ** 2 / (nb - 1 || 1));
+  return { t, df, p: tTestPValue(t, df) };
+}
+
+function oneWayANOVA(groups) {
+  const allVals = groups.flat();
+  const N = allVals.length, k = groups.length;
+  const grandMean = meanOf(allVals);
+  let ssB = 0, ssW = 0;
+  groups.forEach(g => {
+    const n = g.length, m = meanOf(g);
+    ssB += n * (m - grandMean) ** 2;
+    g.forEach(v => ssW += (v - m) ** 2);
+  });
+  const dfB = k - 1, dfW = N - k;
+  const msB = ssB / dfB, msW = dfW > 0 ? ssW / dfW : 0;
+  const F = msW > 0 ? msB / msW : NaN;
+  return { F, dfB, dfW, p: (isFinite(F) && dfW > 0) ? fTestPValue(F, dfB, dfW) : NaN };
+}
+
+// Holm-Bonferroni step-down adjustment; returns adjusted p-values in original order
+function holmAdjust(pvals) {
+  const m = pvals.length;
+  const order = pvals.map((p, i) => i).sort((a, b) => pvals[a] - pvals[b]);
+  const adj = new Array(m);
+  let runningMax = 0;
+  order.forEach((origIdx, rank) => {
+    const val = Math.min(1, pvals[origIdx] * (m - rank));
+    runningMax = Math.max(runningMax, val);
+    adj[origIdx] = runningMax;
+  });
+  return adj;
+}
+
+// Greedy compact-letter-display: groups sharing a letter are not significantly different
+function compactLetterDisplay(names, meanByIdx, sigMatrix) {
+  const order = names.map((_, i) => i).sort((a, b) => meanByIdx[b] - meanByIdx[a]);
+  const letterGroups = [];
+  order.forEach(i => {
+    let placed = false;
+    letterGroups.forEach(grp => {
+      let ok = true;
+      grp.forEach(j => { if (sigMatrix[i][j]) ok = false; });
+      if (ok) { grp.add(i); placed = true; }
+    });
+    if (!placed) letterGroups.push(new Set([i]));
+  });
+  const letters = names.map(() => []);
+  letterGroups.forEach((grp, gi) => {
+    const letter = String.fromCharCode(97 + gi);
+    grp.forEach(i => letters[i].push(letter));
+  });
+  return letters.map(ls => ls.sort().join(''));
+}
+
+function fmtNum(v) {
+  if (Math.abs(v) >= 1000 || (Math.abs(v) < 0.01 && v !== 0)) return v.toExponential(1);
+  return parseFloat(v.toPrecision(3)).toString();
+}
+
+// Compute plateau mean/SD per dataset for a given metric's graph index (0,1,2)
+function computePlateauStats(metricGraphIdx) {
+  const threshPct = parseFloat(document.getElementById('plateauThresh').value) || 1;
+  const keepExtraS = parseFloat(document.getElementById('plateauKeep').value) ?? 3;
+  return datasets.map(ds => {
+    const pg = ds.perGraph[metricGraphIdx];
+    const pts = ds.data
+      .map(row => ({ x: row[pg.colX], y: row[pg.colY] }))
+      .filter(p => p.x != null && p.y != null && isFinite(p.x) && isFinite(p.y))
+      .sort((a, b) => a.x - b.x);
+    if (pts.length < 5) return null;
+    const cutX = findPlateauX(pts, threshPct, keepExtraS);
+    const windowPts = cutX !== null ? pts.filter(p => p.x >= cutX) : pts.slice(Math.floor(pts.length * 0.8));
+    if (windowPts.length < 2) return null;
+    const ys = windowPts.map(p => p.y);
+    const mean = meanOf(ys);
+    return { ds, n: ys.length, mean, sd: sdOf(ys, mean), ys };
+  }).filter(Boolean);
+}
+
+function exportPlateauTableCSV() {
+  const metrics = [0, 1, 2];
+  let csv = 'Geometry,Metric,Mean,SD,N (plateau timepoints)\n';
+  metrics.forEach(mi => {
+    computePlateauStats(mi).forEach(s => {
+      csv += `${s.ds.name},"${GRAPH_DEFS[mi].name}",${s.mean.toFixed(6)},${s.sd.toFixed(6)},${s.n}\n`;
+    });
+  });
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'plateau_summary_table.csv'; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ─── Graph 5: Plateau Summary — bar chart with SD error bars + significance letters ──
+function buildSVG_PlateauSummary(W, H, widthIn, heightIn) {
+  const state = graphStates[5];
+  const sc = W / 480;
+  const fontScale = parseFloat(document.getElementById('fontScale')?.value) || 1;
+  const ml = Math.round(64 * sc), mr = Math.round(16 * sc), mt = Math.round(36 * sc), mb = Math.round(46 * sc);
+  const pw = W - ml - mr, ph = H - mt - mb;
+  const wAttr = widthIn ? `${widthIn}in` : `${W}`;
+  const hAttr = heightIn ? `${heightIn}in` : `${H}`;
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${wAttr}" height="${hAttr}" viewBox="0 0 ${W} ${H}" font-family="'Times New Roman',serif">`;
+  svg += `<rect width="${W}" height="${H}" fill="white"/>`;
+  svg += `<rect x="${ml}" y="${mt}" width="${pw}" height="${ph}" fill="white" stroke="#1a1a1a" stroke-width="${(1*sc).toFixed(2)}"/>`;
+
+  const metricIdx = parseInt(document.getElementById('plateauMetric')?.value ?? '0');
+  const stats = computePlateauStats(metricIdx);
+
+  if (stats.length === 0) {
+    svg += `<text x="${ml+pw/2}" y="${mt+ph/2}" text-anchor="middle" font-size="${Math.round(10*sc*fontScale)}" fill="#888" font-style="italic">Upload CSVs (mapped on the metric's own tab) to see plateau summary</text>`;
+    svg += `<rect x="0.5" y="0.5" width="${W-1}" height="${H-1}" fill="none" stroke="#aaa" stroke-width="${(0.5*sc).toFixed(2)}"/></svg>`;
+    return svg;
+  }
+
+  const anova = stats.length >= 2 ? oneWayANOVA(stats.map(s => s.ys)) : null;
+
+  const n = stats.length;
+  const rawP = [], pairIdx = [];
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+    rawP.push(welchTTest(stats[i].ys, stats[j].ys).p);
+    pairIdx.push([i, j]);
+  }
+  const adjP = holmAdjust(rawP);
+  const sigMatrix = Array.from({ length: n }, () => Array(n).fill(false));
+  pairIdx.forEach(([i, j], k) => { if (adjP[k] < 0.05) { sigMatrix[i][j] = true; sigMatrix[j][i] = true; } });
+  const letters = compactLetterDisplay(stats.map(s => s.ds.name), stats.map(s => s.mean), sigMatrix);
+
+  let yMinRaw = state.yMin !== '' ? +state.yMin : null;
+  let yMaxRaw = state.yMax !== '' ? +state.yMax : null;
+  const maxErrTop = Math.max(...stats.map(s => s.mean + s.sd));
+  const minErrBot = Math.min(0, Math.min(...stats.map(s => s.mean - s.sd)));
+  let yMin = yMinRaw !== null ? yMinRaw : minErrBot;
+  let yMax = yMaxRaw !== null ? yMaxRaw : maxErrTop * 1.2;
+  if (yMax === yMin) yMax = yMin + 1;
+
+  function scaleY(v) { return mt + ph - (v - yMin) / (yMax - yMin) * ph; }
+
+  function niceStep(range, targetTicks) {
+    const rough = range / (targetTicks - 1);
+    const mag = Math.pow(10, Math.floor(Math.log10(rough || 1)));
+    const norm = rough / mag;
+    const step = norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10;
+    return step * mag;
+  }
+  const yStep = niceStep(yMax - yMin, 6);
+  const yTickStart = Math.ceil(yMin / yStep) * yStep;
+  for (let v = yTickStart; v <= yMax + yStep * 0.01; v += yStep) {
+    const vr = Math.round(v * 1e9) / 1e9;
+    const py = scaleY(vr);
+    if (py < mt - 2 || py > mt + ph + 2) continue;
+    svg += `<line x1="${ml}" y1="${py}" x2="${ml+pw}" y2="${py}" stroke="#e8e8e8" stroke-width="${(0.5*sc).toFixed(2)}" stroke-dasharray="${(2*sc).toFixed(1)},${(2*sc).toFixed(1)}"/>`;
+    svg += `<line x1="${ml-4*sc}" y1="${py}" x2="${ml}" y2="${py}" stroke="#1a1a1a" stroke-width="${(0.7*sc).toFixed(2)}"/>`;
+    svg += `<text x="${ml-7*sc}" y="${py+3.5*sc}" text-anchor="end" font-size="${Math.round(8.5*sc*fontScale)}" fill="#1a1a1a">${fmtNum(vr)}</text>`;
+  }
+
+  const slotW = pw / n;
+  const barW = Math.min(slotW * 0.5, 60 * sc);
+
+  stats.forEach((s, i) => {
+    const cx = ml + slotW * i + slotW / 2;
+    const x0 = cx - barW / 2;
+    const yTop = scaleY(s.mean);
+    const yBase = scaleY(Math.max(yMin, 0));
+    svg += `<rect x="${x0.toFixed(2)}" y="${Math.min(yTop,yBase).toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.abs(yBase-yTop).toFixed(2)}" fill="${s.ds.color}" fill-opacity="0.75" stroke="${s.ds.color}" stroke-width="${(1*sc).toFixed(2)}"/>`;
+    const errTopY = scaleY(s.mean + s.sd), errBotY = scaleY(s.mean - s.sd);
+    svg += `<line x1="${cx}" y1="${errTopY.toFixed(2)}" x2="${cx}" y2="${errBotY.toFixed(2)}" stroke="#1a1a1a" stroke-width="${(1*sc).toFixed(2)}"/>`;
+    svg += `<line x1="${(cx-barW*0.18).toFixed(2)}" y1="${errTopY.toFixed(2)}" x2="${(cx+barW*0.18).toFixed(2)}" y2="${errTopY.toFixed(2)}" stroke="#1a1a1a" stroke-width="${(1*sc).toFixed(2)}"/>`;
+    svg += `<line x1="${(cx-barW*0.18).toFixed(2)}" y1="${errBotY.toFixed(2)}" x2="${(cx+barW*0.18).toFixed(2)}" y2="${errBotY.toFixed(2)}" stroke="#1a1a1a" stroke-width="${(1*sc).toFixed(2)}"/>`;
+    svg += `<text x="${cx}" y="${(errTopY-6*sc).toFixed(2)}" text-anchor="middle" font-size="${Math.round(9.5*sc*fontScale)}" fill="#1a1a1a" font-weight="bold">${letters[i]}</text>`;
+    const label = s.ds.name.length > 14 ? s.ds.name.substring(0,13)+'\u2026' : s.ds.name;
+    svg += `<text x="${cx}" y="${(mt+ph+14*sc).toFixed(2)}" text-anchor="middle" font-size="${Math.round(9.5*sc*fontScale)}" fill="#1a1a1a" font-style="italic">${label}</text>`;
+  });
+
+  const fsLabel = Math.round(11 * sc * fontScale);
+  const yLabelText = state.yLabel || (GRAPH_DEFS[metricIdx].yLabel + ' (plateau)');
+  svg += `<text x="${ml+pw/2}" y="${(mt+ph+mb-6*sc).toFixed(2)}" text-anchor="middle" font-size="${fsLabel}" fill="#1a1a1a">${state.xLabel || 'STAMP Geometry'}</text>`;
+  svg += `<text transform="rotate(-90)" x="${-(mt+ph/2)}" y="${11*sc}" text-anchor="middle" font-size="${fsLabel}" fill="#1a1a1a">${yLabelText}</text>`;
+
+  if (anova) {
+    const pText = (isFinite(anova.p) ? (anova.p < 0.001 ? 'p &lt; 0.001' : `p = ${anova.p.toFixed(3)}`) : 'p n/a');
+    svg += `<text x="${ml+pw-4*sc}" y="${mt-12*sc}" text-anchor="end" font-size="${Math.round(8.5*sc*fontScale)}" fill="#555" font-style="italic">One-way ANOVA: F(${anova.dfB},${anova.dfW}) = ${isFinite(anova.F)?anova.F.toFixed(2):'n/a'}, ${pText}</text>`;
+  }
+  svg += `<text x="${ml-2*sc}" y="${mt-12*sc}" font-size="${Math.round(10*sc*fontScale)}" fill="#1a1a1a" font-style="italic" text-anchor="start">${state.panelLabel}</text>`;
+  svg += `<rect x="0.5" y="0.5" width="${W-1}" height="${H-1}" fill="none" stroke="#aaa" stroke-width="${(0.5*sc).toFixed(2)}"/>`;
+  svg += `</svg>`;
+  return svg;
+}
+
+// ─── SVG builder ──────────────────────────────────────────────────────────────
+function buildSVG(graphIdx, widthPx, heightPx, widthIn, heightIn) {
+  saveAxisState();
+  const state = graphStates[graphIdx];
+  const W = widthPx, H = heightPx;
+  const fontScale = parseFloat(document.getElementById('fontScale')?.value) || 1;
+
+  // Reference size: 5" @ 96dpi = 480px. Scale everything relative to this.
+  const REF_W = 480;
+  const sc = W / REF_W; // scale factor — applied to fonts, margins, strokes, ticks
+
+  // Margins — scale with canvas
+  const ml = Math.round(54*sc), mr = Math.round(14*sc), mt = Math.round(22*sc), mb = Math.round(40*sc);
+  const pw = W - ml - mr; // plot width
+  const ph = H - mt - mb; // plot height
+
+  // Gather data for this graph
+  const trimEnabled = document.getElementById('trimPlateau').checked;
+  const threshPct = parseFloat(document.getElementById('plateauThresh').value) || 1;
+  const keepExtraS = parseFloat(document.getElementById('plateauKeep').value) ?? 3;
+
+  const seriesData = datasets.map(ds => {
+    const pg = ds.perGraph[graphIdx];
+    let pts = ds.data
+      .map(row => ({ x: row[pg.colX], y: row[pg.colY] }))
+      .filter(p => p.x != null && p.y != null && isFinite(p.x) && isFinite(p.y));
+    // Apply plateau trim
+    if (trimEnabled && pts.length > 0) {
+      const cutX = findPlateauX(pts, threshPct, keepExtraS);
+      if (cutX !== null) pts = pts.filter(p => p.x <= cutX);
+    }
+    return { ds, pts };
+  }).filter(s => s.pts.length > 0);
+
+  // Compute axis ranges
+  let xMin = state.xMin !== '' ? +state.xMin : null;
+  let xMax = state.xMax !== '' ? +state.xMax : null;
+  let yMin = state.yMin !== '' ? +state.yMin : null;
+  let yMax = state.yMax !== '' ? +state.yMax : null;
+
+  if (seriesData.length > 0) {
+    const allX = seriesData.flatMap(s => s.pts.map(p=>p.x));
+    const allY = seriesData.flatMap(s => s.pts.map(p=>p.y));
+    if (xMin === null) xMin = Math.min(...allX);
+    if (xMax === null) {
+      // If plateau trim is on, use the trimmed max; otherwise cap at 60s (or data max if < 60)
+      const dataXMax = Math.max(...allX);
+      xMax = trimEnabled ? dataXMax : Math.min(dataXMax, 60);
+    }
+    if (yMin === null) yMin = Math.min(...allY.filter(v=>v>0 || !state.yLog));
+    if (yMax === null) yMax = Math.max(...allY);
+    // small padding for linear
+    if (!state.xLog) { const r=(xMax-xMin)*0.03; xMin-=r; xMax+=r; }
+    if (!state.yLog) { const r=(yMax-yMin)*0.05; yMin-=r; yMax+=r; }
+  } else {
+    if (xMin===null) xMin=0; if (xMax===null) xMax=60;
+    if (yMin===null) yMin=0; if (yMax===null) yMax=1;
+  }
+
+  // clamp for log
+  if (state.xLog && xMin<=0) xMin = 1e-10;
+  if (state.yLog && yMin<=0) yMin = 1e-10;
+
+  // Scale functions
+  function scaleX(v) {
+    if (state.xLog) return ml + (Math.log10(v)-Math.log10(xMin))/(Math.log10(xMax)-Math.log10(xMin))*pw;
+    return ml + (v-xMin)/(xMax-xMin)*pw;
+  }
+  function scaleY(v) {
+    if (state.yLog) return mt + ph - (Math.log10(v)-Math.log10(yMin))/(Math.log10(yMax)-Math.log10(yMin))*ph;
+    return mt + ph - (v-yMin)/(yMax-yMin)*ph;
+  }
+
+  // Tick generators
+  function linTicks(mn, mx, n=6) {
+    const step = (mx-mn)/(n-1);
+    return Array.from({length:n}, (_,i)=>mn+i*step);
+  }
+  function logTicks(mn, mx) {
+    const tks = [];
+    const lo = Math.floor(Math.log10(mn)), hi = Math.ceil(Math.log10(mx));
+    for (let e=lo; e<=hi; e++) {
+      for (let m of [1,2,5]) {
+        const v = m*Math.pow(10,e);
+        if (v >= mn*0.999 && v <= mx*1.001) tks.push(v);
+      }
+    }
+    return tks;
+  }
+  function fmtTick(v, isLog) {
+    if (isLog) {
+      const e = Math.round(Math.log10(v));
+      const m = v / Math.pow(10, e);
+      const mStr = Math.abs(m-1)<0.01 ? '' : m.toFixed(0);
+      return `${mStr}10^${e}`;
+    }
+    if (Math.abs(v) >= 1000 || (Math.abs(v) < 0.01 && v!==0)) return v.toExponential(1);
+    return parseFloat(v.toPrecision(3)).toString();
+  }
+
+  const xTicks = state.xLog ? logTicks(xMin, xMax) : linTicks(xMin, xMax);
+  const yTicks = state.yLog ? logTicks(yMin, yMax) : linTicks(yMin, yMax);
+
+  // Downsample for smooth SVG (max 300 pts per series)
+  function downsample(pts, n=300) {
+    if (pts.length <= n) return pts;
+    const step = pts.length/n;
+    return Array.from({length:n}, (_,i)=>pts[Math.floor(i*step)]);
+  }
+
+  // Marker path generator
+  function markerPath(type, cx, cy, r=3.5*sc) {
+    switch(type) {
+      case 'circle': return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="white" stroke="currentColor" stroke-width="1"/>`;
+      case 'square': return `<rect x="${cx-r}" y="${cy-r}" width="${r*2}" height="${r*2}" fill="white" stroke="currentColor" stroke-width="1"/>`;
+      case 'triangle': {
+        const h = r*1.7;
+        return `<polygon points="${cx},${cy-h} ${cx+r*1.1},${cy+r*0.7} ${cx-r*1.1},${cy+r*0.7}" fill="white" stroke="currentColor" stroke-width="1"/>`;
+      }
+      case 'diamond': return `<polygon points="${cx},${cy-r*1.4} ${cx+r},${cy} ${cx},${cy+r*1.4} ${cx-r},${cy}" fill="white" stroke="currentColor" stroke-width="1"/>`;
+      case 'cross': return `<line x1="${cx-r}" y1="${cy}" x2="${cx+r}" y2="${cy}" stroke="currentColor" stroke-width="1.5"/><line x1="${cx}" y1="${cy-r}" x2="${cx}" y2="${cy+r}" stroke="currentColor" stroke-width="1.5"/>`;
+      case 'star': {
+        let pts2=''; const n=5;
+        for(let i=0;i<n*2;i++){const a=(i*Math.PI/n)-Math.PI/2;const rr=i%2===0?r*1.5:r*0.6;pts2+=`${cx+rr*Math.cos(a)},${cy+rr*Math.sin(a)} `;}
+        return `<polygon points="${pts2}" fill="white" stroke="currentColor" stroke-width="1"/>`;
+      }
+      default: return '';
+    }
+  }
+
+  // Superscript helper for labels
+  function renderAxisLabel(text) {
+    // Replace ² → superscript in SVG tspan
+    return text.replace(/²/g, '&#178;').replace(/³/g, '&#179;');
+  }
+
+  // ─── Build SVG string ─────────────────────────────────────────────────────
+  // wiIn / hiIn are passed in for export; for preview they are null (pixel sizing only)
+  const wAttr = widthIn ? `${widthIn}in` : `${W}`;
+  const hAttr = heightIn ? `${heightIn}in` : `${H}`;
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${wAttr}" height="${hAttr}" viewBox="0 0 ${W} ${H}" font-family="'Times New Roman',serif">`;
+
+  // White background
+  svg += `<rect width="${W}" height="${H}" fill="white"/>`;
+
+  // ── Axes box
+  svg += `<rect x="${ml}" y="${mt}" width="${pw}" height="${ph}" fill="white" stroke="#1a1a1a" stroke-width="${(1*sc).toFixed(2)}"/>`;
+
+  // ── Grid lines (light)
+  yTicks.forEach(v => {
+    const py = scaleY(v);
+    if (py < mt || py > mt+ph) return;
+    svg += `<line x1="${ml}" y1="${py}" x2="${ml+pw}" y2="${py}" stroke="#e0e0e0" stroke-width="${(0.5*sc).toFixed(2)}" stroke-dasharray="${(2*sc).toFixed(1)},${(2*sc).toFixed(1)}"/>`;
+  });
+  xTicks.forEach(v => {
+    const px = scaleX(v);
+    if (px < ml || px > ml+pw) return;
+    svg += `<line x1="${px}" y1="${mt}" x2="${px}" y2="${mt+ph}" stroke="#e0e0e0" stroke-width="${(0.5*sc).toFixed(2)}" stroke-dasharray="${(2*sc).toFixed(1)},${(2*sc).toFixed(1)}"/>`;
+  });
+
+  // ── X axis ticks + labels
+  xTicks.forEach(v => {
+    const px = scaleX(v);
+    if (px < ml-1 || px > ml+pw+1) return;
+    svg += `<line x1="${px}" y1="${mt+ph}" x2="${px}" y2="${mt+ph+5*sc}" stroke="#1a1a1a" stroke-width="${(0.8*sc).toFixed(2)}"/>`;
+    // also inside tick
+    svg += `<line x1="${px}" y1="${mt}" x2="${px}" y2="${mt+4*sc}" stroke="#1a1a1a" stroke-width="${(0.8*sc).toFixed(2)}"/>`;
+    const fs = Math.round(9*sc*fontScale), fsSup = Math.round(7*sc*fontScale);
+    const fmt = fmtTick(v, state.xLog);
+    if (state.xLog && fmt.includes('^')) {
+      const [base, exp] = fmt.split('^');
+      svg += `<text x="${px}" y="${mt+ph+16*sc}" text-anchor="middle" font-size="${fs}" fill="#1a1a1a">${base=''?'':base}10<tspan baseline-shift="super" font-size="${fsSup}">${exp}</tspan></text>`;
+    } else {
+      svg += `<text x="${px}" y="${mt+ph+16*sc}" text-anchor="middle" font-size="${fs}" fill="#1a1a1a">${fmt}</text>`;
+    }
+  });
+  // fontScale applied above via fs/fsSup
+
+  // ── Y axis ticks + labels
+  yTicks.forEach(v => {
+    const py = scaleY(v);
+    if (py < mt-1 || py > mt+ph+1) return;
+    svg += `<line x1="${ml-5*sc}" y1="${py}" x2="${ml}" y2="${py}" stroke="#1a1a1a" stroke-width="${(0.8*sc).toFixed(2)}"/>`;
+    svg += `<line x1="${ml+pw}" y1="${py}" x2="${ml+pw+4*sc}" y2="${py}" stroke="#1a1a1a" stroke-width="${(0.8*sc).toFixed(2)}"/>`;
+    const fs = Math.round(9*sc*fontScale), fsSup = Math.round(7*sc*fontScale);
+    const fmt = fmtTick(v, state.yLog);
+    if (state.yLog && fmt.includes('^')) {
+      const [base, exp] = fmt.split('^');
+      svg += `<text x="${ml-8*sc}" y="${py+3.5*sc}" text-anchor="end" font-size="${fs}" fill="#1a1a1a">${base===''?'':base}10<tspan baseline-shift="super" font-size="${fsSup}">${exp}</tspan></text>`;
+    } else {
+      svg += `<text x="${ml-8*sc}" y="${py+3.5*sc}" text-anchor="end" font-size="${fs}" fill="#1a1a1a">${fmt}</text>`;
+    }
+  });
+
+  // ── Axis labels
+  const fsLabel = Math.round(11*sc*fontScale);
+  // X label — just below tick numbers
+  svg += `<text x="${ml+pw/2}" y="${mt+ph+mb-6*sc}" text-anchor="middle" font-size="${fsLabel}" fill="#1a1a1a">${renderAxisLabel(state.xLabel)}</text>`;
+  // Y label (rotated) — just left of tick numbers
+  svg += `<text transform="rotate(-90)" x="${-(mt+ph/2)}" y="${11*sc}" text-anchor="middle" font-size="${fsLabel}" fill="#1a1a1a">${renderAxisLabel(state.yLabel)}</text>`;
+
+  // ── Data series
+  const clipId = `clip_${graphIdx}_${Date.now()}`;
+  svg += `<defs><clipPath id="${clipId}"><rect x="${ml}" y="${mt}" width="${pw}" height="${ph}"/></clipPath></defs>`;
+
+  seriesData.forEach(({ ds, pts }) => {
+    const sampled = downsample(pts);
+    const validPts = sampled.filter(p => {
+      if (state.xLog && p.x <= 0) return false;
+      if (state.yLog && p.y <= 0) return false;
+      return p.x >= xMin && p.x <= xMax && p.y >= yMin && p.y <= yMax;
+    });
+    if (validPts.length < 2) return;
+
+    const pathD = validPts.map((p,i) => {
+      const px = scaleX(p.x), py = scaleY(p.y);
+      return `${i===0?'M':'L'}${px.toFixed(2)},${py.toFixed(2)}`;
+    }).join(' ');
+
+    const dashAttr = ds.dash === 'none' ? '' : `stroke-dasharray="${ds.dash}"`;
+    svg += `<g clip-path="url(#${clipId})" color="${ds.color}">`;
+    svg += `<path d="${pathD}" fill="none" stroke="${ds.color}" stroke-width="${(1.2*sc).toFixed(2)}" ${dashAttr} stroke-linejoin="round" stroke-linecap="round"/>`;
+
+    svg += `</g>`;
+  });
+
+  // ── Legend
+  const legendPos = document.getElementById('legendPos').value;
+  if (legendPos !== 'none' && seriesData.length > 0) {
+    const lw = Math.round(90*sc), lh = Math.round((seriesData.length * 14 + 10)*sc);
+    const lpad = Math.round(8*sc);
+    let lx, ly;
+    if (legendPos==='inside-tr') { lx=ml+pw-lw-lpad; ly=mt+lpad; }
+    else if (legendPos==='inside-tl') { lx=ml+lpad; ly=mt+lpad; }
+    else if (legendPos==='inside-br') { lx=ml+pw-lw-lpad; ly=mt+ph-lh-lpad; }
+    else { lx=ml+lpad; ly=mt+ph-lh-lpad; }
+    svg += `<rect x="${lx}" y="${ly}" width="${lw}" height="${lh}" fill="white" stroke="#ccc" stroke-width="${(0.5*sc).toFixed(2)}" rx="${Math.round(2*sc)}"/>`;
+    seriesData.forEach(({ds}, i) => {
+      const ry = ly + Math.round(8*sc) + i*Math.round(14*sc);
+      const dashAttr = ds.dash==='none' ? '' : `stroke-dasharray="${ds.dash}"`;
+      svg += `<line x1="${lx+Math.round(5*sc)}" y1="${ry}" x2="${lx+Math.round(22*sc)}" y2="${ry}" stroke="${ds.color}" stroke-width="${(1.2*sc).toFixed(2)}" ${dashAttr}/>`;
+      const label = ds.name.length > 11 ? ds.name.substring(0,10)+'…' : ds.name;
+      svg += `<text x="${lx+Math.round(26*sc)}" y="${ry+Math.round(3.5*sc)}" font-size="${Math.round(8.5*sc*fontScale)}" fill="#1a1a1a" font-style="italic">${label}</text>`;
+    });
+  }
+
+  // ── Panel label (a), (b), (c)
+  svg += `<text x="${ml-2*sc}" y="${mt-8*sc}" font-size="${Math.round(10*sc*fontScale)}" fill="#1a1a1a" font-style="italic" text-anchor="start">${state.panelLabel}</text>`;
+
+  // ── Early-stage zoom inset ────────────────────────────────────────────────
+  const insetEl = document.getElementById('insetShow');
+  if (insetEl && insetEl.checked && seriesData.length > 0) {
+    const insXMin = parseFloat(document.getElementById('insetXMin').value);
+    const insXMax = parseFloat(document.getElementById('insetXMax').value);
+    const insPos = document.getElementById('insetPos').value;
+    const insSizePct = (parseFloat(document.getElementById('insetSize').value) || 42) / 100;
+
+    if (isFinite(insXMin) && isFinite(insXMax) && insXMax > insXMin) {
+      const insetSeries = seriesData.map(({ ds, pts }) => ({
+        ds, pts: pts.filter(p => p.x >= insXMin && p.x <= insXMax).sort((a,b)=>a.x-b.x)
+      })).filter(s => s.pts.length >= 2);
+
+      if (insetSeries.length > 0) {
+        const insAllY = insetSeries.flatMap(s => s.pts.map(p=>p.y));
+        let insYMin = Math.min(...insAllY), insYMax = Math.max(...insAllY);
+        const yPad = (insYMax - insYMin) * 0.1 || Math.abs(insYMax)*0.05 || 1;
+        insYMin -= yPad; insYMax += yPad;
+
+        const iw = pw * insSizePct, ih = ph * insSizePct;
+        const gap = Math.round(6*sc);
+        let ix, iy;
+        if (insPos === 'tr') { ix = ml + pw - iw - gap; iy = mt + gap; }
+        else if (insPos === 'tl') { ix = ml + gap; iy = mt + gap; }
+        else if (insPos === 'bl') { ix = ml + gap; iy = mt + ph - ih - gap; }
+        else { ix = ml + pw - iw - gap; iy = mt + ph - ih - gap; } // br default
+
+        function insScaleX(v) { return ix + (v - insXMin)/(insXMax - insXMin) * iw; }
+        function insScaleY(v) { return iy + ih - (v - insYMin)/(insYMax - insYMin) * ih; }
+
+        // Dashed callout box on the main panel showing the zoomed region
+        const mX1 = Math.max(ml, scaleX(Math.max(insXMin, xMin)));
+        const mX2 = Math.min(ml+pw, scaleX(Math.min(insXMax, xMax)));
+        const mY1 = scaleY(Math.min(insYMax, yMax));
+        const mY2 = scaleY(Math.max(insYMin, yMin));
+        if (mX2 > mX1) {
+          const boxY = Math.min(mY1, mY2), boxH = Math.abs(mY2-mY1);
+          svg += `<rect x="${mX1.toFixed(2)}" y="${boxY.toFixed(2)}" width="${(mX2-mX1).toFixed(2)}" height="${boxH.toFixed(2)}" fill="none" stroke="#1a1a1a" stroke-width="${(0.8*sc).toFixed(2)}" stroke-dasharray="${(3*sc).toFixed(1)},${(2*sc).toFixed(1)}"/>`;
+          const nearX = (insPos==='tl'||insPos==='bl') ? mX1 : mX2;
+          const nearY = (insPos==='tl'||insPos==='tr') ? boxY : boxY+boxH;
+          const insCornerX = (insPos==='tl'||insPos==='bl') ? ix+iw : ix;
+          const insCornerY = (insPos==='tl'||insPos==='tr') ? iy+ih : iy;
+          svg += `<line x1="${nearX.toFixed(2)}" y1="${nearY.toFixed(2)}" x2="${insCornerX.toFixed(2)}" y2="${insCornerY.toFixed(2)}" stroke="#888" stroke-width="${(0.6*sc).toFixed(2)}" stroke-dasharray="${(2*sc).toFixed(1)},${(2*sc).toFixed(1)}"/>`;
+        }
+
+        const insClipId = `${clipId}_ins`;
+        svg += `<defs><clipPath id="${insClipId}"><rect x="${ix.toFixed(2)}" y="${iy.toFixed(2)}" width="${iw.toFixed(2)}" height="${ih.toFixed(2)}"/></clipPath></defs>`;
+        svg += `<rect x="${ix.toFixed(2)}" y="${iy.toFixed(2)}" width="${iw.toFixed(2)}" height="${ih.toFixed(2)}" fill="white" stroke="#1a1a1a" stroke-width="${(1*sc).toFixed(2)}"/>`;
+
+        insetSeries.forEach(({ ds, pts }) => {
+          const pathD = pts.map((p,i) => `${i===0?'M':'L'}${insScaleX(p.x).toFixed(2)},${insScaleY(p.y).toFixed(2)}`).join(' ');
+          const dashAttr = ds.dash==='none' ? '' : `stroke-dasharray="${ds.dash}"`;
+          svg += `<g clip-path="url(#${insClipId})"><path d="${pathD}" fill="none" stroke="${ds.color}" stroke-width="${(1.1*sc).toFixed(2)}" ${dashAttr} stroke-linejoin="round" stroke-linecap="round"/></g>`;
+        });
+
+        svg += `<text x="${(ix+iw/2).toFixed(2)}" y="${(iy+ih+9*sc).toFixed(2)}" text-anchor="middle" font-size="${Math.round(7*sc*fontScale)}" fill="#555" font-style="italic">${insXMin}\u2013${insXMax} s</text>`;
+      }
+    }
+  }
+
+  // ── Outer border / frame
+  svg += `<rect x="0.5" y="0.5" width="${W-1}" height="${H-1}" fill="none" stroke="#aaa" stroke-width="${(0.5*sc).toFixed(2)}"/>`;
+
+  svg += `</svg>`;
+  return svg;
+}
+
+// ─── Graph 3: E Distribution — box+whisker, one dataset per geometry ──────────
+// Expected CSV columns: E_Pa (numeric). Dataset name = geometry label on X axis.
+function buildSVG_EDistribution(W, H, widthIn, heightIn) {
+  const state = graphStates[3];
+  const sc = W / 480;
+  const ml = Math.round(66*sc), mr = Math.round(20*sc), mt = Math.round(22*sc), mb = Math.round(50*sc);
+  const pw = W - ml - mr;
+  const ph = H - mt - mb;
+
+  const activeSets = datasets.map(ds => {
+    const colY = ds.perGraph[3].colY;
+    const vals = ds.data.map(r => r[colY]).filter(v => v != null && isFinite(v) && v > 0);
+    if (!vals.length) return null;
+    vals.sort((a,b) => a-b);
+    const pct = p => vals[Math.max(0, Math.min(vals.length-1, Math.floor(p/100*vals.length)))];
+    const mean = vals.reduce((s,v)=>s+v,0)/vals.length;
+    return { ds, vals, p10:pct(10), p25:pct(25), p50:pct(50), p75:pct(75), p90:pct(90), mean };
+  }).filter(Boolean);
+
+  let yMinRaw = state.yMin !== '' ? +state.yMin : null;
+  let yMaxRaw = state.yMax !== '' ? +state.yMax : null;
+  const useLog = state.yLog;
+
+  let allVals = activeSets.flatMap(s => [s.p10, s.p90]);
+  if (!allVals.length) allVals = [100, 1000000];
+  const yMin = yMinRaw !== null ? yMinRaw : (useLog ? Math.max(1, Math.min(...allVals)*0.5) : 0);
+  const yMax = yMaxRaw !== null ? yMaxRaw : (useLog ? Math.max(...allVals)*2 : Math.max(...allVals)*1.1);
+
+  function scaleY(v) {
+    if (useLog) return mt + ph - (Math.log10(Math.max(v,1e-9)) - Math.log10(yMin)) / (Math.log10(yMax) - Math.log10(yMin)) * ph;
+    return mt + ph - (v - yMin) / (yMax - yMin) * ph;
+  }
+
+  const n = activeSets.length || 1;
+  const slotW = pw / n;
+
+  const wAttr = widthIn ? `${widthIn}in` : `${W}`;
+  const hAttr = heightIn ? `${heightIn}in` : `${H}`;
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${wAttr}" height="${hAttr}" viewBox="0 0 ${W} ${H}" font-family="'Times New Roman',serif">`;
+  svg += `<rect width="${W}" height="${H}" fill="white"/>`;
+  svg += `<rect x="${ml}" y="${mt}" width="${pw}" height="${ph}" fill="white" stroke="#1a1a1a" stroke-width="${(1*sc).toFixed(2)}"/>`;
+
+  const clipId = `clip_edist_${Date.now()}`;
+  svg += `<defs><clipPath id="${clipId}"><rect x="${ml}" y="${mt}" width="${pw}" height="${ph}"/></clipPath></defs>`;
+
+  // Y ticks
+  const yTickVals = useLog
+    ? [1e2,1e3,1e4,1e5,1e6,1e7].filter(v => v >= yMin*0.9 && v <= yMax*1.1)
+    : Array.from({length:6},(_,i)=>yMin+(yMax-yMin)*i/5);
+
+  yTickVals.forEach(v => {
+    const py = scaleY(v);
+    if (py < mt-2 || py > mt+ph+2) return;
+    svg += `<line x1="${ml}" y1="${py}" x2="${ml+pw}" y2="${py}" stroke="#e8e8e8" stroke-width="${(0.5*sc).toFixed(2)}" stroke-dasharray="${(2*sc).toFixed(1)},${(2*sc).toFixed(1)}"/>`;
+    svg += `<line x1="${ml-4*sc}" y1="${py}" x2="${ml}" y2="${py}" stroke="#1a1a1a" stroke-width="${(0.7*sc).toFixed(2)}"/>`;
+    svg += `<line x1="${ml+pw}" y1="${py}" x2="${ml+pw+3*sc}" y2="${py}" stroke="#1a1a1a" stroke-width="${(0.7*sc).toFixed(2)}"/>`;
+    let lbl = useLog ? (v>=1e6?v/1e6+'M':v>=1e3?v/1e3+'k':v) : (v>=1e6?(v/1e6).toFixed(1)+'M':v>=1e3?(v/1e3).toFixed(0)+'k':v.toFixed(0));
+    svg += `<text x="${ml-7*sc}" y="${py+3.5*sc}" text-anchor="end" font-size="${Math.round(8.5*sc)}" fill="#1a1a1a">${lbl}</text>`;
+  });
+
+  if (!activeSets.length) {
+    svg += `<text x="${ml+pw/2}" y="${mt+ph/2}" text-anchor="middle" font-size="${Math.round(10*sc)}" fill="#888" font-style="italic">Upload CSVs with E_Pa column</text>`;
+  }
+
+  // Box+whisker — clipped to plot area
+  svg += `<g clip-path="url(#${clipId})">`;
+  activeSets.forEach(({ ds, p10, p25, p50, p75, p90, mean }, i) => {
+    const cx = ml + slotW * i + slotW / 2;
+    const bw = Math.min(slotW * 0.40, 40*sc);
+    const col = ds.color;
+
+    // Screen Y for each statistic — clamped to axis range before scaling
+    const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+    const sy10  = scaleY(clamp(p10,  yMin, yMax));
+    const sy25  = scaleY(clamp(p25,  yMin, yMax));
+    const sy50  = scaleY(clamp(p50,  yMin, yMax));
+    const sy75  = scaleY(clamp(p75,  yMin, yMax));
+    const sy90  = scaleY(clamp(p90,  yMin, yMax));
+    const syMean = scaleY(clamp(mean, yMin, yMax));
+
+    // In SVG coords: higher data value → smaller Y → top of box is sy75, bottom is sy25
+    const boxTop = Math.min(sy75, sy25);
+    const boxH   = Math.abs(sy25 - sy75);
+
+    svg += `<line x1="${cx}" y1="${sy10}" x2="${cx}" y2="${sy90}" stroke="${col}" stroke-width="${(1*sc).toFixed(2)}"/>`;
+    svg += `<line x1="${cx-bw*0.28}" y1="${sy10}" x2="${cx+bw*0.28}" y2="${sy10}" stroke="${col}" stroke-width="${(1*sc).toFixed(2)}"/>`;
+    svg += `<line x1="${cx-bw*0.28}" y1="${sy90}" x2="${cx+bw*0.28}" y2="${sy90}" stroke="${col}" stroke-width="${(1*sc).toFixed(2)}"/>`;
+    svg += `<rect x="${cx-bw/2}" y="${boxTop}" width="${bw}" height="${boxH}" fill="${col}" fill-opacity="0.18" stroke="${col}" stroke-width="${(1*sc).toFixed(2)}"/>`;
+    svg += `<line x1="${cx-bw/2}" y1="${sy50}" x2="${cx+bw/2}" y2="${sy50}" stroke="${col}" stroke-width="${(2*sc).toFixed(2)}"/>`;
+    svg += `<circle cx="${cx}" cy="${syMean}" r="${2.5*sc}" fill="${col}" stroke="white" stroke-width="${0.8*sc}"/>`;
+  });
+  svg += `</g>`;
+
+  // X-axis labels — rotate when many datasets to prevent overlap
+  activeSets.forEach(({ ds }, i) => {
+    const cx = ml + slotW * i + slotW / 2;
+    const labelY = mt + ph + 6*sc;
+    const label = ds.name.length > 14 ? ds.name.substring(0,13)+'…' : ds.name;
+    if (activeSets.length > 3) {
+      svg += `<text transform="rotate(-35,${cx},${labelY})" x="${cx}" y="${labelY}" text-anchor="end" font-size="${Math.round(8.5*sc)}" fill="#1a1a1a" font-style="italic">${label}</text>`;
+    } else {
+      svg += `<text x="${cx}" y="${labelY+8*sc}" text-anchor="middle" font-size="${Math.round(9*sc)}" fill="#1a1a1a" font-style="italic">${label}</text>`;
+    }
+  });
+
+  // Legend — one entry per dataset showing its actual color
+  if (activeSets.length > 0) {
+    const legItemH = Math.round(13*sc);
+    const legW = Math.round(100*sc);
+    const legH = Math.round(activeSets.length * legItemH + 12*sc);
+    const legX = ml + pw - legW - Math.round(6*sc);
+    const legY = mt + Math.round(8*sc);
+    svg += `<rect x="${legX-4*sc}" y="${legY-6*sc}" width="${legW+8*sc}" height="${legH}" fill="white" stroke="#ccc" stroke-width="${0.5*sc}" rx="${2*sc}"/>`;
+    activeSets.forEach(({ ds }, i) => {
+      const ry = legY + i * legItemH;
+      svg += `<rect x="${legX}" y="${ry}" width="${10*sc}" height="${8*sc}" fill="${ds.color}" fill-opacity="0.3" stroke="${ds.color}" stroke-width="${0.8*sc}"/>`;
+      svg += `<line x1="${legX}" y1="${ry+5*sc}" x2="${legX+10*sc}" y2="${ry+5*sc}" stroke="${ds.color}" stroke-width="${1.5*sc}"/>`;
+      const lbl = ds.name.length > 10 ? ds.name.substring(0,9)+'…' : ds.name;
+      svg += `<text x="${legX+14*sc}" y="${ry+7*sc}" font-size="${Math.round(8*sc)}" fill="#1a1a1a" font-style="italic">${lbl}</text>`;
+    });
+  }
+
+  const fsLabel = Math.round(11*sc);
+  svg += `<text x="${ml+pw/2}" y="${mt+ph+mb-5*sc}" text-anchor="middle" font-size="${fsLabel}" fill="#1a1a1a">${state.xLabel}</text>`;
+  svg += `<text transform="rotate(-90)" x="${-(mt+ph/2)}" y="${11*sc}" text-anchor="middle" font-size="${fsLabel}" fill="#1a1a1a">${state.yLabel}</text>`;
+  svg += `<text x="${ml-2*sc}" y="${mt-8*sc}" font-size="${Math.round(10*sc)}" fill="#1a1a1a" font-style="italic" text-anchor="start">${state.panelLabel}</text>`;
+  svg += `<rect x="0.5" y="0.5" width="${W-1}" height="${H-1}" fill="none" stroke="#aaa" stroke-width="${(0.5*sc).toFixed(2)}"/>`;
+  svg += `</svg>`;
+  return svg;
+}
+
+// ─── Graph 4: Region Stress — stacked bar, one dataset per geometry ────────────
+// Uses same CSV as E Distribution: needs E_Pa and region (face/edge/corner) columns.
+// Computes % of ALL vertices per region that exceed the threshold set in the sidebar.
+function buildSVG_RegionStress(W, H, widthIn, heightIn) {
+  const state = graphStates[4];
+  const sc = W / 480;
+  const ml = Math.round(52*sc), mr = Math.round(20*sc), mt = Math.round(28*sc), mb = Math.round(50*sc);
+  const pw = W - ml - mr;
+  const ph = H - mt - mb;
+
+  const REGIONS = ['face', 'edge', 'corner'];
+  const REGION_OPACITY = { face: 0.85, edge: 0.55, corner: 0.30 };
+
+  // Threshold from sidebar
+  const threshold = parseFloat(document.getElementById('stressThreshold').value) || 500000;
+
+  // Geometry sort order matching figure 5
+  const GEOM_ORDER = ['star','cube','hexagon','hex','cylinder','cyl','triangle','tri'];
+  function geomRank(name) {
+    const k = name.toLowerCase();
+    for (let i=0; i<GEOM_ORDER.length; i++) if (k.includes(GEOM_ORDER[i])) return i;
+    return 99;
+  }
+
+  // Compute high-stress % per region from raw E_Pa data
+  const activeSets = datasets.map(ds => {
+    const colY = ds.perGraph[4].colY; // E_Pa
+    const regionCol = ds.columns.find(c => c.toLowerCase() === 'region');
+    if (!regionCol) return null;
+
+    const totalVertices = ds.data.length;
+    const highN = { face:0, edge:0, corner:0 };
+
+    ds.data.forEach(row => {
+      const r = (row[regionCol] || '').toLowerCase().trim();
+      const v = parseFloat(row[colY]);
+      if (!REGIONS.includes(r) || isNaN(v)) return;
+      if (v > threshold) highN[r]++;
+    });
+
+    // % of TOTAL vertices (matching the paper's metric)
+    const byRegion = {};
+    REGIONS.forEach(r => {
+      byRegion[r] = totalVertices > 0 ? (highN[r] / totalVertices) * 100 : 0;
+    });
+    const total = REGIONS.reduce((s,r) => s + byRegion[r], 0);
+    if (totalVertices === 0) return null;
+    return { ds, byRegion, total, totalVertices };
+  }).filter(Boolean)
+    .sort((a,b) => geomRank(a.ds.name) - geomRank(b.ds.name));
+
+  // Y axis
+  let yMaxRaw = state.yMax !== '' ? +state.yMax : null;
+  const allTotals = activeSets.map(s=>s.total);
+  const dataMax = allTotals.length ? Math.max(...allTotals) : 10;
+  const yMax = yMaxRaw !== null ? yMaxRaw : Math.ceil(dataMax * 1.3 / 2) * 2 || 10;
+  const yMin = state.yMin !== '' ? +state.yMin : 0;
+  const yRange = yMax - yMin;
+  function scaleY(v) { return mt + ph - (v - yMin) / yRange * ph; }
+
+  function niceStep(range, targetTicks) {
+    const rough = range / (targetTicks - 1);
+    const mag = Math.pow(10, Math.floor(Math.log10(rough || 1)));
+    const norm = rough / mag;
+    const step = norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10;
+    return step * mag;
+  }
+  const yStep = niceStep(yRange, 6);
+  const yTickStart = Math.ceil((yMin + 1e-9) / yStep) * yStep;
+
+  const n = activeSets.length || 1;
+  const slotW = pw / n;
+  const barW = Math.min(slotW * 0.52, 50*sc);
+
+  const wAttr = widthIn ? `${widthIn}in` : `${W}`;
+  const hAttr = heightIn ? `${heightIn}in` : `${H}`;
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${wAttr}" height="${hAttr}" viewBox="0 0 ${W} ${H}" font-family="'Times New Roman',serif">`;
+  svg += `<rect width="${W}" height="${H}" fill="white"/>`;
+  svg += `<rect x="${ml}" y="${mt}" width="${pw}" height="${ph}" fill="white" stroke="#1a1a1a" stroke-width="${(1*sc).toFixed(2)}"/>`;
+
+  const clipId = `clip_rs_${Date.now()}`;
+  svg += `<defs><clipPath id="${clipId}"><rect x="${ml}" y="${mt}" width="${pw}" height="${ph}"/></clipPath></defs>`;
+
+  // Baseline tick
+  { const py = scaleY(yMin);
+    svg += `<line x1="${ml-4*sc}" y1="${py}" x2="${ml}" y2="${py}" stroke="#1a1a1a" stroke-width="${(0.7*sc).toFixed(2)}"/>`;
+    svg += `<line x1="${ml+pw}" y1="${py}" x2="${ml+pw+3*sc}" y2="${py}" stroke="#1a1a1a" stroke-width="${(0.7*sc).toFixed(2)}"/>`;
+    svg += `<text x="${ml-7*sc}" y="${py+3.5*sc}" text-anchor="end" font-size="${Math.round(8.5*sc)}" fill="#1a1a1a">0</text>`; }
+
+  // Y ticks
+  for (let v = yTickStart; v <= yMax + yStep*0.01; v += yStep) {
+    const vr = Math.round(v * 1e9) / 1e9;
+    const py = scaleY(vr);
+    if (py < mt-2 || py > mt+ph+2) continue;
+    svg += `<line x1="${ml}" y1="${py}" x2="${ml+pw}" y2="${py}" stroke="#e8e8e8" stroke-width="${(0.5*sc).toFixed(2)}" stroke-dasharray="${(2*sc).toFixed(1)},${(2*sc).toFixed(1)}"/>`;
+    svg += `<line x1="${ml-4*sc}" y1="${py}" x2="${ml}" y2="${py}" stroke="#1a1a1a" stroke-width="${(0.7*sc).toFixed(2)}"/>`;
+    svg += `<line x1="${ml+pw}" y1="${py}" x2="${ml+pw+3*sc}" y2="${py}" stroke="#1a1a1a" stroke-width="${(0.7*sc).toFixed(2)}"/>`;
+    svg += `<text x="${ml-7*sc}" y="${py+3.5*sc}" text-anchor="end" font-size="${Math.round(8.5*sc)}" fill="#1a1a1a">${vr % 1 === 0 ? vr+'%' : vr.toFixed(1)+'%'}</text>`;
+  }
+
+  if (!activeSets.length) {
+    svg += `<text x="${ml+pw/2}" y="${mt+ph/2}" text-anchor="middle" font-size="${Math.round(10*sc)}" fill="#888" font-style="italic">Upload CSVs with E_Pa and region columns</text>`;
+  }
+
+  // Stacked bars — each region uses geometry color at decreasing opacity
+  svg += `<g clip-path="url(#${clipId})">`;
+  activeSets.forEach(({ ds, byRegion }, i) => {
+    const cx = ml + slotW * i + slotW / 2;
+    const x0 = cx - barW / 2;
+    let cumVal = yMin;
+    REGIONS.forEach(r => {
+      const val = byRegion[r] || 0;
+      if (val <= 0) return;
+      const barBottom = scaleY(cumVal);
+      const barTop    = scaleY(cumVal + val);
+      const barH = barBottom - barTop;
+      svg += `<rect x="${x0}" y="${barTop}" width="${barW}" height="${barH}" fill="${ds.color}" fill-opacity="${REGION_OPACITY[r]}" stroke="white" stroke-width="${0.5*sc}"/>`;
+      if (barH > 9*sc) {
+        svg += `<text x="${cx}" y="${barTop + barH/2 + 3.5*sc}" text-anchor="middle" font-size="${Math.round(7.5*sc)}" fill="white" font-weight="bold">${val.toFixed(1)}%</text>`;
+      }
+      cumVal += val;
+    });
+  });
+  svg += `</g>`;
+
+  // Total + X labels
+  activeSets.forEach(({ ds, total }, i) => {
+    const cx = ml + slotW * i + slotW / 2;
+    if (total > 0) {
+      const rawLabelY = scaleY(Math.min(total, yMax)) - 3*sc;
+      const labelY = Math.max(mt + 8*sc, rawLabelY);
+      svg += `<text x="${cx}" y="${labelY}" text-anchor="middle" font-size="${Math.round(8.5*sc)}" fill="#1a1a1a" font-weight="bold">${total.toFixed(1)}%</text>`;
+    }
+    const label = ds.name.length > 14 ? ds.name.substring(0,13)+'\u2026' : ds.name;
+    const labelBaseY = mt + ph + 6*sc;
+    if (activeSets.length > 3) {
+      svg += `<text transform="rotate(-35,${cx},${labelBaseY})" x="${cx}" y="${labelBaseY}" text-anchor="end" font-size="${Math.round(8.5*sc)}" fill="#1a1a1a" font-style="italic">${label}</text>`;
+    } else {
+      svg += `<text x="${cx}" y="${labelBaseY+8*sc}" text-anchor="middle" font-size="${Math.round(9.5*sc)}" fill="#1a1a1a" font-style="italic">${label}</text>`;
+    }
+  });
+
+  // Legend — opacity key with neutral swatch
+  const legItemH = Math.round(13*sc);
+  const legW = Math.round(80*sc);
+  const legH = Math.round(REGIONS.length * legItemH + 12*sc);
+  const legX = ml + pw - legW - Math.round(8*sc);
+  const legY = mt + Math.round(8*sc);
+  svg += `<rect x="${legX-4*sc}" y="${legY-6*sc}" width="${legW+8*sc}" height="${legH}" fill="white" stroke="#ccc" stroke-width="${0.5*sc}" rx="${2*sc}"/>`;
+  REGIONS.forEach((r, ri) => {
+    const ry = legY + ri * legItemH;
+    svg += `<rect x="${legX}" y="${ry}" width="${10*sc}" height="${10*sc}" fill="#555" fill-opacity="${REGION_OPACITY[r]}" stroke="none"/>`;
+    svg += `<text x="${legX+14*sc}" y="${ry+8.5*sc}" font-size="${Math.round(8.5*sc)}" fill="#1a1a1a">${r.charAt(0).toUpperCase()+r.slice(1)}</text>`;
+  });
+
+  // Threshold watermark
+  const thrLabel = threshold>=1e6?(threshold/1e6).toFixed(1)+'M':threshold>=1e3?(threshold/1e3).toFixed(0)+'k':threshold;
+  svg += `<text x="${ml+pw-3*sc}" y="${mt+ph-4*sc}" text-anchor="end" font-size="${Math.round(7*sc)}" fill="#aaa" font-style="italic">threshold: ${thrLabel} Pa</text>`;
+
+  const fsLabel = Math.round(11*sc);
+  svg += `<text x="${ml+pw/2}" y="${mt+ph+mb-5*sc}" text-anchor="middle" font-size="${fsLabel}" fill="#1a1a1a">${state.xLabel}</text>`;
+  svg += `<text transform="rotate(-90)" x="${-(mt+ph/2)}" y="${11*sc}" text-anchor="middle" font-size="${fsLabel}" fill="#1a1a1a">${state.yLabel}</text>`;
+  svg += `<text x="${ml-2*sc}" y="${mt-10*sc}" font-size="${Math.round(10*sc)}" fill="#1a1a1a" font-style="italic" text-anchor="start">${state.panelLabel}</text>`;
+  svg += `<rect x="0.5" y="0.5" width="${W-1}" height="${H-1}" fill="none" stroke="#aaa" stroke-width="${(0.5*sc).toFixed(2)}"/>`;
+  svg += `</svg>`;
+  return svg;
+}
+// ─── Render preview ───────────────────────────────────────────────────────────
+function renderAll() {
+  const dpi = 96;
+  const wi = parseFloat(document.getElementById('canvasW').value) || 5.0;
+  const hi = parseFloat(document.getElementById('canvasH').value) || 4.0;
+  const W = Math.round(wi * dpi);
+  const H = Math.round(hi * dpi);
+  let svgStr;
+  if (activeGraph === 3) {
+    svgStr = buildSVG_EDistribution(W, H);
+  } else if (activeGraph === 4) {
+    svgStr = buildSVG_RegionStress(W, H);
+  } else if (activeGraph === 5) {
+    svgStr = buildSVG_PlateauSummary(W, H);
+  } else {
+    svgStr = buildSVG(activeGraph, W, H);
+  }
+  document.getElementById('svg-container').innerHTML = svgStr;
+}
+
+// ─── Export ───────────────────────────────────────────────────────────────────
+function exportSVG() {
+  saveAxisState();
+  const dpi = 96;
+  const wi = parseFloat(document.getElementById('canvasW').value) || 5.0;
+  const hi = parseFloat(document.getElementById('canvasH').value) || 4.0;
+  const W = Math.round(wi * dpi);
+  const H = Math.round(hi * dpi);
+  let svgStr;
+  if (activeGraph === 3) {
+    svgStr = buildSVG_EDistribution(W, H, wi, hi);
+  } else if (activeGraph === 4) {
+    svgStr = buildSVG_RegionStress(W, H, wi, hi);
+  } else if (activeGraph === 5) {
+    svgStr = buildSVG_PlateauSummary(W, H, wi, hi);
+  } else {
+    svgStr = buildSVG(activeGraph, W, H, wi, hi);
+  }
+  const blob = new Blob([svgStr], {type:'image/svg+xml'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `graph_${GRAPH_DEFS[activeGraph].name.replace(/ /g,'_')}.svg`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportAllSVG() {
+  saveAxisState();
+  const dpi = 96;
+  const wi = parseFloat(document.getElementById('canvasW').value) || 5.0;
+  const hi = parseFloat(document.getElementById('canvasH').value) || 4.0;
+  const W = Math.round(wi * dpi);
+  const H = Math.round(hi * dpi);
+
+  [0,1,2,3,4,5].forEach((gi, delay) => {
+    setTimeout(() => {
+      let svgStr;
+      if (gi === 3) {
+        svgStr = buildSVG_EDistribution(W, H, wi, hi);
+      } else if (gi === 4) {
+        svgStr = buildSVG_RegionStress(W, H, wi, hi);
+      } else if (gi === 5) {
+        svgStr = buildSVG_PlateauSummary(W, H, wi, hi);
+      } else {
+        svgStr = buildSVG_static(gi, W, H, graphStates[gi], wi, hi);
+      }
+      const blob = new Blob([svgStr], {type:'image/svg+xml'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `graph_${GRAPH_DEFS[gi].name.replace(/ /g,'_')}.svg`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }, delay * 300);
+  });
+}
+
+// Static version of buildSVG that takes state directly (for export all)
+function buildSVG_static(graphIdx, W, H, stateOverride, widthIn, heightIn) {
+  const origIdx = activeGraph;
+  activeGraph = graphIdx;
+  const origState = graphStates[graphIdx];
+  if (stateOverride) graphStates[graphIdx] = stateOverride;
+  const svg = buildSVG(graphIdx, W, H, widthIn, heightIn);
+  graphStates[graphIdx] = origState;
+  activeGraph = origIdx;
+  return svg;
+}
+
+// ─── Init ────────────────────────────────────────────────────────────────────
+loadAxisState();
+renderAll();
+</script>
+</body>
+</html>

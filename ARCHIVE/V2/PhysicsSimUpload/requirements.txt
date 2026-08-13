@@ -1,0 +1,13 @@
+genesis-world
+trimesh
+coacd
+numpy
+scipy
+networkx
+pandas
+h5py
+pyvista
+fastapi
+websockets
+uvicorn
+tqdm

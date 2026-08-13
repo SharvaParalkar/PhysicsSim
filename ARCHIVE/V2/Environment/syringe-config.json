@@ -1,0 +1,17 @@
+{
+  "name": "syringe-config",
+  "type": "syringe",
+  "units": {
+    "length": "m"
+  },
+  "config": {
+    "SYRINGE_BARREL_DIAMETER": 0.008499999999999999,
+    "SYRINGE_BARREL_LENGTH": 0.0635,
+    "SYRINGE_NEEDLE_DIAMETER": 0.0013,
+    "SYRINGE_NEEDLE_LENGTH": 0.0253,
+    "SYRINGE_WALL_THICKNESS": 0.00037999999999999997,
+    "SYRINGE_BOTTOM_THICKNESS": 0.00052,
+    "SYRINGE_PLATE_GAP": 0.0,
+    "SYRINGE_SEGMENTS": 32
+  }
+}

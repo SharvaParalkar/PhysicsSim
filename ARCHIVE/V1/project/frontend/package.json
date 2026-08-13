@@ -1,0 +1,26 @@
+{
+  "name": "granular-sim-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "three": "^0.164.0",
+    "@react-three/fiber": "^8.0.0",
+    "@react-three/drei": "^9.0.0",
+    "d3": "^7.0.0",
+    "recharts": "^2.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/react": "^18.0.0",
+    "@types/three": "^0.164.0",
+    "vite": "^5.0.0",
+    "@vitejs/plugin-react": "^4.0.0"
+  }
+}
+
