@@ -325,6 +325,42 @@ kbd{
 
 /* Canvas is light-themed on demand; keep overlays readable either way. */
 body.viz-light #canvasWrap{background:#f2f4f7}
+
+#nozzleGradientHud{
+  position:absolute;top:12px;left:50%;transform:translateX(-50%);
+  z-index:12;pointer-events:auto;
+  background:rgba(12,16,24,0.82);border:1px solid #3d4a63;border-radius:8px;
+  padding:10px 16px;min-width:420px;max-width:92vw;
+  font-size:12px;color:#e2e9f4;line-height:1.45;
+  box-shadow:0 4px 18px rgba(0,0,0,0.35);
+}
+#nozzleGradientHud.mode-hidden{display:none!important}
+#nozzleGradientHud .nozzle-phase{font-weight:600;font-size:13px;margin-bottom:8px;text-align:center}
+#nozzleGradientHud .nozzle-phase span{color:#7ec8ff}
+#nozzleGradientHud .nozzle-lanes{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+#nozzleGradientHud .nozzle-lane-stat{
+  background:rgba(255,255,255,0.04);border-radius:6px;padding:6px 8px;text-align:center}
+#nozzleGradientHud .nozzle-lane-stat .gauge{font-weight:700;font-size:12px}
+#nozzleGradientHud .nozzle-lane-stat .bore{font-size:10px;color:#9aabc4;margin-bottom:4px}
+#nozzleGradientHud .nozzle-lane-stat .stress{font-family:var(--mono);font-size:11px}
+#nozzleGradientHud .nozzle-lane-stat .phase{font-size:10px;color:#9aabc4;margin:2px 0 6px}
+#nozzleGradientHud .nozzle-start{
+  pointer-events:auto;cursor:pointer;width:100%;
+  background:#1e6b4a;border:1px solid #2a8a62;color:#e8fff4;
+  border-radius:5px;padding:4px 6px;font-size:11px;font-weight:600}
+#nozzleGradientHud .nozzle-start:hover{background:#248059}
+#nozzleGradientHud .nozzle-start:disabled{opacity:.45;cursor:default;background:#2b3548;border-color:#3d4a63;color:#9aabc4}
+#nozzleLaneLabels{
+  position:absolute;bottom:48px;left:0;right:0;z-index:11;pointer-events:none;
+  display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;padding:0 8%;
+}
+#nozzleLaneLabels.mode-hidden{display:none!important}
+#nozzleLaneLabels .nozzle-lane-label{
+  text-align:center;font-weight:700;font-size:13px;color:#1a2233;
+  text-shadow:0 0 8px rgba(255,255,255,0.85),0 1px 2px rgba(255,255,255,0.9);
+}
+body.viz-dark #nozzleLaneLabels .nozzle-lane-label{color:#e8eef8;
+  text-shadow:0 0 10px rgba(0,0,0,0.9),0 1px 3px rgba(0,0,0,0.8)}
 </style>
 </head>
 
@@ -348,6 +384,7 @@ body.viz-light #canvasWrap{background:#f2f4f7}
         <option value="airway">Bronchial tree</option>
         <option value="volume">Box volume</option>
         <option value="volume_fill">Box fill sequence</option>
+        <option value="nozzle_gradient">Nozzle pressure gradient</option>
       </optgroup>
       <optgroup label="Measurement">
         <option value="nanoindent">Nanoindentation</option>
@@ -1037,13 +1074,14 @@ body.viz-light #canvasWrap{background:#f2f4f7}
   </details>
 
   <!-- ── Appearance ──────────────────────────────────────── -->
-  <details class="section" data-modes="syringe airway volume volume_fill nanoindent">
+  <details class="section" data-modes="syringe airway volume volume_fill nanoindent nozzle_gradient">
     <summary class="section-summary">Colour mapping</summary>
     <div class="section-inner">
       <div class="row"><label for="selColorMode">Colour by</label>
         <select id="selColorMode" onchange="onColorModeChange(this.value)">
           <option value="contact">Contacts</option>
           <option value="stress" selected>Stress / strain</option>
+          <option value="viscosity">Dynamic viscosity</option>
           <option value="modulus">Modulus map</option>
         </select></div>
       <div class="row"><label for="sStressGain">Stress gain</label>
@@ -1059,8 +1097,42 @@ body.viz-light #canvasWrap{background:#f2f4f7}
     </div>
   </details>
 
+  <details class="section" open data-modes="nozzle_gradient">
+    <summary class="section-summary">Nozzle comparison</summary>
+    <div class="section-inner">
+      <p class="note">Three syringes (<b>16G</b> / <b>18G</b> / <b>20G</b>) with the
+        STAMP <b>Star600M</b> particle (600&nbsp;µm circumscribed, R&nbsp;=&nbsp;0.30&nbsp;mm).
+        Needle <b>inlet is open</b>; only the <b>tip stays capped</b>.
+        Defaults: 16G uses sidebar gravity; 18G/20G use elevated piston push. Softness 68%.
+        Start each gauge separately. Export PLY/OBJ at <b>settled</b>.</p>
+      <dl class="readout">
+        <dt>Phase</dt><dd id="nozzlePhaseReadout">idle — start a gauge</dd>
+        <dt>Fill level</dt><dd id="nozzleFillReadout">0%</dd>
+        <dt>16G η (Pa·s)</dt><dd id="nozzleStress16">—</dd>
+        <dt>18G η (Pa·s)</dt><dd id="nozzleStress18">—</dd>
+        <dt>20G η (Pa·s)</dt><dd id="nozzleStress20">—</dd>
+      </dl>
+      <div class="row buttons">
+        <button class="btn sm" id="btnStartNozzle16" onclick="startNozzleLane(16)"
+                title="Fill and run only the 16 gauge syringe">Start 16G</button>
+        <button class="btn sm" id="btnStartNozzle18" onclick="startNozzleLane(18)"
+                title="Fill and run only the 18 gauge syringe">Start 18G</button>
+        <button class="btn sm" id="btnStartNozzle20" onclick="startNozzleLane(20)"
+                title="Fill and run only the 20 gauge syringe">Start 20G</button>
+      </div>
+      <div class="row buttons">
+        <button class="btn sm" onclick="focusNozzleComparison()"
+                title="Frame all three nozzles">Frame all</button>
+        <button class="btn sm" onclick="exportPLYColors()"
+                title="Export vertex-coloured PLY (best at settled phase)">Export PLY</button>
+        <button class="btn sm" onclick="exportOBJ()"
+                title="Export syringes + particles as OBJ">Export OBJ</button>
+      </div>
+    </div>
+  </details>
+
   <!-- ── Readouts ────────────────────────────────────────── -->
-  <details class="section" open data-modes="syringe airway volume volume_fill nanoindent">
+  <details class="section" open data-modes="syringe airway volume volume_fill nanoindent nozzle_gradient">
     <summary class="section-summary">Readouts</summary>
     <div class="section-inner">
       <dl class="readout">
@@ -1121,6 +1193,34 @@ body.viz-light #canvasWrap{background:#f2f4f7}
      aria-label="Resize sidebar" title="Drag to resize the sidebar"></div>
 
 <div id="canvasWrap">
+  <div id="nozzleGradientHud" class="mode-hidden">
+    <div class="nozzle-phase">Phase: <span id="nozzlePhaseLabel">loading</span></div>
+    <div class="nozzle-lanes">
+      <div class="nozzle-lane-stat" id="nozzleHud16">
+        <div class="gauge">16G</div><div class="bore">1.19 mm bore</div>
+        <div class="phase" id="nozzleHudPhase16">idle</div>
+        <div class="stress" id="nozzleHudStress16">—</div>
+        <button class="nozzle-start" id="btnHudStart16" onclick="startNozzleLane(16)">Start 16G</button>
+      </div>
+      <div class="nozzle-lane-stat" id="nozzleHud18">
+        <div class="gauge">18G</div><div class="bore">0.84 mm bore</div>
+        <div class="phase" id="nozzleHudPhase18">idle</div>
+        <div class="stress" id="nozzleHudStress18">—</div>
+        <button class="nozzle-start" id="btnHudStart18" onclick="startNozzleLane(18)">Start 18G</button>
+      </div>
+      <div class="nozzle-lane-stat" id="nozzleHud20">
+        <div class="gauge">20G</div><div class="bore">0.60 mm bore</div>
+        <div class="phase" id="nozzleHudPhase20">idle</div>
+        <div class="stress" id="nozzleHudStress20">—</div>
+        <button class="nozzle-start" id="btnHudStart20" onclick="startNozzleLane(20)">Start 20G</button>
+      </div>
+    </div>
+  </div>
+  <div id="nozzleLaneLabels" class="mode-hidden">
+    <div class="nozzle-lane-label">16 gauge</div>
+    <div class="nozzle-lane-label">18 gauge</div>
+    <div class="nozzle-lane-label">20 gauge</div>
+  </div>
   <div id="settleHud">
     <span class="hudKey">Time to settle</span>
     <span class="hudVal" id="hudSettle">—</span>
@@ -1146,12 +1246,18 @@ window._PORE_MC={"edgeTable":[0,265,515,778,1030,1295,1541,1804,2060,2309,2575,2
 // ═══════════════════════════════════════════════════════════════
 // 0.  URL helpers (subpath deploys, e.g. example.com/simulation)
 // ═══════════════════════════════════════════════════════════════
-/** Resolve same-folder asset paths. Without this, /simulation (no trailing slash) makes `assets/` fetch /assets/ at domain root. */
+/** Resolve same-folder asset paths. Without this, /simulation (no trailing slash) makes `assets/` fetch /assets/ at domain root. Also handles clean URLs from static servers that strip `.html`. */
 function resolveAppUrl(relPath){
   const s=String(relPath||'');
   if(/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(s))return s;
   const rel=s.replace(/^\//,'');
-  const pathname=window.location.pathname||'/';
+  const pathname=(window.location.pathname||'/').replace(/\/+$/,'')||'/';
+  const entry=/^(.*\/)?syringeGelParticles(?:\.html)?$/i;
+  const m=pathname.match(entry);
+  if(m){
+    const dir=m[1]||'/';
+    return new URL(rel, window.location.origin+dir).href;
+  }
   let dir;
   if(pathname.endsWith('/'))dir=pathname;
   else{
@@ -1750,6 +1856,10 @@ class Syringe {
       ? +p.filamentGuideRadiusMm : 0;
     /** Set each step by simulator when sticky extrusion + uncapped (extends bore, no tray pile-up). */
     this.extrusionModeActive=false;
+    /** World-space offset for multi-nozzle comparison lanes (mm). */
+    this.offsetX=(p.offsetX!=null&&Number.isFinite(+p.offsetX))?+p.offsetX:0;
+    this.offsetZ=(p.offsetZ!=null&&Number.isFinite(+p.offsetZ))?+p.offsetZ:0;
+    this.gaugeLabel=(p.gaugeLabel!=null)?String(p.gaugeLabel):'';
   }
 
   getRadiusAtY(y){
@@ -1763,6 +1873,11 @@ class Syringe {
 
   /** Returns true if the vertex was constrained (wall contact). */
   constrainVertex(pos,prevPos,i,mu){
+    const ox=this.offsetX||0, oz=this.offsetZ||0;
+    if(ox||oz){
+      pos[3*i]-=ox; pos[3*i+2]-=oz;
+      if(prevPos){ prevPos[3*i]-=ox; prevPos[3*i+2]-=oz; }
+    }
     let px=pos[3*i],py=pos[3*i+1],pz=pos[3*i+2];
     let hit=false;
     mu=Math.max(0,Math.min(1,(mu===undefined?0:mu)));
@@ -1834,6 +1949,10 @@ class Syringe {
       prevPos[3*i]  +=tx*mu;
       prevPos[3*i+1]+=ty*mu;
       prevPos[3*i+2]+=tz*mu;
+    }
+    if(ox||oz){
+      pos[3*i]+=ox; pos[3*i+2]+=oz;
+      if(prevPos){ prevPos[3*i]+=ox; prevPos[3*i+2]+=oz; }
     }
     return hit}
 
@@ -1958,6 +2077,10 @@ class Syringe {
       trayMesh.receiveShadow=true;
       scene.add(trayMesh);
       this.meshes.push({name:'catch_tray',mesh:trayMesh});
+    }
+    const ox=this.offsetX||0, oz=this.offsetZ||0;
+    if(ox||oz){
+      for(const {mesh} of this.meshes) mesh.position.set(ox, 0, oz);
     }
   }
 
@@ -6754,6 +6877,1005 @@ class SyringeSimulator {
     this.syringe.dispose(this.scene);}
 }
 
+/** Hypodermic needle inner bore diameters (mm) for gauge comparison. */
+const NOZZLE_GAUGE_SPECS=[
+  {gauge:16, boreMm:1.194, label:'16 gauge', offsetX:-34, gravityBoost:false},
+  {gauge:18, boreMm:0.838, label:'18 gauge', offsetX:0, gravityBoost:true, gravityMul:1.28},
+  {gauge:20, boreMm:0.603, label:'20 gauge', offsetX:34, gravityBoost:true, gravityMul:1.55},
+];
+
+/**
+ * Side-by-side nozzle pressure-gradient comparison: three syringe lanes with different
+ * needle gauges, star particles, in-barrel grid fill, and automated loading → filling →
+ * compressing → settled phases with viscosity / stress colormaps and PLY export.
+ */
+class NozzleGradientSimulator {
+  constructor(particleTemplate, scene, opts={}){
+    this.tmpl=particleTemplate;
+    this.scene=scene;
+    this.gravity=[0,-150,0];
+    this.compressingGravity=[0,-280,0];
+    this._fillGravity=[0,-150,0];
+    this.simTime=0;
+    this.numSubsteps=14;
+    this.particles=[];
+    this.dispensed=0;
+    this.colorMode='viscosity';
+    this.stressGain=1.05;
+    this.stressPercentile=0.9;
+    this.stressDepthMix=0.72;
+    this.viscosityEtaMin=2.0;
+    this.viscosityEtaMax=18600.0;
+    this.viscosityLogNorm=true;
+    this.stressSampleEveryNFrames=1;
+    this.normalSampleEveryNFrames=12;
+    this._colorFrameCounter=0;
+    this._normalFrameCounter=0;
+    this.velDampingPerSec=28;
+    this.wallFriction=0.72;
+    this.contactCompliance=4e-3;
+    this.contactIterations=8;
+    this.maxContactCorrFrac=0.28;
+    this.contactRestDistFactor=0.93;
+    this.contactBoundingWeight=0.65;
+    this.hardStrain=0.30;
+    this.hardFactor=0.07;
+    this.particleLockEnabled=false;
+    this.lockStrain=0.35;
+    this.extrusionCohesionEnabled=false;
+    this.randomizeSpawnRotation=true;
+    this.timerExportMode=false;
+    this._autoPauseAfterSettle=false;
+    this.particlesDroppedViaUi=0;
+    this.loadingFillFraction=0.32;
+    this.settleHoldBeforePhaseS=2.0;
+    this.compressHoldS=5.0;
+    this.perLaneCapacity=Math.max(200, Math.min(800, opts.perLaneCapacity|0||400));
+    this.sequencePhase='idle';
+    this._phaseStartSim=0;
+    this._phaseQuietSinceSim=null;
+    this.lanes=[];
+    this.syringe=null;
+    this.contactPairs=0;
+    this.maxPenetration=0;
+    this._lastMetrics={
+      p2pUniquePairs:0,p2pSumOverlapMm:0,p2pEstContactAreaMm2:0,p2pForceProxy:0,
+      p2pForcePerPairMean:0,p2pForcePerPairMin:0,p2pForcePerPairMax:0,p2pForcePerPairStd:0,
+      maxPenetrationMm:0,meanCmSpeedMmS:0,meanMaxEdgeStrain:0};
+    this.settleState={settled:false,timeToSettle:null,stableFrames:0,
+      etaCountdownSim:null,predictedSettleAtSim:null};
+    this._settleHistory=[];
+    this._settledRequiredStableFrames=120;
+    this._settleMinTimeS=0.8;
+    this._settleThrMeanSpeed=0.040;
+    this.maxNR=particleTemplate.nominalRadius||0.3;
+    this.centroidHash=new Hash(2.2*this.maxNR, 512);
+    this.centroids=new Float32Array(NOZZLE_GAUGE_SPECS.length*200*3);
+    this._laneStats=NOZZLE_GAUGE_SPECS.map(s=>({
+      gauge:s.gauge,label:s.label,boreMm:s.boreMm,
+      meanStress:0,maxStress:0,needleStress:0,meanViscosity:0,active:0,settled:false,
+      started:false,phase:'idle'}));
+    const barrelDiam=6.2, barrelLen=36, needleLen=20, taperH=5.5;
+    const wallPen=0.035;
+    for(const spec of NOZZLE_GAUGE_SPECS){
+      const syringe=new Syringe({
+        barrelDiam, barrelLen, needleDiam:spec.boreMm, needleLen, taperH,
+        capActive:true, needleInletCapActive:false,
+        wallAllowPenetrationMm:wallPen,
+        offsetX:spec.offsetX, offsetZ:0, gaugeLabel:spec.label,
+        catchTrayTopY:-7});
+      syringe.buildMeshes(scene);
+      const slots=this._buildLaneSpawnSlots(syringe, this.perLaneCapacity);
+      const lane={
+        spec, syringe, spawnSlots:slots, maxSlots:slots.length,
+        spawnCursor:0, started:false, sequencePhase:'idle',
+        _phaseStartSim:0, _phaseQuietSinceSim:null,
+        settleState:{settled:false,timeToSettle:null,stableFrames:0},
+        _settleHistory:[]};
+      this.lanes.push(lane);
+      if(!this.syringe) this.syringe=syringe;
+    }
+    if(this.lanes[0]?.spawnSlots?.length)
+      this.perLaneCapacity=Math.min(this.perLaneCapacity, this.lanes[0].spawnSlots.length);
+    this.centroids=new Float32Array(this.lanes.length*this.perLaneCapacity*3);
+    this._spawnAllLanes(0);
+    this._buildMergedGeo();
+    this._syncParticleVis();
+    this._updateColors();
+    const geo=this.particleMesh?.geometry;
+    if(geo?.attributes?.color) geo.attributes.color.needsUpdate=true;
+    console.log(`Nozzle gradient: ${this.lanes.length} idle lanes, ${this.perLaneCapacity} slots/lane — start each gauge separately.`);
+  }
+
+  /**
+   * Barrel-only spawn grid (excludes needle/taper), matching SyringeSimulator packing but
+   * with layer spacing chosen so N particles span the full barrel height instead of one slice.
+   */
+  _buildLaneSpawnSlots(syringe, capacity){
+    const cap=Math.max(1, capacity|0);
+    const r=this.tmpl.nominalRadius||0.3;
+    const ox=syringe.offsetX||0, oz=syringe.offsetZ||0;
+    const fillBottom=syringe._taperEnd;
+    const fillTop=syringe._barrelTop-r;
+    const fillH=Math.max(r, fillTop-fillBottom);
+    const targetLayers=Math.max(20, Math.min(55, Math.round(Math.sqrt(cap*0.85))));
+    const spacing=Math.max(r*1.75, fillH/targetLayers);
+    const slots=[];
+    outer:
+    for(let iy=0;iy<targetLayers+8;iy++){
+      const cy=fillBottom+r+(iy+.5)*spacing;
+      if(cy>fillTop) break;
+      const gridR=Math.max(0.0001, syringe.getRadiusAtY(cy)-r);
+      if(gridR<=r*0.25) continue;
+      const nx=Math.max(1,Math.floor(2*gridR/spacing));
+      const nz=Math.max(1,Math.floor(2*gridR/spacing));
+      for(let ix=0;ix<nx;ix++) for(let iz=0;iz<nz;iz++){
+        const cx2=(-gridR+(ix+.5)*2*gridR/nx);
+        const cz2=(-gridR+(iz+.5)*2*gridR/nz);
+        if(Math.sqrt(cx2*cx2+cz2*cz2)>gridR) continue;
+        slots.push([cx2+ox, cy, cz2+oz]);
+        if(slots.length>=cap) break outer;
+      }
+    }
+    slots.sort((a,b)=>b[1]-a[1]);
+    return slots;
+  }
+
+  /** Precomputed grid slot for this lane (top-down within barrel pack). */
+  _laneSpawnSlot(lane, cursor){
+    const slots=lane.spawnSlots;
+    if(slots&&cursor<slots.length) return slots[cursor];
+    const s=lane.syringe;
+    const r=this.tmpl.nominalRadius||0.2;
+    const ox=s.offsetX||0, oz=s.offsetZ||0;
+    const y=Math.max(s._taperEnd+r, s._barrelTop-r*1.05);
+    return[ox, y, oz];
+  }
+
+  _fillToPhaseTarget(){
+    let spawned=0;
+    for(const lane of this.lanes){
+      if(lane.started) spawned+=this._fillLaneToPhaseTarget(lane);
+    }
+    return spawned;
+  }
+
+  _fillLaneToPhaseTarget(lane){
+    if(!lane?.started) return 0;
+    const target=this._targetParticleCountForLane(lane);
+    const add=target-(lane.spawnCursor|0);
+    if(add>0) return this.dropMoreOnLane(lane, add);
+    return 0;
+  }
+
+  startLane(laneIdx){
+    const lane=this.lanes[laneIdx|0];
+    if(!lane || lane.started) return false;
+    lane.started=true;
+    lane.sequencePhase='loading';
+    lane._phaseStartSim=this.simTime;
+    lane._phaseQuietSinceSim=null;
+    this._resetLaneSettle(lane);
+    this._fillLaneToPhaseTarget(lane);
+    this._syncSequencePhase();
+    this._syncParticleVis();
+    this._updateColors();
+    const geo=this.particleMesh?.geometry;
+    if(geo?.attributes?.color) geo.attributes.color.needsUpdate=true;
+    console.log(`Nozzle gradient: started ${lane.spec.gauge}G`);
+    return true;
+  }
+
+  startLaneByGauge(gauge){
+    const idx=this.lanes.findIndex(l=>l.spec.gauge===gauge);
+    if(idx<0) return false;
+    return this.startLane(idx);
+  }
+
+  _laneActiveCount(laneIdx){
+    return this._laneParticles(laneIdx).filter(p=>p.active).length;
+  }
+
+  _fillFraction(){
+    const started=this.lanes.filter(l=>l.started);
+    if(!started.length) return 0;
+    const cap=Math.max(1,this.perLaneCapacity|0);
+    const have=started.reduce((s,l)=>s+(l.spawnCursor|0),0);
+    return have/(cap*started.length);
+  }
+
+  _targetFillForPhase(phase){
+    const p=phase||this.sequencePhase;
+    if(p==='loading') return this.loadingFillFraction;
+    if(p==='filling'||p==='compressing'||p==='settled') return 1.0;
+    return 0;
+  }
+
+  _targetParticleCount(){
+    return Math.max(0, Math.floor(this._targetFillForPhase()*this.perLaneCapacity));
+  }
+
+  _targetParticleCountForLane(lane){
+    return Math.max(0, Math.floor(this._targetFillForPhase(lane.sequencePhase)*this.perLaneCapacity));
+  }
+
+  _canDropMoreInPhase(){
+    return this.lanes.some(l=>l.started && (l.spawnCursor|0)<this._targetParticleCountForLane(l));
+  }
+
+  _syncSequencePhase(){
+    const started=this.lanes.filter(l=>l.started);
+    if(!started.length){ this.sequencePhase='idle'; return; }
+    const phases=new Set(started.map(l=>l.sequencePhase));
+    this.sequencePhase=phases.size===1 ? started[0].sequencePhase : 'mixed';
+  }
+
+  _hideParticleOffscreen(p){
+    const lane=this.lanes[p.laneIdx|0];
+    const ox=lane?.syringe?.offsetX||0;
+    const hy=(lane?.syringe?._barrelTop||70)+120+p.laneIdx*8;
+    for(let i=0;i<p.numTetVerts;i++){
+      p.pos[3*i]=ox; p.pos[3*i+1]=hy; p.pos[3*i+2]=0;
+      p.prevPos[3*i]=ox; p.prevPos[3*i+1]=hy; p.prevPos[3*i+2]=0;
+      p.vel[3*i]=p.vel[3*i+1]=p.vel[3*i+2]=0;
+    }
+    p.center[0]=ox; p.center[1]=hy; p.center[2]=0;
+    p.boundingRadius=0;
+    p.active=false;
+  }
+
+  _writeHiddenVis(p){
+    if(!this.allPositions) return;
+    // Collapse inactive verts onto the particle centroid so they do not inflate the
+    // merged mesh bounding sphere (which caused frustum culling when zooming in).
+    const cx=p.center[0], cy=p.center[1], cz=p.center[2];
+    for(let i=0;i<p.numVisVerts;i++){
+      const base=(p.visVertOffset+i)*3;
+      this.allPositions[base]=cx;
+      this.allPositions[base+1]=cy;
+      this.allPositions[base+2]=cz;
+    }
+  }
+
+  _recomputeParticleBounds(){
+    const geo=this.particleMesh?.geometry;
+    if(!geo?.attributes?.position) return;
+    const pos=geo.attributes.position.array;
+    let xmin=Infinity,ymin=Infinity,zmin=Infinity;
+    let xmax=-Infinity,ymax=-Infinity,zmax=-Infinity;
+    let any=false;
+    for(const p of this.particles){
+      if(!p.active) continue;
+      any=true;
+      for(let i=0;i<p.numVisVerts;i++){
+        const b=(p.visVertOffset+i)*3;
+        const x=pos[b],y=pos[b+1],z=pos[b+2];
+        if(x<xmin)xmin=x; if(y<ymin)ymin=y; if(z<zmin)zmin=z;
+        if(x>xmax)xmax=x; if(y>ymax)ymax=y; if(z>zmax)zmax=z;
+      }
+    }
+    if(!any){
+      geo.boundingSphere=new THREE.Sphere(new THREE.Vector3(0,30,0),40);
+      return;
+    }
+    const pad=Math.max(0.5,(this.tmpl?.nominalRadius||0.3)*1.5);
+    const cx=(xmin+xmax)*0.5, cy=(ymin+ymax)*0.5, cz=(zmin+zmax)*0.5;
+    let r2=pad*pad;
+    for(const p of this.particles){
+      if(!p.active) continue;
+      for(let i=0;i<p.numVisVerts;i++){
+        const b=(p.visVertOffset+i)*3;
+        const dx=pos[b]-cx, dy=pos[b+1]-cy, dz=pos[b+2]-cz;
+        const d2=dx*dx+dy*dy+dz*dz;
+        if(d2>r2) r2=d2;
+      }
+    }
+    geo.boundingSphere=new THREE.Sphere(new THREE.Vector3(cx,cy,cz), Math.sqrt(r2)+pad);
+  }
+
+  _syncParticleVis(){
+    if(!this.allPositions) return;
+    for(const p of this.particles){
+      if(p.active) p.updateVisMesh(this.allPositions);
+      else this._writeHiddenVis(p);
+    }
+    this._recomputeParticleBounds();
+    const geo=this.particleMesh?.geometry;
+    if(geo?.attributes?.position) geo.attributes.position.needsUpdate=true;
+  }
+
+  _resetParticleToSlot(p, slot){
+    const [cx,cy,cz]=slot;
+    const r=this.tmpl.nominalRadius||0.3;
+    const rnd=this.randomizeSpawnRotation!==false;
+    const jitter=rnd?r*0.06:0;
+    placeParticleFromTemplate(this.tmpl,cx,cy,cz,
+      (Math.random()-.5)*jitter,(Math.random()-.5)*jitter,(Math.random()-.5)*jitter,
+      p.pos,p.prevPos,rnd);
+    for(let i=0;i<p.numTetVerts;i++) p.vel[3*i]=p.vel[3*i+1]=p.vel[3*i+2]=0;
+    for(let e=0;e<p.numEdges;e++) p.edgeLens[e]=p.edgeLens0[e];
+    for(let t=0;t<p.numTets;t++) p.restVol[t]=p.restVol0[t];
+    p.hardened=false; p.maxEdgeStrainEver=0; p.locked=false;
+    p.edgeCompliance=p.baseEdgeCompliance; p.volCompliance=p.baseVolCompliance;
+    p.extrudedSinceSim=null; p.active=true;
+    p.updateCenter();
+  }
+
+  _readParticleCompliance(){
+    const edgeC=+document.getElementById('sEdgeC')?.value;
+    const volC=+document.getElementById('sVolC')?.value;
+    return{
+      edge:Number.isFinite(edgeC)?edgeC:0.85,
+      vol:Number.isFinite(volC)?volC:18.0};
+  }
+
+  _spawnAllLanes(initialPerLane){
+    this.particles=[];
+    const comp=this._readParticleCompliance();
+    let pi=0;
+    for(const lane of this.lanes){
+      lane.spawnCursor=0;
+      for(let k=0;k<this.perLaneCapacity;k++){
+        const slot=this._laneSpawnSlot(lane, k);
+        const p=new GelParticle(this.tmpl,slot[0],slot[1],slot[2],pi,this.randomizeSpawnRotation);
+        p.baseEdgeCompliance=comp.edge; p.baseVolCompliance=comp.vol;
+        p.edgeCompliance=p.baseEdgeCompliance; p.volCompliance=p.baseVolCompliance;
+        p.laneIdx=this.lanes.indexOf(lane);
+        p.laneSyringe=lane.syringe;
+        p.active=false;
+        this._hideParticleOffscreen(p);
+        this.particles.push(p);
+        pi++;
+      }
+    }
+    if(initialPerLane>0) this.dropMore(initialPerLane);
+  }
+
+  dropMore(n){
+    const add=Math.max(0,n|0);
+    if(add<=0) return 0;
+    let spawned=0;
+    for(const lane of this.lanes){
+      if(lane.started) spawned+=this.dropMoreOnLane(lane, add, true);
+    }
+    if(spawned>0){
+      this.particlesDroppedViaUi+=spawned;
+      this._afterDrop();
+    }
+    return spawned;
+  }
+
+  dropMoreOnLane(lane, n, skipSync){
+    const add=Math.max(0,n|0);
+    if(add<=0||!lane) return 0;
+    const li=this.lanes.indexOf(lane);
+    if(li<0) return 0;
+    let spawned=0;
+    for(let k=0;k<add;k++){
+      const idx=li*this.perLaneCapacity+lane.spawnCursor;
+      if(lane.spawnCursor>=this.perLaneCapacity) break;
+      const p=this.particles[idx];
+      if(!p) break;
+      this._resetParticleToSlot(p, this._laneSpawnSlot(lane, lane.spawnCursor));
+      lane.spawnCursor++;
+      spawned++;
+    }
+    if(spawned>0 && !skipSync){
+      this.particlesDroppedViaUi+=spawned;
+      this._afterDrop(lane);
+    }
+    return spawned;
+  }
+
+  _afterDrop(lane){
+    this._resetGlobalSettle();
+    if(lane) this._resetLaneSettle(lane);
+    else for(const l of this.lanes) this._resetLaneSettle(l);
+    this._phaseQuietSinceSim=null;
+    if(lane) lane._phaseQuietSinceSim=null;
+    this._syncParticleVis();
+    this._updateColors();
+    const geo=this.particleMesh?.geometry;
+    if(geo?.attributes?.color) geo.attributes.color.needsUpdate=true;
+  }
+
+  _resetLaneSettle(lane){
+    lane.settleState={settled:false,timeToSettle:null,stableFrames:0};
+    lane._settleHistory.length=0;
+  }
+
+  _resetGlobalSettle(){
+    this.settleState={settled:false,timeToSettle:null,stableFrames:0,
+      etaCountdownSim:null,predictedSettleAtSim:null};
+    this._settleHistory.length=0;
+  }
+
+  getParticleIndexFromVisVert(visVertIdx){
+    for(let i=0;i<this.particles.length;i++){
+      const p=this.particles[i];
+      if(visVertIdx>=p.visVertOffset && visVertIdx<p.visVertOffset+p.numVisVerts) return i;
+    }
+    return -1;
+  }
+
+  updateInspector(pi){
+    const p=this.particles[pi];
+    if(!p) return;
+    let minX=Infinity,minY=Infinity,minZ=Infinity,maxX=-Infinity,maxY=-Infinity,maxZ=-Infinity;
+    for(let i=0;i<p.numTetVerts;i++){
+      const x=p.pos[3*i],y=p.pos[3*i+1],z=p.pos[3*i+2];
+      if(x<minX)minX=x; if(y<minY)minY=y; if(z<minZ)minZ=z;
+      if(x>maxX)maxX=x; if(y>maxY)maxY=y; if(z>maxZ)maxZ=z;
+    }
+    const elD=document.getElementById('statDims');
+    const elR=document.getElementById('statRmax');
+    if(elD) elD.textContent=`${(maxX-minX).toFixed(3)} x ${(maxY-minY).toFixed(3)} x ${(maxZ-minZ).toFixed(3)}`;
+    if(elR) elR.textContent=(Math.max(maxX-minX,maxY-minY,maxZ-minZ)*0.5).toFixed(3);
+  }
+
+  pushMetricsRow(){/* nozzle comparison mode does not log CSV rows */}
+
+  _contactRadiusForP2P(p){
+    const eq=+this.tmpl?.equivSphereRadiusMm;
+    if(Number.isFinite(eq)&&eq>1e-9) return eq;
+    return Math.max(1e-6, p.nominalRadius||this.tmpl?.nominalRadius||0.3);
+  }
+
+  _p2pContactPair(A,B,sdt,alpha,corrClampFrac,restF){
+    if(A.laneIdx!==B.laneIdx) return;
+    const dx=A.center[0]-B.center[0], dy=A.center[1]-B.center[1], dz=A.center[2]-B.center[2];
+    const d2=dx*dx+dy*dy+dz*dz;
+    const rA=this._contactRadiusForP2P(A), rB=this._contactRadiusForP2P(B);
+    const minD=(rA+rB)*restF;
+    if(d2>=minD*minD||d2<1e-14) return;
+    const d=Math.sqrt(d2), nx=dx/d, ny=dy/d, nz=dz/d;
+    const overlap=minD-d;
+    this.contactPairs++;
+    if(overlap>this.maxPenetration) this.maxPenetration=overlap;
+    A.inParticleContact=true; B.inParticleContact=true;
+    A.contactCount++; B.contactCount++;
+    const syringe=A.laneSyringe;
+    let corr=overlap/(2+alpha);
+    const corrMax=minD*corrClampFrac;
+    if(corr>corrMax) corr=corrMax;
+    for(let k=0;k<A.numTetVerts;k++){
+      A.pos[3*k]+=corr*nx; A.pos[3*k+1]+=corr*ny; A.pos[3*k+2]+=corr*nz;
+      if(syringe.constrainVertex(A.pos,A.prevPos,k,this.wallFriction)) A.inWallContact=true;
+    }
+    for(let k=0;k<B.numTetVerts;k++){
+      B.pos[3*k]-=corr*nx; B.pos[3*k+1]-=corr*ny; B.pos[3*k+2]-=corr*nz;
+      if(syringe.constrainVertex(B.pos,B.prevPos,k,this.wallFriction)) B.inWallContact=true;
+    }
+    A.center[0]+=corr*nx; A.center[1]+=corr*ny; A.center[2]+=corr*nz;
+    B.center[0]-=corr*nx; B.center[1]-=corr*ny; B.center[2]-=corr*nz;
+  }
+
+  _solveContacts(sdt){
+    const ps=this.particles, n=ps.length;
+    const alpha=Math.max(0,this.contactCompliance)/(sdt*sdt);
+    const corrClampFrac=Math.max(0,Math.min(1,this.maxContactCorrFrac||0));
+    const restF=Math.max(0.5,Math.min(1.2,this.contactRestDistFactor||1.0));
+    for(let i=0;i<n;i++){
+      if(!ps[i].active) continue;
+      const A=ps[i];
+      for(let j=i+1;j<n;j++){
+        if(!ps[j].active||ps[j].laneIdx!==A.laneIdx) continue;
+        this._p2pContactPair(A,ps[j],sdt,alpha,corrClampFrac,restF);
+      }
+    }
+  }
+
+  _meanCentroidSpeedActive(){
+    let sum=0,cnt=0;
+    for(const p of this.particles){
+      if(!p.active) continue;
+      let vx=0,vy=0,vz=0,n=0;
+      for(let i=0;i<p.numTetVerts;i++){
+        if(p.invMass[i]===0) continue;
+        vx+=p.pos[3*i]-p.prevPos[3*i];
+        vy+=p.pos[3*i+1]-p.prevPos[3*i+1];
+        vz+=p.pos[3*i+2]-p.prevPos[3*i+2];
+        n++;
+      }
+      if(n>0) sum+=Math.sqrt(vx*vx+vy*vy+vz*vz)/n;
+      cnt++;
+    }
+    return cnt>0?sum/cnt:0;
+  }
+
+  _laneParticles(laneIdx){
+    const base=laneIdx*this.perLaneCapacity;
+    return this.particles.slice(base, base+this.perLaneCapacity);
+  }
+
+  _updateLaneSettle(lane, dt){
+    if(!lane.started || lane.sequencePhase==='idle') return;
+    const li=this.lanes.indexOf(lane);
+    const ps=this._laneParticles(li>=0?li:0);
+    let meanSpd=0, meanStrain=0, cnt=0;
+    for(const p of ps){
+      if(!p.active) continue;
+      cnt++;
+      meanStrain+=p.computeMaxEdgeStrain();
+      let vx=0,vy=0,vz=0,n=0;
+      for(let i=0;i<p.numTetVerts;i++){
+        if(p.invMass[i]===0) continue;
+        vx+=p.pos[3*i]-p.prevPos[3*i];
+        vy+=p.pos[3*i+1]-p.prevPos[3*i+1];
+        vz+=p.pos[3*i+2]-p.prevPos[3*i+2];
+        n++;
+      }
+      if(n>0) meanSpd+=Math.sqrt(vx*vx+vy*vy+vz*vz)/n;
+    }
+    if(cnt<1){
+      lane.settleState.stableFrames=0;
+      return;
+    }
+    meanSpd/=cnt; meanStrain/=cnt;
+    const hist=lane._settleHistory;
+    hist.push({time:this.simTime,speed:meanSpd,strain:meanStrain});
+    const t0=this.simTime-3.5;
+    while(hist.length&&hist[0].time<t0) hist.shift();
+    const st=lane.settleState;
+    const phaseAge=this.simTime-(lane._phaseStartSim||0);
+    const minHist=lane.sequencePhase==='compressing'?48:24;
+    const reqFrames=(lane.sequencePhase==='compressing')
+      ? Math.max(this._settledRequiredStableFrames, 180)
+      : this._settledRequiredStableFrames;
+    if(hist.length>=minHist && meanSpd<this._settleThrMeanSpeed && phaseAge>=this._settleMinTimeS){
+      st.stableFrames++;
+    } else st.stableFrames=0;
+    if(st.stableFrames>=reqFrames){
+      st.settled=true;
+      st.timeToSettle=this.simTime;
+    }
+  }
+
+  _allLanesSettled(){
+    const started=this.lanes.filter(l=>l.started);
+    return started.length>0 && started.every(l=>l.settleState.settled && l.sequencePhase==='settled');
+  }
+
+  _resetAllLaneSettles(){
+    for(const lane of this.lanes) this._resetLaneSettle(lane);
+    this._resetGlobalSettle();
+  }
+
+  _gravityForLane(lane){
+    if(!lane?.spec?.gravityBoost){
+      const gUi=Math.abs(+document.getElementById('pGravity')?.value||15);
+      return [0,-gUi,0];
+    }
+    const base=(lane?.sequencePhase==='compressing'||lane?.sequencePhase==='settled')
+      ? this.compressingGravity
+      : (this._fillGravity||this.gravity);
+    const mul=lane.spec.gravityMul||1;
+    return [0, base[1]*mul, 0];
+  }
+
+  _applyLaneCaps(lane){
+    const s=lane.syringe;
+    s.capActive=true;
+    s.needleInletCapActive=false;
+    s.extrusionModeActive=lane.sequencePhase==='compressing'||lane.sequencePhase==='settled';
+  }
+
+  _advanceLanePhase(lane){
+    const prev=lane.sequencePhase;
+    if(prev==='loading'){
+      lane.sequencePhase='filling';
+      console.log(`Nozzle ${lane.spec.gauge}G: filling barrel.`);
+    } else if(prev==='filling'){
+      lane.sequencePhase='compressing';
+      this._applyLaneCaps(lane);
+      this.numSubsteps=Math.max(this.numSubsteps|0, 20);
+      this.wallFriction=0.55;
+      console.log(`Nozzle ${lane.spec.gauge}G: compressing against capped tip.`);
+    } else if(prev==='compressing'){
+      lane.sequencePhase='settled';
+      lane.settleState.settled=true;
+      lane.settleState.timeToSettle=this.simTime;
+      console.log(`Nozzle ${lane.spec.gauge}G: settled.`);
+      this._syncSequencePhase();
+      if(this._allLanesSettled()){
+        this.settleState.settled=true;
+        this.settleState.timeToSettle=this.simTime;
+        this._autoPauseAfterSettle=true;
+      }
+      return;
+    } else return;
+    lane._phaseStartSim=this.simTime;
+    lane._phaseQuietSinceSim=null;
+    this._resetLaneSettle(lane);
+    this._fillLaneToPhaseTarget(lane);
+    this._syncSequencePhase();
+  }
+
+  _advancePhase(){
+    for(const lane of this.lanes){
+      if(lane.started && lane.sequencePhase!=='settled' && lane.settleState.settled)
+        this._advanceLanePhase(lane);
+    }
+  }
+
+  _tickSequence(){
+    for(const lane of this.lanes){
+      if(!lane.started || lane.sequencePhase==='settled') continue;
+      if((lane.spawnCursor|0)<this._targetParticleCountForLane(lane)){
+        this._fillLaneToPhaseTarget(lane);
+        continue;
+      }
+      if(!lane.settleState.settled) continue;
+      if(lane._phaseQuietSinceSim==null){
+        lane._phaseQuietSinceSim=this.simTime;
+        continue;
+      }
+      const quietDur=this.simTime-lane._phaseQuietSinceSim;
+      const holdNeeded=(lane.sequencePhase==='compressing')
+        ? this.compressHoldS
+        : this.settleHoldBeforePhaseS;
+      if(quietDur<holdNeeded) continue;
+      this._advanceLanePhase(lane);
+    }
+    this._syncSequencePhase();
+  }
+
+  _viscosityFromStress(stress, vy, yMin, ySpan){
+    const depth=Math.max(0,Math.min(1,(ySpan>1e-6)?((yMin+ySpan-vy)/ySpan):0));
+    const comp=Math.max(0, stress)*(1+this.stressDepthMix*2.2*depth)+this.stressDepthMix*depth;
+    const eta0=Math.max(1e-6, this.viscosityEtaMin||2);
+    return eta0*Math.exp(comp*4.2)*(1+depth*3.5);
+  }
+
+  _rampScientific(t){
+    t=Math.max(0,Math.min(1,t));
+    if(t<0.25) return [0, t*4*0.55, 0.85+t*4*0.15];
+    if(t<0.5){ const u=(t-0.25)*4; return [0, 0.55+u*0.45, 1-u*0.55]; }
+    if(t<0.75){ const u=(t-0.5)*4; return [u, 1, 0]; }
+    const u=(t-0.75)*4; return [1, 1-u, 0];
+  }
+
+  _computeLaneStressStats(){
+    for(let li=0;li<this.lanes.length;li++){
+      const lane=this.lanes[li];
+      const ps=this._laneParticles(li);
+      const needleTop=lane.syringe.needleLen+lane.syringe.taperH*0.4;
+      let sum=0, mx=0, needleSum=0, needleCnt=0, visSum=0, visCnt=0, cnt=0;
+      let yMin=Infinity,yMax=-Infinity;
+      for(const p of ps){
+        if(!p.active) continue;
+        for(let v=0;v<p.numTetVerts;v++){
+          const cy=p.pos[3*v+1];
+          if(cy<yMin) yMin=cy; if(cy>yMax) yMax=cy;
+        }
+      }
+      const ySpan=Math.max(1e-6,yMax-yMin);
+      for(const p of ps){
+        if(!p.active) continue;
+        cnt++;
+        const pMax=p.computeStressProxy();
+        sum+=pMax;
+        if(pMax>mx) mx=pMax;
+        for(let v=0;v<p.numTetVerts;v++){
+          const cy=p.pos[3*v+1];
+          const st=p._stressTet[v];
+          const eta=this._viscosityFromStress(st, cy, yMin, ySpan);
+          visSum+=eta; visCnt++;
+          if(cy<=needleTop){ needleSum+=st; needleCnt++; }
+        }
+      }
+      const st=this._laneStats[li];
+      st.active=cnt;
+      st.meanStress=cnt>0?sum/cnt:0;
+      st.maxStress=mx;
+      st.needleStress=needleCnt>0?needleSum/needleCnt:0;
+      st.meanViscosity=visCnt>0?visSum/visCnt:0;
+      st.settled=!!lane.settleState.settled;
+      st.started=!!lane.started;
+      st.phase=lane.sequencePhase;
+    }
+  }
+
+  simulate(dt){
+    const sdt=dt/this.numSubsteps;
+    for(const lane of this.lanes) this._applyLaneCaps(lane);
+    this.contactPairs=0;
+    this.maxPenetration=0;
+    for(const p of this.particles){ p.inParticleContact=false; p.contactCount=0; }
+    for(let step=0;step<this.numSubsteps;step++){
+      for(const p of this.particles){
+        if(!p.active) continue;
+        const lane=this.lanes[p.laneIdx|0];
+        if(!lane?.started) continue;
+        p.preSolve(sdt,this._gravityForLane(lane),p.laneSyringe,this.velDampingPerSec,this.wallFriction);
+      }
+      for(const p of this.particles){ if(p.active) p.updateCenter(); }
+      const iters=Math.max(1,this.contactIterations|0);
+      for(let it=0;it<iters;it++){
+        this._solveContacts(sdt);
+        for(const p of this.particles){
+          if(!p.active) continue;
+          p.solveEdges(sdt);
+          p.solveVolumes(sdt);
+        }
+      }
+      for(const p of this.particles){ if(p.active) p.postSolve(sdt); }
+    }
+    const thr=this.hardStrain, factor=this.hardFactor;
+    let meanStrainSum=0, meanStrainCnt=0;
+    for(const p of this.particles){
+      if(!p.active) continue;
+      const cur=p.computeMaxEdgeStrain();
+      meanStrainSum+=cur; meanStrainCnt++;
+      if(cur>thr) p.hardened=true;
+      if(this.particleLockEnabled&&!p.locked&&p.maxEdgeStrainEver>=this.lockStrain) p.lockDeformation();
+      const mul=p.hardened?factor:1;
+      p.edgeCompliance=p.baseEdgeCompliance*mul;
+      p.volCompliance=p.baseVolCompliance*mul;
+    }
+    for(const p of this.particles){
+      if(p.active) p.updateVisMesh(this.allPositions);
+    }
+    this._recomputeParticleBounds();
+    const n=Math.max(1,this.stressSampleEveryNFrames|0);
+    if(((this._colorFrameCounter++)%n)===0) this._updateColors();
+    const geo=this.particleMesh.geometry;
+    const nn=Math.max(1,this.normalSampleEveryNFrames|0);
+    if(((this._normalFrameCounter++)%nn)===0) geo.computeVertexNormals();
+    geo.attributes.position.needsUpdate=true;
+    geo.attributes.color.needsUpdate=true;
+    this._lastMetrics.meanCmSpeedMmS=this._meanCentroidSpeedActive();
+    this._lastMetrics.meanMaxEdgeStrain=meanStrainCnt>0?meanStrainSum/meanStrainCnt:0;
+    this._lastMetrics.p2pUniquePairs=this.contactPairs;
+    this._lastMetrics.maxPenetrationMm=this.maxPenetration;
+    for(const lane of this.lanes) this._updateLaneSettle(lane, dt);
+    this._computeLaneStressStats();
+    this._tickSequence();
+    this.simTime+=dt;
+  }
+
+  _buildMergedGeo(){
+    let totalVV=0, totalTri=0;
+    for(const p of this.particles){
+      p.visVertOffset=totalVV;
+      totalVV+=p.numVisVerts;
+      totalTri+=p.visTriIds.length/3;
+    }
+    this.totalVisVerts=totalVV;
+    this.allPositions=new Float32Array(totalVV*3);
+    this.allColors=new Float32Array(totalVV*3);
+    const allIdx=new Uint32Array(totalTri*3);
+    let off=0;
+    for(const p of this.particles){
+      const ids=p.visTriIds;
+      for(let i=0;i<ids.length;i++) allIdx[off+i]=ids[i]+p.visVertOffset;
+      off+=ids.length;
+    }
+    const geo=new THREE.BufferGeometry();
+    geo.setAttribute('position',new THREE.BufferAttribute(this.allPositions,3));
+    geo.setAttribute('color',new THREE.BufferAttribute(this.allColors,3));
+    geo.setIndex(new THREE.BufferAttribute(allIdx,1));
+    const mat=new THREE.MeshPhongMaterial({vertexColors:true,flatShading:true,shininess:40});
+    this.particleMesh=new THREE.Mesh(geo,mat);
+    this.particleMesh.castShadow=true;
+    this.particleMesh.frustumCulled=false;
+    this.scene.add(this.particleMesh);
+    this._syncParticleVis();
+    this._updateColors();
+    geo.computeVertexNormals();
+  }
+
+  _updateColors(){
+    const lerp=(a,b,t)=>a+(b-a)*t;
+    const rampBGYR=(t)=>{
+      t=Math.max(0,Math.min(1,t));
+      if(t<=1/3){ const u=t*3; return [0,lerp(0,1,u),lerp(1,0,u)]; }
+      if(t<=2/3){ const u=(t-1/3)*3; return [lerp(0,1,u),1,0]; }
+      const u=(t-2/3)*3; return [1,lerp(1,0,u),0];
+    };
+    const mode=this.colorMode||'viscosity';
+    const etas=[];
+    const stresses=[];
+    let yMin=Infinity,yMax=-Infinity;
+    for(const p of this.particles){
+      if(!p.active) continue;
+      p.computeStressProxy();
+      for(let v=0;v<p.numTetVerts;v++){
+        const cy=p.pos[3*v+1];
+        if(cy<yMin) yMin=cy; if(cy>yMax) yMax=cy;
+      }
+    }
+    const ySpan=Math.max(1e-6,yMax-yMin);
+    const etaMin=Math.max(1e-6,this.viscosityEtaMin||2);
+    const etaMax=Math.max(etaMin*1.01,this.viscosityEtaMax||18600);
+    const logEtaMin=Math.log10(etaMin), logEtaMax=Math.log10(etaMax);
+    for(const p of this.particles){
+      if(!p.active) continue;
+      for(let v=0;v<p.numTetVerts;v++){
+        const st=p._stressTet[v];
+        if(Number.isFinite(st)) stresses.push(st);
+        etas.push(this._viscosityFromStress(st, p.pos[3*v+1], yMin, ySpan));
+      }
+    }
+    stresses.sort((a,b)=>a-b);
+    const sIdx=Math.max(0,Math.min(stresses.length-1,Math.floor(0.9*(stresses.length-1))));
+    const globalStressMx=Math.max(1e-9,stresses[sIdx]||0);
+    const gain=Math.max(0.01,this.stressGain||1);
+    const depthMix=this.stressDepthMix||0.72;
+    const colorVert=(stressVal, vy)=>{
+      if(mode==='viscosity'){
+        const eta=this._viscosityFromStress(stressVal, vy, yMin, ySpan);
+        let t=(Math.log10(Math.max(etaMin,eta))-logEtaMin)/(logEtaMax-logEtaMin);
+        t=Math.max(0,Math.min(1,t));
+        return this._rampScientific(t);
+      }
+      const depth=Math.max(0,Math.min(1,(yMax-vy)/ySpan));
+      let s=stressVal*(1+depthMix*depth)+depthMix*depth;
+      const t=Math.max(0,Math.min(1,(s/globalStressMx)*gain));
+      return rampBGYR(t);
+    };
+    for(const p of this.particles){
+      if(!p.active) continue;
+      if(p.hasSkinning){
+        const stride=(p.skinningInfo.length===p.numVisVerts*5)?5:4;
+        let nr=0;
+        for(let i=0;i<p.numVisVerts;i++){
+          const tNr=p.skinningInfo[nr++]*4;
+          if(tNr<0){ nr+=stride-1; continue; }
+          const b0=p.skinningInfo[nr++],b1=p.skinningInfo[nr++],b2w=p.skinningInfo[nr++];
+          const b3=(stride===5)?p.skinningInfo[nr++]:(1-b0-b1-b2w);
+          const id0=p.tetIds[tNr],id1=p.tetIds[tNr+1],id2=p.tetIds[tNr+2],id3=p.tetIds[tNr+3];
+          let s=p._stressTet[id0]*b0+p._stressTet[id1]*b1+p._stressTet[id2]*b2w+p._stressTet[id3]*b3;
+          const vy=b0*p.pos[3*id0+1]+b1*p.pos[3*id1+1]+b2w*p.pos[3*id2+1]+b3*p.pos[3*id3+1];
+          const c=colorVert(s, vy);
+          const base=(p.visVertOffset+i)*3;
+          this.allColors[base]=c[0]; this.allColors[base+1]=c[1]; this.allColors[base+2]=c[2];
+        }
+      } else {
+        for(let i=0;i<p.numVisVerts;i++){
+          const vy=p.pos[3*i+1];
+          const c=colorVert(p._stressTet[i], vy);
+          const base=(p.visVertOffset+i)*3;
+          this.allColors[base]=c[0]; this.allColors[base+1]=c[1]; this.allColors[base+2]=c[2];
+        }
+      }
+    }
+  }
+
+  getContactStats(){
+    const n=this.particles.filter(p=>p.active).length;
+    const st=this.settleState;
+    let settleLabel=this.sequencePhase;
+    if(this.sequencePhase==='settled'&&st.timeToSettle!=null)
+      settleLabel=`settled / ${st.timeToSettle.toFixed(2)} s`;
+    else if(this._allLanesSettled()&&this.sequencePhase!=='settled')
+      settleLabel=this.sequencePhase+' · quiet';
+    return{
+      totalContacts:this.contactPairs,
+      maxPenetration:this.maxPenetration,
+      avgContacts:n>0?(this.contactPairs*2/n):0,
+      dispensed:this.dispensed,
+      p2pArea:0,
+      p2pForceProxy:this._lastMetrics.p2pForceProxy,
+      particlesDroppedViaUi:this.particlesDroppedViaUi,
+      particlesReleasedTotal:this.lanes.reduce((s,l)=>s+(l.spawnCursor|0),0),
+      settleLabel,
+      timeToSettleS:st.settled?st.timeToSettle:null,
+      settleEtaSimS:null,
+      predictedSettleAtSim:null,
+      needleInletBlocked:this.lanes.some(l=>l.syringe.needleInletCapActive),
+      sequencePhase:this.sequencePhase,
+      fillFraction:this._fillFraction(),
+      laneStats:this._laneStats.slice()};
+  }
+
+  exportToOBJ(){
+    let s=`# Nozzle gradient comparison (16G / 18G / 20G)\n`;
+    const activeCount=this.particles.reduce((acc,p)=>acc+(p.active?1:0),0);
+    s+=`# t=${this.simTime.toFixed(3)} s  phase=${this.sequencePhase}  particles_active=${activeCount}\n`;
+    s+=`# color_mode=${this.colorMode}\n\n`;
+    let vOff=1;
+    const writeMeshOBJ=(obj, objName)=>{
+      if(!obj) return;
+      if(obj.children&&obj.children.length){
+        for(let i=0;i<obj.children.length;i++) writeMeshOBJ(obj.children[i], `${objName}_${i}`);
+        return;
+      }
+      const geo=obj.geometry;
+      const pos=geo?.attributes?.position?.array;
+      const idx=geo?.index?geo.index.array:null;
+      if(!pos||pos.length<3) return;
+      obj.updateWorldMatrix(true,false);
+      const wm=obj.matrixWorld;
+      s+=`o ${objName}\n`;
+      for(let i=0;i<pos.length;i+=3){
+        const v=new THREE.Vector3(pos[i],pos[i+1],pos[i+2]).applyMatrix4(wm);
+        s+=`v ${v.x.toFixed(4)} ${v.y.toFixed(4)} ${v.z.toFixed(4)}\n`;
+      }
+      if(idx){
+        for(let i=0;i<idx.length;i+=3)
+          s+=`f ${idx[i]+vOff} ${idx[i+1]+vOff} ${idx[i+2]+vOff}\n`;
+      }
+      vOff+=pos.length/3; s+='\n';
+    };
+    for(const lane of this.lanes){
+      const tag=`${lane.spec.gauge}G`;
+      for(const {name,mesh} of lane.syringe.meshes)
+        writeMeshOBJ(mesh, `syringe_${tag}_${name}`);
+    }
+    for(let pi=0;pi<this.particles.length;pi++){
+      const p=this.particles[pi];
+      if(!p.active) continue;
+      if(Math.abs(p.center[0])>1e6||Math.abs(p.center[1])>1e6) continue;
+      s+=`o particle_${String(pi+1).padStart(4,'0')}\n`;
+      for(let i=0;i<p.numVisVerts;i++){
+        const b=(p.visVertOffset+i)*3;
+        s+=`v ${this.allPositions[b].toFixed(4)} ${this.allPositions[b+1].toFixed(4)} ${this.allPositions[b+2].toFixed(4)}\n`;
+      }
+      const ids=p.visTriIds;
+      for(let i=0;i<ids.length;i+=3)
+        s+=`f ${ids[i]+vOff} ${ids[i+1]+vOff} ${ids[i+2]+vOff}\n`;
+      vOff+=p.numVisVerts; s+='\n';
+    }
+    return s;
+  }
+
+  exportParticlesToPLY_ASCII(){
+    this._updateColors();
+    const vertMap=new Int32Array(this.totalVisVerts);
+    vertMap.fill(-1);
+    let vCount=0, fCount=0;
+    for(const p of this.particles){
+      if(!p.active) continue;
+      for(let i=0;i<p.numVisVerts;i++) vertMap[p.visVertOffset+i]=vCount++;
+      fCount+=p.visTriIds.length/3;
+    }
+    if(vCount===0||fCount===0){
+      return `ply\nformat ascii 1.0\ncomment empty export\nelement vertex 0\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nelement face 0\nproperty list uchar int vertex_indices\nend_header\n`;
+    }
+    let s='ply\nformat ascii 1.0\n';
+    s+=`comment Nozzle gradient — ${this.sequencePhase} @ t=${this.simTime.toFixed(3)} s\n`;
+    s+=`comment color_mode=${this.colorMode}\n`;
+    s+=`element vertex ${vCount}\nproperty float x\nproperty float y\nproperty float z\n`;
+    s+=`property uchar red\nproperty uchar green\nproperty uchar blue\n`;
+    s+=`element face ${fCount}\nproperty list uchar int vertex_indices\nend_header\n`;
+    const invMap=new Int32Array(vCount);
+    for(let mergedIdx=0;mergedIdx<vertMap.length;mergedIdx++){
+      const ci=vertMap[mergedIdx];
+      if(ci>=0) invMap[ci]=mergedIdx;
+    }
+    for(let ci=0;ci<vCount;ci++){
+      const b=invMap[ci]*3;
+      const r=Math.max(0,Math.min(255,Math.round((this.allColors[b]||0)*255)));
+      const g=Math.max(0,Math.min(255,Math.round((this.allColors[b+1]||0)*255)));
+      const bb=Math.max(0,Math.min(255,Math.round((this.allColors[b+2]||0)*255)));
+      s+=`${this.allPositions[b].toFixed(6)} ${this.allPositions[b+1].toFixed(6)} ${this.allPositions[b+2].toFixed(6)} ${r} ${g} ${bb}\n`;
+    }
+    for(const p of this.particles){
+      if(!p.active) continue;
+      const ids=p.visTriIds;
+      for(let i=0;i<ids.length;i+=3){
+        const a=vertMap[p.visVertOffset+ids[i]];
+        const b=vertMap[p.visVertOffset+ids[i+1]];
+        const c=vertMap[p.visVertOffset+ids[i+2]];
+        if(a<0||b<0||c<0) continue;
+        s+=`3 ${a} ${b} ${c}\n`;
+      }
+    }
+    return s;
+  }
+
+  dispose(){
+    if(this.particleMesh){
+      this.scene.remove(this.particleMesh);
+      this.particleMesh.geometry.dispose();
+      this.particleMesh.material.dispose();
+    }
+    for(const lane of this.lanes) lane.syringe.dispose(this.scene);
+    this.lanes=[];
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════
 // 7.  THREE.JS SCENE + RENDER LOOP
 // ═══════════════════════════════════════════════════════════════
@@ -8512,6 +9634,138 @@ function _isVolumeContainerMode(){
   return mv==='volume'||mv==='volume_fill';
 }
 
+function _isNozzleGradientMode(){
+  return _containerModeRaw()==='nozzle_gradient';
+}
+
+async function _ensureNozzleStarTemplate(){
+  if(gParticleTemplateBase?._nozzleStar && gParticleTemplate) return;
+  const starUrl=resolveAppUrl('assets/Star600M.json');
+  async function fetchJson(url){
+    let res=await fetch(url, {cache:'no-cache'});
+    if(!res.ok){
+      res=await fetch(new URL('assets/Star600M.json', window.location.origin+'/').href, {cache:'no-cache'});
+    }
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    return res.json();
+  }
+  try{
+    const data=await fetchJson(starUrl);
+    if(!data||!data.tet||!data.vis) throw new Error('Invalid star JSON');
+    const t=data.tet, v=data.vis, m=data.meta||{};
+    const hasSkinning=Array.isArray(v.skinning)&&v.skinning.length>0;
+    const baseTmpl={
+      verts:new Float32Array(t.verts), tetIds:new Int32Array(t.tetIds),
+      edgeIds:new Int32Array(t.edgeIds), surfTriIds:new Int32Array(t.surfTriIds),
+      numVerts:t.verts.length/3, numTets:t.tetIds.length/4, numEdges:t.edgeIds.length/2,
+      numSurfTris:t.surfTriIds.length/3, hasSkinning,
+      visVerts:new Float32Array(v.verts), visTriIds:new Int32Array(v.triIds),
+      skinning:hasSkinning?v.skinning:null,
+      nominalRadius:m.nominalRadius||0.3};
+    baseTmpl._fromJSON=true;
+    baseTmpl._nozzleStar=true;
+    gParticleTemplateBase=baseTmpl;
+    // STAMP standard: 600 µm circumscribed diameter → R = 0.30 mm (bounding basis).
+    const r=0.30;
+    gNominalRadiusMm=r;
+    const rEl=document.getElementById('sRadius');
+    if(rEl) rEl.value=r.toFixed(2);
+    const lblR=document.getElementById('lblNomRadius');
+    if(lblR) lblR.textContent=r.toFixed(3);
+    gParticleTemplate=_buildScaledTemplateFromBase(baseTmpl, _targetBoundingRadiusForBasis(baseTmpl, r));
+    const sel=document.getElementById('particleLibrary');
+    if(sel){
+      const starOpt=[...sel.options].find(o=>/Star600M\.json$/i.test(o.value)&&!/^HIRES_/i.test(o.value));
+      if(starOpt) sel.value=starOpt.value;
+    }
+    console.log(`Nozzle star template: Star600M (${baseTmpl.numVerts} verts, ${baseTmpl.numTets} tets) @ R=${r.toFixed(3)} mm`);
+  }catch(err){
+    console.error('Failed to load star particle for nozzle mode', err);
+    alert('Could not load Star600M.json for nozzle comparison.\n\n'+err);
+  }
+}
+
+function focusNozzleComparison(){
+  if(!gCamera||!gCamCtrl) return;
+  gCamCtrl.target.set(0, 26, 0);
+  gCamera.position.set(0, 32, 82);
+  gCamCtrl.update();
+}
+
+function _applyNozzleUiDefaults(){
+  const softEl=document.getElementById('sSoftness');
+  if(softEl && (+softEl.value||0)<58) softEl.value='68';
+  onSoftnessChange(softEl?.value ?? 68);
+}
+
+function _syncNozzleGradientUi(){
+  const on=_isNozzleGradientMode();
+  const hud=document.getElementById('nozzleGradientHud');
+  const labels=document.getElementById('nozzleLaneLabels');
+  if(hud) hud.classList.toggle('mode-hidden', !on);
+  if(labels) labels.classList.toggle('mode-hidden', !on);
+  if(on && gSimulator?.getContactStats) _updateNozzleHud(gSimulator.getContactStats());
+  else if(on){
+    for(const g of [16,18,20]){
+      for(const id of ['btnStartNozzle'+g,'btnHudStart'+g]){
+        const btn=document.getElementById(id);
+        if(!btn) continue;
+        btn.disabled=false;
+        btn.textContent='Start '+g+'G';
+      }
+    }
+  }
+}
+
+function _updateNozzleHud(st){
+  if(!_isNozzleGradientMode()||!st?.laneStats) return;
+  const phase=st.sequencePhase||'idle';
+  const phaseEl=document.getElementById('nozzlePhaseLabel');
+  const readout=document.getElementById('nozzlePhaseReadout');
+  const fillEl=document.getElementById('nozzleFillReadout');
+  const phaseNames={
+    idle:'Idle — start a gauge to begin',
+    mixed:'Mixed — gauges running independently',
+    loading:'Loading — first third filling',
+    filling:'Filling — packing barrel to top',
+    compressing:'Compressing — packing gel into needle',
+    settled:'Settled — ready to export'};
+  const phaseText=phaseNames[phase]||phase;
+  if(phaseEl) phaseEl.textContent=phaseText;
+  if(readout) readout.textContent=phaseText;
+  if(fillEl) fillEl.textContent=Math.round((st.fillFraction||0)*100)+'%';
+  for(const ls of st.laneStats){
+    const eta=ls.meanViscosity||0;
+    const stress=ls.meanStress||0;
+    const txt=`η ${eta>=1000?(eta/1000).toFixed(2)+'×10³':eta.toFixed(1)} Pa·s · σ ${stress.toFixed(3)}`;
+    const hudEl=document.getElementById('nozzleHudStress'+ls.gauge);
+    const sideEl=document.getElementById('nozzleStress'+ls.gauge);
+    const phaseHud=document.getElementById('nozzleHudPhase'+ls.gauge);
+    if(hudEl) hudEl.textContent=txt;
+    if(sideEl) sideEl.textContent=txt;
+    if(phaseHud) phaseHud.textContent=ls.started?(ls.phase||'running'):'idle';
+    const running=!!ls.started;
+    const label=ls.phase==='settled'?'Settled':(running?'Running':'Start '+ls.gauge+'G');
+    for(const id of ['btnStartNozzle'+ls.gauge,'btnHudStart'+ls.gauge]){
+      const btn=document.getElementById(id);
+      if(!btn) continue;
+      btn.disabled=running;
+      btn.textContent=label;
+    }
+  }
+}
+
+function startNozzleLane(gauge){
+  if(!_isNozzleGradientMode()||!gSimulator||typeof gSimulator.startLaneByGauge!=='function'){
+    alert('Switch to Nozzle pressure gradient first.');
+    return;
+  }
+  const started=gSimulator.startLaneByGauge(+gauge);
+  if(!started) return;
+  _updateNozzleHud(gSimulator.getContactStats());
+  if(gPaused) onRun();
+}
+
 function readSyringeParams(){
   const mv=_containerModeRaw();
   const nano=mv==='nanoindent';
@@ -8562,6 +9816,36 @@ function initSimulation(){
     });
     return;
   }
+
+  const nozzleMode=_isNozzleGradientMode();
+  if(nozzleMode){
+    if(!gParticleTemplate){
+      const r=gNominalRadiusMm||0.20;
+      console.warn('Nozzle mode: star template missing — using fallback sphere.');
+      gParticleTemplateBase=buildHighResSphereTemplate(r, 2);
+      gParticleTemplateBase._nozzleStarFallback=true;
+      gParticleTemplate=gParticleTemplateBase;
+    }
+    _applyNozzleUiDefaults();
+    gSimulator=new NozzleGradientSimulator(gParticleTemplate, gScene, {
+      perLaneCapacity:Math.min(800, Math.max(200, +document.getElementById('pCount')?.value||400)),
+    });
+    gSimulator.gravity=[0,-150,0];
+    gSimulator._fillGravity=[0,-150,0];
+    gSimulator.compressingGravity=[0,-280,0];
+    gSimulator.numSubsteps=Math.max(16,+document.getElementById('pSubsteps').value||16);
+    onColorModeChange('viscosity');
+    gSimulator.colorMode='viscosity';
+    gSimulator.stressGain=1.05;
+    gSimulator.stressDepthMix=0.72;
+    document.getElementById('lblNomRadius').textContent=
+      (gParticleTemplate?.nominalRadius||0.2).toFixed(3);
+    _syncNozzleGradientUi();
+    setTimeout(focusNozzleComparison, 60);
+    applyVizBackgroundTheme();
+    return;
+  }
+  _syncNozzleGradientUi();
 
   const nanoMode=_containerModeRaw()==='nanoindent';
   // In nanoindent mode always use a high-res sphere (unless a custom JSON is loaded).
@@ -8775,6 +10059,13 @@ function onRestart(){
   _volumeLiveRecordReset();
   syncTransportButtons();
   gFrameIdx=0;
+  if(_isNozzleGradientMode()){
+    _ensureNozzleStarTemplate().then(()=>{
+      initSimulation();
+      _applyContainerOrbitMode();
+    });
+    return;
+  }
   initSimulation();
   _applyContainerOrbitMode();}
 function onEdgeCChange(v){
@@ -8890,7 +10181,7 @@ function onWallMuChange(v){
 }
 function onColorModeChange(v){
   if(gSimulator){
-    if(v==='stress'||v==='modulus') gSimulator.colorMode=v;
+    if(v==='stress'||v==='modulus'||v==='viscosity') gSimulator.colorMode=v;
     else gSimulator.colorMode='contact';
     gSimulator._updateColors();
     const geo=gSimulator.particleMesh?.geometry;
@@ -10074,12 +11365,31 @@ function onContainerModeChange(fromUser){
   const mv=_containerModeRaw();
   const nano=mv==='nanoindent';
   const showcase=_isShowcaseMode();
+  const nozzle=mv==='nozzle_gradient';
   const vol=_isVolumeContainerMode();
   const boxFill=mv==='volume_fill';
   const airway=mv==='airway';
   const chkBoxFill=document.getElementById('chkBoxFillSequence');
   applyModeVisibility();
+  _syncNozzleGradientUi();
   _syncShowcasePanelUi();
+  if(nozzle){
+    const cm=document.getElementById('selColorMode');
+    if(cm) cm.value='viscosity';
+    const basis=document.getElementById('selSizeBasis');
+    if(basis) basis.value='bounding';
+    gParticleSizeBasis='bounding';
+    _syncSizeBasisCaptions();
+    const rEl=document.getElementById('sRadius');
+    if(rEl){ rEl.value='0.30'; gNominalRadiusMm=0.30; }
+    _applyNozzleUiDefaults();
+    if(fromUser){
+      gParticleTemplateBase=null;
+      gParticleTemplate=null;
+      _ensureNozzleStarTemplate().then(()=>onRestart());
+      return;
+    }
+  }
   if(nano) _nanoUpdateHertzWarn();
   // Hide floor mesh when leaving nanoindent mode
   if(!nano && gNanoFloorMesh) gNanoFloorMesh.visible=false;
@@ -11413,7 +12723,8 @@ async function onSelectLibrary(value){
 function exportOBJ(){
   if(!gSimulator)return;
   const s=gSimulator.exportToOBJ();
-  _download(s,`syringe_sim_${Date.now()}.obj`,'text/plain');}
+  const prefix=_isNozzleGradientMode()?'nozzle_gradient_':'syringe_sim_';
+  _download(s,`${prefix}${Date.now()}.obj`,'text/plain');}
 
 function exportPoresOBJ(){
   if(!gSimulator)return;
@@ -11453,8 +12764,17 @@ function exportPoresOBJ(){
 
 function exportPLYColors(){
   if(!gSimulator)return;
+  if(_isNozzleGradientMode()){
+    const anyStarted=gSimulator.lanes?.some(l=>l.started);
+    const allSettled=anyStarted&&gSimulator.lanes.filter(l=>l.started).every(l=>l.sequencePhase==='settled');
+    if(anyStarted&&!allSettled){
+      const ok=confirm('Simulation has not reached the settled phase yet. Export anyway?');
+      if(!ok) return;
+    }
+  }
   const s=gSimulator.exportParticlesToPLY_ASCII();
-  _download(s,`syringe_particles_${Date.now()}.ply`,'application/octet-stream');
+  const prefix=_isNozzleGradientMode()?'nozzle_gradient_':'syringe_particles_';
+  _download(s,`${prefix}${Date.now()}.ply`,'application/octet-stream');
 }
 
 function exportMetricsCSV(){
@@ -12736,6 +14056,7 @@ function _updateStats(){
   }
   if(hudR)hudR.textContent=String(st.particlesReleasedTotal);
   if(hudDh)hudDh.textContent=st.particlesDroppedViaUi>0?`(+${st.particlesDroppedViaUi} via Drop)`:'';
+  _updateNozzleHud(st);
   document.getElementById('statTime').textContent=gSimulator.simTime.toFixed(3);
   document.getElementById('statMs').textContent=_renderMsEMA.toFixed(1);
 }
@@ -12819,6 +14140,7 @@ function onPerfSimMulChange(v){
   onContainerModeChange();
   syncTransportButtons();
   _syncBoxFillSequenceUi();
+  if(_isNozzleGradientMode()) await _ensureNozzleStarTemplate();
   initSimulation();
   applyVizBackgroundTheme();
   _syncExport4kVideoButton();
