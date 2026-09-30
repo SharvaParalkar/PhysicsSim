@@ -429,7 +429,11 @@ body.viz-dark #nozzleLaneLabels .nozzle-lane-label{color:#e8eef8;
     <button class="btn sm" onclick="focusNeedleTip()" data-modes="syringe"
             title="Centre the camera on the needle tip">Tip</button>
     <button class="btn sm" onclick="focusBarrel()" data-modes="syringe airway volume volume_fill"
-            title="Centre the camera on the container">Centre</button>
+            title="Centre and frame the container to fill the viewport">Centre</button>
+    <button class="btn sm" onclick="zoomOutCenter()"
+            title="Zoom out from the centre in small steps">Zoom −</button>
+    <button class="btn sm" onclick="zoomInCenter()"
+            title="Zoom in toward the centre in small steps">Zoom +</button>
     <button class="btn sm" onclick="focusPicked()"
             title="Centre the camera on the selected particle">Selected</button>
   </div>
@@ -477,6 +481,21 @@ body.viz-dark #nozzleLaneLabels .nozzle-lane-label{color:#e8eef8;
       <div class="row"><label for="pTaperH">Taper height (mm)</label>
         <input type="number" id="pTaperH" value="2" min="0.5" max="10" step="0.1"></div>
 
+      <div class="subgroup">
+        <div class="subgroup-title">Outline</div>
+        <div class="row"><label for="sBarrelOutline">Syringe border (mm)</label>
+          <input type="range" id="sBarrelOutline" min="0.02" max="2" step="0.01" value="0.14"
+                 oninput="onSyringeOutlineChange()"
+                 title="Stroke width of the barrel and taper silhouette. Updates immediately.">
+          <span id="lblBarrelOutline" class="statVal">0.14</span></div>
+        <div class="row"><label for="sNeedleOutline">Needle border (mm)</label>
+          <input type="range" id="sNeedleOutline" min="0.02" max="2" step="0.01" value="0.16"
+                 oninput="onSyringeOutlineChange()"
+                 title="Stroke width of the needle barrel. The tip ring uses this same width.">
+          <span id="lblNeedleOutline" class="statVal">0.16</span></div>
+        <p class="note">The tip uses the needle border so the open end matches the barrel stroke.</p>
+      </div>
+
       <div class="subgroup" id="wrapSyringe4kExport">
         <div class="subgroup-title">4K video export</div>
         <p class="note">Pre-computes the chosen duration of physics, then encodes a clean
@@ -514,17 +533,17 @@ body.viz-dark #nozzleLaneLabels .nozzle-lane-label{color:#e8eef8;
     <summary class="section-summary">Box volume</summary>
     <div class="section-inner">
       <div class="row"><label for="pVolW">Width X (mm)</label>
-        <input type="number" id="pVolW" value="12" min="0.5" max="400" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
+        <input type="number" id="pVolW" value="12" min="0.5" max="400" step="0.01" oninput="syncVolumeOutlinePreview()"></div>
       <div class="row"><label for="pVolH">Height Y (mm)</label>
-        <input type="number" id="pVolH" value="12" min="0.5" max="400" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
+        <input type="number" id="pVolH" value="12" min="0.5" max="400" step="0.01" oninput="syncVolumeOutlinePreview()"></div>
       <div class="row"><label for="pVolD">Depth Z (mm)</label>
-        <input type="number" id="pVolD" value="12" min="0.5" max="400" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
+        <input type="number" id="pVolD" value="12" min="0.5" max="400" step="0.01" oninput="syncVolumeOutlinePreview()"></div>
       <div class="row"><label for="pVolCx">Centre X (mm)</label>
-        <input type="number" id="pVolCx" value="0" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
+        <input type="number" id="pVolCx" value="0" step="0.01" oninput="syncVolumeOutlinePreview()"></div>
       <div class="row"><label for="pVolCy">Centre Y (mm)</label>
-        <input type="number" id="pVolCy" value="10" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
+        <input type="number" id="pVolCy" value="10" step="0.01" oninput="syncVolumeOutlinePreview()"></div>
       <div class="row"><label for="pVolCz">Centre Z (mm)</label>
-        <input type="number" id="pVolCz" value="0" step="0.5" oninput="syncVolumeOutlinePreview()"></div>
+        <input type="number" id="pVolCz" value="0" step="0.01" oninput="syncVolumeOutlinePreview()"></div>
       <div class="row"><label for="pVolDropH">Drop height (mm)</label>
         <input type="number" id="pVolDropH" value="0" min="0" max="200" step="0.5"
                oninput="onVolDropHeightInput()"
@@ -547,7 +566,8 @@ body.viz-dark #nozzleLaneLabels .nozzle-lane-label{color:#e8eef8;
           <input type="number" id="pBoxFillBakeMaxS" value="45" min="5" max="300" step="5"
                  title="Cap on simulated time per drop batch; also stops early once settled."></div>
         <div class="row"><label for="pBoxFillPlayFps">Playback fps</label>
-          <input type="number" id="pBoxFillPlayFps" value="60" min="15" max="240" step="1"></div>
+          <input type="number" id="pBoxFillPlayFps" value="60" min="15" max="240" step="1"
+                 onchange="onBoxFillPlayFpsChange()"></div>
         <div class="row"><label for="chkBoxFillBake">Pre-compute on Run</label>
           <input type="checkbox" id="chkBoxFillBake" checked></div>
         <div class="row"><label for="chkBoxFillAuto4k">Encode automatically</label>
@@ -634,15 +654,23 @@ body.viz-dark #nozzleLaneLabels .nozzle-lane-label{color:#e8eef8;
                oninput="onShowcaseColorCycleChange(this.value)"
                title="Seconds for one full blue→green→yellow→red sweep">
         <span id="lblShowcaseColorCycle" class="statVal">12 s</span></div>
+      <div class="row" id="wrapShowcaseRevealRow" style="display:none">
+        <label for="selShowcaseReveal">Playback</label>
+        <select id="selShowcaseReveal" onchange="onShowcaseRevealChange()"
+                title="Fill reveal spins for 2 seconds, raises a translucent red volume through the bounding box, then settles to a front view and a slow heartbeat.">
+          <option value="spin">Spin</option>
+          <option value="fill" selected>Fill reveal</option>
+        </select></div>
+      <p class="note" id="lblShowcaseReveal" style="display:none">Fill reveal: 2 s of spin, a red sheet fades in on the box floor, rises to the top with the mesh still visible inside, then the view eases to the front and the mesh pulses.</p>
       <div class="row" id="wrapShowcaseInterlockObjRow" style="display:none">
         <label>Interlock OBJ</label>
-        <span class="btn sm filepick">Choose file…
+        <span class="btn sm filepick">Replace OBJ…
           <input type="file" id="showcaseInterlockObjFile" accept=".obj,.OBJ,text/plain"
                  onchange="loadShowcaseInterlockObj(event)"
-                 title="Optional pre-arranged interlock mesh (mm). Centred and scaled to the display radius."></span></div>
+                 title="Replaces star_interlock.obj. Centred and scaled to the display radius."></span></div>
       <div class="row" id="wrapShowcaseInterlockObjHintRow" style="display:none">
-        <button type="button" class="btn sm" onclick="clearShowcaseInterlockObj()">Clear OBJ</button>
-        <span class="note" id="lblShowcaseInterlockObj">Overrides the built-in 3-star layout.</span></div>
+        <button type="button" class="btn sm" onclick="clearShowcaseInterlockObj()">Use default OBJ</button>
+        <span class="note" id="lblShowcaseInterlockObj">star_interlock.obj</span></div>
       <p class="note" id="lblShowcaseStatus">Cube, Cylinder, Hex, Star, Tri from assets/manifest.json</p>
 
       <div class="subgroup">
@@ -665,10 +693,10 @@ body.viz-dark #nozzleLaneLabels .nozzle-lane-label{color:#e8eef8;
   <details class="section" open>
     <summary class="section-summary">Scene</summary>
     <div class="section-inner">
-      <div id="wrapContainerOrbit" data-modes="airway volume volume_fill showcase showcase_star showcase_star_interlock">
+      <div id="wrapContainerOrbit" data-modes="syringe airway volume volume_fill showcase showcase_star showcase_star_interlock">
         <div class="row"><label for="selContainerOrbitMode">Orbit camera</label>
           <select id="selContainerOrbitMode" onchange="onContainerOrbitModeChange()"
-                  title="Auto-orbit around the container centre. Frame the view first, then enable.">
+                  title="Auto-orbit around the scene centre. Frame the view first, then enable.">
             <option value="off" selected>Off</option>
             <option value="orbit">Orbit</option>
           </select></div>
@@ -679,9 +707,41 @@ body.viz-dark #nozzleLaneLabels .nozzle-lane-label{color:#e8eef8;
       <div class="row"><label for="chkDarkBackground">Dark background</label>
         <input type="checkbox" id="chkDarkBackground" onchange="onDarkBackgroundChange()"
                title="Dark canvas with white silhouette outlines. Default is a white canvas with black strokes."></div>
-      <div class="row"><label for="chkVolumeOutlineShow">Show bounding box</label>
-        <input type="checkbox" id="chkVolumeOutlineShow" checked onchange="onVolumeOutlineShowChange()"
-               title="Dashed bounds for box, fill sequence, bronchial tree (while paused) and star interlock."></div>
+      <div class="subgroup">
+        <div class="subgroup-title">Bounding box</div>
+        <div class="row"><label for="chkVolumeOutlineShow">Show</label>
+          <input type="checkbox" id="chkVolumeOutlineShow" checked onchange="onVolumeOutlineShowChange()"
+                 title="Draws the same dashed box in every mode."></div>
+        <div class="row"><label for="chkBoundsWhileRunning">Visible while running</label>
+          <input type="checkbox" id="chkBoundsWhileRunning" checked onchange="onBoundsStyleChange()"
+                 title="When off, the box is hidden during playback in every mode."></div>
+        <div class="row"><label for="sBoundsDash">Dash</label>
+          <input type="range" id="sBoundsDash" min="2" max="45" step="0.1" value="12"
+                 oninput="onBoundsStyleChange()"
+                 title="Dash length as a percent of the box’s shortest side.">
+          <span id="lblBoundsDash" class="statVal">12%</span></div>
+        <div class="row"><label for="sBoundsGap">Gap</label>
+          <input type="range" id="sBoundsGap" min="1" max="40" step="0.1" value="8"
+                 oninput="onBoundsStyleChange()"
+                 title="Gap length as a percent of the box’s shortest side.">
+          <span id="lblBoundsGap" class="statVal">8%</span></div>
+        <div class="row"><label for="sBoundsStroke">Stroke</label>
+          <input type="range" id="sBoundsStroke" min="0.2" max="12" step="0.1" value="1.5"
+                 oninput="onBoundsStyleChange()"
+                 title="Stroke thickness as a percent of the box’s shortest side.">
+          <span id="lblBoundsStroke" class="statVal">1.5%</span></div>
+        <div class="row"><label for="sBoundsPad">Padding</label>
+          <input type="range" id="sBoundsPad" min="0" max="50" step="0.1" value="0"
+                 oninput="onBoundsStyleChange()"
+                 title="Extra margin around the content. Does not change the physics container.">
+          <span id="lblBoundsPad" class="statVal">0%</span></div>
+        <div class="row"><label for="sBoundsOpacity">Opacity</label>
+          <input type="range" id="sBoundsOpacity" min="15" max="100" step="1" value="90"
+                 oninput="onBoundsStyleChange()">
+          <span id="lblBoundsOpacity" class="statVal">90%</span></div>
+        <p class="note">Dash, gap, stroke and padding are percentages of each box’s shortest side,
+          so syringe, bronchial tree, box, nozzle, nanoindentation and showcase all match.</p>
+      </div>
       <div class="row" data-modes="volume volume_fill"><label for="chkFillMeshShow">Show fill mesh</label>
         <input type="checkbox" id="chkFillMeshShow" checked onchange="onFillMeshShowChange()"
                title="Semi-transparent preview of the loaded fill volume."></div>
@@ -895,6 +955,12 @@ body.viz-dark #nozzleLaneLabels .nozzle-lane-label{color:#e8eef8;
                   title="Run the standardized equal-volume protocol on Cube, Cylinder, Hexagon, Star and Triangle and download one CSV each">Export metrics (all base shapes)</button></div>
         <p class="note" id="lblExportAllBase">Applies equal-volume sizing + the standardized
           settle/mesh protocol, then runs each shape until its plateau hold finishes.</p>
+        <div class="row buttons">
+          <button class="btn wide" id="btnContactRangeCompare" onclick="onContactRangeCompareAllBase()"
+                  title="Box volume 1.165×1.165×1.175 mm: run Cube, Cylinder, Hexagon, Star, Triangle (no sphere) and report particle-contact min/max for each">Contact range compare (5 shapes)</button></div>
+        <p class="note" id="lblContactRangeCompare">Box fill 1.165×1.165×1.175 mm, equal-volume protocol.
+          After the batch, shows each shape’s particle-contact min/max (unique neighbors + color-map counts).</p>
+        <pre id="tblContactRangeCompare" class="note" style="display:none;white-space:pre;overflow:auto;max-height:220px;margin:0;padding:8px 0 0;font-family:var(--mono);font-size:11px;line-height:1.45;color:var(--value)"></pre>
       </div>
 
       <div class="subgroup">
@@ -1860,6 +1926,9 @@ class Syringe {
     this.offsetX=(p.offsetX!=null&&Number.isFinite(+p.offsetX))?+p.offsetX:0;
     this.offsetZ=(p.offsetZ!=null&&Number.isFinite(+p.offsetZ))?+p.offsetZ:0;
     this.gaugeLabel=(p.gaugeLabel!=null)?String(p.gaugeLabel):'';
+    // NaN → _outlineThickness falls back to the radius-based defaults.
+    this.barrelOutlineMm=Number.isFinite(+p.barrelOutlineMm)?Math.max(0.02,+p.barrelOutlineMm):NaN;
+    this.needleOutlineMm=Number.isFinite(+p.needleOutlineMm)?Math.max(0.02,+p.needleOutlineMm):NaN;
   }
 
   getRadiusAtY(y){
@@ -2022,46 +2091,7 @@ class Syringe {
     scene.add(biMesh);
     this.meshes.push({name:'barrel_inner',mesh:biMesh});
 
-    // Drafted silhouette rim (same idea as airway outline).
-    // Needle side outline overlaps the tip torus so the stroke reads continuous.
-    // A color-less depth disc clears the tip aperture so looking into the bore
-    // is see-through (otherwise the open BackSide shell reads as a black plug).
-    {
-      const thick=Math.max(0.14, bor*0.03);
-      const needleThick=Math.max(0.06, nor*0.28);
-      const tubeR=needleThick*0.55;
-      const addOutline=(geo,name,t=thick)=>{
-        const om=_syringeOutlineMesh(geo,t);
-        if(!om) return;
-        om.name=name;
-        scene.add(om);
-        this.meshes.push({name,mesh:om});
-      };
-      const tipClear=Math.max(0.02, tubeR*0.35);
-      const nOutlineLen=Math.max(0.5, nl-tipClear);
-      const needleOutlineGeo=new THREE.CylinderGeometry(nor,nor,nOutlineLen,seg,1,true);
-      needleOutlineGeo.translate(0, tipClear+nOutlineLen*0.5, 0);
-      addOutline(needleOutlineGeo,'needle_outline',needleThick);
-      needleOutlineGeo.dispose();
-
-      const tipMajor=nor+needleThick;
-      const tipRim=_syringeRimOutlineMesh(tipMajor, 0, needleThick, seg);
-      if(tipRim){
-        tipRim.name='needle_tip_outline';
-        scene.add(tipRim);
-        this.meshes.push({name:'needle_tip_outline',mesh:tipRim});
-      }
-      const holeR=Math.max(0.02, tipMajor-tubeR-0.02);
-      const tipHole=_syringeTipHoleDepthMask(holeR, -0.03, seg);
-      if(tipHole){
-        tipHole.name='needle_tip_hole_mask';
-        scene.add(tipHole);
-        this.meshes.push({name:'needle_tip_hole_mask',mesh:tipHole});
-      }
-
-      addOutline(taperOutGeo,'taper_outline');
-      addOutline(barrelGeo,'barrel_outline');
-    }
+    this._addOutlineMeshes(scene);
 
     const tty=this.catchTrayTopY;
     const trayR=this.catchTrayRadius;
@@ -2081,6 +2111,95 @@ class Syringe {
     const ox=this.offsetX||0, oz=this.offsetZ||0;
     if(ox||oz){
       for(const {mesh} of this.meshes) mesh.position.set(ox, 0, oz);
+    }
+  }
+
+  /** Resolved silhouette stroke widths (mm). Slider values override the radius defaults. */
+  _outlineThickness(){
+    const bor=this.barrelOutR, nor=this.needleOutR;
+    const defBarrel=Math.max(0.14, bor*0.03);
+    const defNeedle=Math.max(0.06, nor*0.28);
+    const b=+this.barrelOutlineMm, n=+this.needleOutlineMm;
+    return {
+      barrel:Math.max(0.02, Number.isFinite(b)?b:defBarrel),
+      needle:Math.max(0.02, Number.isFinite(n)?n:defNeedle),
+    };
+  }
+
+  /**
+   * Silhouette strokes: barrel, taper, needle barrel, and a matching tip lip.
+   * The tip is the lower half of a torus whose tube diameter equals the needle
+   * stroke, centered so its outer edge lands on the inflated needle outline.
+   */
+  _addOutlineMeshes(scene){
+    const {barrel:thick, needle:needleThick}=this._outlineThickness();
+    const seg=this.seg, nl=this.needleLen, tp=this.taperH, bl=this.barrelLen;
+    const bor=this.barrelOutR, nor=this.needleOutR;
+    const tEnd=nl+tp;
+    const addOutline=(geo,name,t)=>{
+      const om=_syringeOutlineMesh(geo,t);
+      if(!om) return;
+      om.name=name;
+      scene.add(om);
+      this.meshes.push({name,mesh:om});
+    };
+
+    const needleOutlineGeo=new THREE.CylinderGeometry(nor,nor,nl,seg,1,true);
+    needleOutlineGeo.translate(0, nl*0.5, 0);
+    addOutline(needleOutlineGeo,'needle_outline',needleThick);
+    needleOutlineGeo.dispose();
+
+    const tubeR=needleThick*0.5;
+    const tipMajor=nor+tubeR;
+    const tipRim=_syringeRimOutlineMesh(tipMajor, 0, needleThick, seg);
+    if(tipRim){
+      tipRim.name='needle_tip_outline';
+      scene.add(tipRim);
+      this.meshes.push({name:'needle_tip_outline',mesh:tipRim});
+    }
+    // Color-less depth disc just below the lip, sized to the bore, so looking
+    // into the open end is clear instead of a solid plug of backfaces.
+    const holeR=Math.max(0.02, nor-0.02);
+    const tipHole=_syringeTipHoleDepthMask(holeR, -(tubeR+0.03), seg);
+    if(tipHole){
+      tipHole.name='needle_tip_hole_mask';
+      scene.add(tipHole);
+      this.meshes.push({name:'needle_tip_hole_mask',mesh:tipHole});
+    }
+
+    const taperOutGeo=new THREE.CylinderGeometry(bor,nor,tp,seg,1,true);
+    taperOutGeo.translate(0, nl+tp/2, 0);
+    addOutline(taperOutGeo,'taper_outline',thick);
+    taperOutGeo.dispose();
+
+    const barrelGeo=new THREE.CylinderGeometry(bor,bor,bl,seg,1,true);
+    barrelGeo.translate(0, tEnd+bl/2, 0);
+    addOutline(barrelGeo,'barrel_outline',thick);
+    barrelGeo.dispose();
+  }
+
+  /** Replace outline meshes only, so the sliders update without a physics restart. */
+  rebuildOutlines(scene){
+    if(!scene) return;
+    const drop=new Set([
+      'needle_outline','needle_tip_outline','needle_tip_hole_mask',
+      'taper_outline','barrel_outline']);
+    const keep=[];
+    for(const entry of this.meshes){
+      if(!drop.has(entry.name)){keep.push(entry);continue}
+      scene.remove(entry.mesh);
+      if(entry.mesh.geometry && typeof entry.mesh.geometry.dispose==='function')
+        entry.mesh.geometry.dispose();
+      if(entry.mesh.material && typeof entry.mesh.material.dispose==='function')
+        entry.mesh.material.dispose();
+    }
+    this.meshes=keep;
+    this._addOutlineMeshes(scene);
+    const ox=this.offsetX||0, oz=this.offsetZ||0;
+    if(ox||oz){
+      for(const entry of this.meshes){
+        if(drop.has(entry.name)) entry.mesh.position.set(ox, 0, oz);
+      }
     }
   }
 
@@ -2731,7 +2850,7 @@ function _syringeOutlineMesh(srcGeo, thicknessMm=0.18){
   if(!posAttr||posAttr.count<3) return null;
   const geo=srcGeo.clone();
   const pos=geo.getAttribute('position');
-  const t=Math.max(0.05, +thicknessMm||0.18);
+  const t=Math.max(0.02, +thicknessMm||0.18);
   for(let i=0;i<pos.count;i++){
     const x=pos.getX(i), y=pos.getY(i), z=pos.getZ(i);
     const r=Math.hypot(x,z);
@@ -2759,12 +2878,26 @@ function _syringeOutlineMesh(srcGeo, thicknessMm=0.18){
   return mesh;
 }
 
-/** Black circular stroke around an open tube end (needle tip, etc.). */
+/**
+ * Rounded lip at an open tube end. strokeMm is the full pen width (same as the
+ * side-outline peek). Only the lower half of the tube is drawn, and it starts
+ * a few degrees inside the wall so the join doesn't bulge past the side stroke.
+ * radiusMm is the centerline of that stroke.
+ */
 function _syringeRimOutlineMesh(radiusMm, yMm, strokeMm, radialSeg=32){
   const R=Math.max(1e-4, +radiusMm||1e-4);
-  const stroke=Math.max(0.045, +strokeMm||0.08);
-  const geo=new THREE.TorusGeometry(R, stroke*0.55, 12, Math.max(24, radialSeg|0));
-  geo.rotateX(Math.PI*0.5);
+  const stroke=Math.max(0.02, +strokeMm||0.08);
+  const tube=stroke*0.5;
+  const major=Math.max(tube+1e-4, R);
+  const steps=14;
+  const pts=[];
+  const ang0=0.22;
+  const ang1=-Math.PI;
+  for(let i=0;i<=steps;i++){
+    const ang=ang0+(ang1-ang0)*(i/steps);
+    pts.push(new THREE.Vector2(major+Math.cos(ang)*tube, Math.sin(ang)*tube));
+  }
+  const geo=new THREE.LatheGeometry(pts, Math.max(48, radialSeg|0));
   geo.translate(0, +yMm||0, 0);
   const mat=new THREE.MeshBasicMaterial({
     color:_vizAccentHex(),
@@ -6957,9 +7090,11 @@ class NozzleGradientSimulator {
       started:false,phase:'idle'}));
     const barrelDiam=6.2, barrelLen=36, needleLen=20, taperH=5.5;
     const wallPen=0.035;
+    const outlineMm=_readOutlineInputs();
     for(const spec of NOZZLE_GAUGE_SPECS){
       const syringe=new Syringe({
         barrelDiam, barrelLen, needleDiam:spec.boreMm, needleLen, taperH,
+        barrelOutlineMm:outlineMm.barrel, needleOutlineMm:outlineMm.needle,
         capActive:true, needleInletCapActive:false,
         wallAllowPenetrationMm:wallPen,
         offsetX:spec.offsetX, offsetZ:0, gaugeLabel:spec.label,
@@ -7904,6 +8039,14 @@ let gAirwayPlayback={mode:'off',frames:[],frameIdx:0,playhead:0,maxSimS:45,playF
 let gVideoExport={active:false};
 const VIDEO_EXPORT_4K_W=3840;
 const VIDEO_EXPORT_4K_H=2400; // 16:10
+const VIDEO_EXPORT_JPEG_QUALITY=0.97;
+const VIDEO_EXPORT_BITRATE=100_000_000;
+/** Tight viewport fit (small padding). */
+const CAMERA_FIT_MARGIN=1.04;
+/** Each Zoom + step moves this fraction closer to the look-at target. */
+const CAMERA_ZOOM_IN_FACTOR=0.88;
+/** Sim physics / bake capture rate (Hz). */
+const BAKED_SIM_HZ=60;
 /** Baked playback cycles in 4K export (bronchial tree: 3× loop; box fill sequence: 1× full timeline). */
 const VIDEO_EXPORT_LOOPS=3;
 /** Box fill sequence orchestration (multi-segment bake + optional 4K). */
@@ -7920,6 +8063,10 @@ let gPickMode='inspect'; // 'inspect' | 'lock'
 let gPickMarker=null;
 /** Wireframe preview of invisible box volume while physics is paused (Container → volume mode). */
 let gVolumeOutline=null;
+/** Dashed bounding boxes, one style shared by every simulation mode. */
+let gBoundsBoxes=[];
+let gBoundsMat=null;
+let gBoundsSignature='';
 /** Nanoindentation mode: visual probe tip, shaft, and substrate plane. */
 let gIndenterMesh=null, gIndenterShaft=null, gNanoFloorMesh=null;
 /** True while an async indentation animation is running (blocks re-entry). */
@@ -7956,8 +8103,10 @@ const SHOWCASE_STAR_INTERLOCK_COUNT=3;
 
 let gShowcase={active:false, root:null, cluster:null, items:[], lastMs:0, timeS:0, layout:'gallery', clusterSpin:0};
 let gShowcaseExportCancel=false;
-/** Optional user OBJ for Star interlock mode: {soup: Float32Array, label: string}. */
+/** Active interlock mesh: {soup, label, isDefault}. Null until the default OBJ loads. */
 let gShowcaseInterlockObj=null;
+/** Cached assets/star_interlock.obj, kept when a replacement file is loaded. */
+let gShowcaseInterlockDefault=null;
 
 function _readShowcaseSpinDegS(){
   return Math.max(0, +document.getElementById('pShowcaseSpinDegS')?.value||45);
@@ -8082,7 +8231,14 @@ function _showcaseApplyStressColors(item, tSec){
 }
 
 function disposeShowcase(){
-  _detachVolumeOutlineToScene();
+  _disposeBoundsBoxes();
+  gBoundsSignature='';
+  const fill=gShowcase.fillMesh;
+  if(fill){
+    if(fill.parent) fill.parent.remove(fill);
+    if(fill.geometry) fill.geometry.dispose();
+    if(fill.material) fill.material.dispose();
+  }
   if(gShowcase.root&&gScene){
     gScene.remove(gShowcase.root);
     for(const item of gShowcase.items||[]){
@@ -8143,6 +8299,30 @@ function _showcaseMeshFromObjSoup(soup, displayR){
   return mesh;
 }
 
+async function _loadDefaultInterlockObj(){
+  if(gShowcaseInterlockDefault?.soup) return gShowcaseInterlockDefault;
+  const res=await fetch(resolveAppUrl('assets/star_interlock.obj'), {cache:'no-cache'});
+  if(!res.ok) throw new Error('star_interlock.obj HTTP '+res.status);
+  const soup=parseObjToTriangleSoup(await res.text());
+  if(soup.length<9) throw new Error('star_interlock.obj has no triangles');
+  gShowcaseInterlockDefault={soup, label:'star_interlock.obj', isDefault:true};
+  return gShowcaseInterlockDefault;
+}
+
+function _interlockRevealOn(){
+  return document.getElementById('selShowcaseReveal')?.value==='fill';
+}
+
+function onShowcaseRevealChange(){
+  if(_isShowcaseStarInterlockMode()) onRestart();
+}
+
+function _snapShowcaseIsoNw(){
+  const sel=document.getElementById('selIsoView');
+  if(sel) sel.value='iso_nw';
+  onIsoViewSnap('iso_nw');
+}
+
 function loadShowcaseInterlockObj(evt){
   const file=evt.target?.files?.[0];
   if(!file) return;
@@ -8166,11 +8346,11 @@ function loadShowcaseInterlockObj(evt){
 }
 
 function clearShowcaseInterlockObj(){
-  gShowcaseInterlockObj=null;
+  gShowcaseInterlockObj=gShowcaseInterlockDefault?.soup ? gShowcaseInterlockDefault : null;
   const inp=document.getElementById('showcaseInterlockObjFile');
   if(inp) inp.value='';
   const lbl=document.getElementById('lblShowcaseInterlockObj');
-  if(lbl) lbl.textContent='Optional — overrides built-in 3-star layout.';
+  if(lbl) lbl.textContent='star_interlock.obj';
   if(_isShowcaseStarInterlockMode()) onRestart();
 }
 
@@ -8243,6 +8423,17 @@ async function initShowcase(){
       : starMode ? 'Loading star particle…' : 'Loading showcase particles…';
   }
 
+  if(interlockMode && !gShowcaseInterlockObj?.soup){
+    try{
+      gShowcaseInterlockObj=await _loadDefaultInterlockObj();
+      const objLbl=document.getElementById('lblShowcaseInterlockObj');
+      if(objLbl) objLbl.textContent='star_interlock.obj';
+    }catch(err){
+      console.warn(err);
+      if(lbl) lbl.textContent='Could not load star_interlock.obj — using the built-in stars.';
+    }
+  }
+
   const displayR=_readShowcaseDisplayR();
   const gap=_readShowcaseGapMm();
   const spinRadS=_readShowcaseSpinDegS()*Math.PI/180;
@@ -8308,16 +8499,43 @@ async function initShowcase(){
   gShowcase={
     active:true, root, cluster, items, lastMs:performance.now(), timeS:0, layout,
     clusterSpin:interlockMode?spinRadS:0,
+    fillMesh:null, fillBounds:null, revealCam:null, baseColor:null, revealPhase:'',
   };
+  if(interlockMode && _interlockRevealOn() && cluster){
+    const b=_interlockLocalBoundsBox();
+    if(b){
+      const style=_readBoundsStyle();
+      const minE=Math.min(b.w,b.h,b.d);
+      const pad=minE*style.pad;
+      gShowcase.fillBounds={
+        cx:b.cx, cy:b.cy, cz:b.cz,
+        w:b.w+2*pad, h:b.h+2*pad, d:b.d+2*pad,
+      };
+      const mat=new THREE.MeshBasicMaterial({
+        color:0xd4202a, transparent:true, opacity:0,
+        depthWrite:false, depthTest:true, side:THREE.FrontSide,
+      });
+      const fill=new THREE.Mesh(new THREE.BoxGeometry(1,1,1), mat);
+      fill.name='interlockFillVolume';
+      fill.visible=false;
+      fill.renderOrder=4;
+      fill.frustumCulled=false;
+      cluster.add(fill);
+      gShowcase.fillMesh=fill;
+    }
+  }
   if(!interlockMode){
     for(const item of items) _showcaseApplyStressColors(item, 0);
   }
   _showcaseFocusCamera();
+  if(interlockMode) _snapShowcaseIsoNw();
   syncVolumeOutlinePreview();
   if(lbl){
     lbl.textContent=interlockMode
       ? gShowcaseInterlockObj?.soup
-        ? `Interlock OBJ · cluster spin ${_readShowcaseSpinDegS()}°/s`
+        ? (_interlockRevealOn()
+          ? `${gShowcaseInterlockObj.label} · fill reveal · isometric NW`
+          : `${gShowcaseInterlockObj.label} · spin ${_readShowcaseSpinDegS()}°/s · isometric NW`)
         : `${items.length} interlocked stars · cluster spin ${_readShowcaseSpinDegS()}°/s`
       : starMode
         ? `Star · spin ${_readShowcaseSpinDegS()}°/s · stress gradient`
@@ -8343,9 +8561,13 @@ function _syncShowcasePanelUi(){
   if(gapRow) gapRow.style.display=centered?'none':'';
   if(objRow) objRow.style.display=interlock?'':'none';
   if(objHintRow) objHintRow.style.display=interlock?'':'none';
+  const revealRow=document.getElementById('wrapShowcaseRevealRow');
+  const revealNote=document.getElementById('lblShowcaseReveal');
+  if(revealRow) revealRow.style.display=interlock?'':'none';
+  if(revealNote) revealNote.style.display=interlock && _interlockRevealOn()?'':'none';
   if(intro){
     intro.innerHTML=interlock
-      ? `<b>Star interlock</b> — import an OBJ of your pre-meshed cluster (centered, mm units), or use the built-in 3-star layout. The cluster spins as one unit.`
+      ? `<b>Star interlock</b> — loads <b>star_interlock.obj</b> and opens on isometric NW. Playback can stay on a spin, or run the fill reveal.`
       : star
         ? '<b>Star highlight</b> — star particle centered, spinning with stress-gradient colors.'
         : '<b>Particle showcase</b> — library shapes side-by-side, spinning with stress-gradient colors.';
@@ -8362,10 +8584,122 @@ function _setShowcaseExportLabel(t){
   const el=document.getElementById('lblShowcaseExport');
   if(el) el.textContent=t;
 }
+const INTERLOCK_REVEAL={spin:2, fade:0.8, rise:3.2, turn:3.2};
+
+function _interlockRevealMarks(){
+  const s=INTERLOCK_REVEAL;
+  const fadeAt=s.spin;
+  const riseAt=fadeAt+s.fade;
+  const turnAt=riseAt+s.rise;
+  const beatAt=turnAt+s.turn;
+  return {fadeAt, riseAt, turnAt, beatAt, turn:s.turn};
+}
+
+function _smooth01(u){
+  const x=Math.max(0, Math.min(1, u));
+  return x*x*(3-2*x);
+}
+
+/** Yaw from a constant spin that eases to a stop across the front-view move. */
+function _interlockSpinAngle(t, spin){
+  if(!_interlockRevealOn()) return spin*t;
+  const {turnAt, turn}=_interlockRevealMarks();
+  if(t<=turnAt) return spin*t;
+  const u=Math.min(1, (t-turnAt)/turn);
+  const integ=u - u*u*u + 0.5*u*u*u*u;
+  return spin*turnAt + spin*turn*integ;
+}
+
+function _interlockEaseCameraToFront(u){
+  if(!gCamera||!gCamCtrl) return;
+  if(!gShowcase.revealCam){
+    if(gContainerOrbitState) _stopContainerOrbit();
+    const target=gCamCtrl.target.clone();
+    const from=gCamera.position.clone();
+    const dist=Math.max(0.5, from.distanceTo(target));
+    const dir=new THREE.Vector3(0, 0.12, 1).normalize();
+    gShowcase.revealCam={
+      from, to:target.clone().addScaledVector(dir, dist), target,
+    };
+  }
+  const s=gShowcase.revealCam;
+  const k=_smooth01(u);
+  gCamera.position.lerpVectors(s.from, s.to, k);
+  gCamCtrl.target.copy(s.target);
+  gCamera.up.set(0,1,0);
+  if(u>=1){
+    const sel=document.getElementById('selIsoView');
+    if(sel && sel.value!=='front') sel.value='front';
+  }
+}
+
+function _interlockHeartbeat(age){
+  const mat=gShowcase.items?.[0]?.mesh?.material;
+  if(!mat?.color) return;
+  if(!gShowcase.baseColor) gShowcase.baseColor=mat.color.clone();
+  const base=gShowcase.baseColor;
+  if(age==null){
+    mat.color.copy(base);
+    if(mat.emissive) mat.emissive.setRGB(0,0,0);
+    return;
+  }
+  const period=1.4;
+  const u=(age%period)/period;
+  const bell=(x,c,w)=>Math.exp(-((x-c)*(x-c))/(2*w*w));
+  const pulse=Math.min(1, bell(u,0.10,0.026)+0.75*bell(u,0.22,0.03));
+  mat.color.setRGB(
+    base.r+(1-base.r)*pulse,
+    base.g+(0.94-base.g)*pulse,
+    base.b+(0.94-base.b)*pulse);
+  if(mat.emissive) mat.emissive.setRGB(0.62*pulse, 0.1*pulse, 0.12*pulse);
+}
+
+function _applyInterlockTimeline(tSec){
+  const cluster=gShowcase.cluster;
+  if(!cluster) return;
+  const spin=gShowcase.clusterSpin||0;
+  cluster.rotation.y=_interlockSpinAngle(tSec, spin);
+  const reveal=_interlockRevealOn() && gShowcase.fillMesh && gShowcase.fillBounds;
+  if(!reveal){
+    _interlockHeartbeat(null);
+    return;
+  }
+  const {fadeAt, riseAt, turnAt, beatAt}=_interlockRevealMarks();
+  const b=gShowcase.fillBounds;
+  const mesh=gShowcase.fillMesh;
+  if(tSec<fadeAt){
+    mesh.visible=false;
+    mesh.material.opacity=0;
+    gShowcase.revealCam=null;
+    _interlockHeartbeat(null);
+  }else{
+    mesh.visible=true;
+    let fade=1, rise=0;
+    if(tSec<riseAt) fade=_smooth01((tSec-fadeAt)/(riseAt-fadeAt));
+    else if(tSec<turnAt) rise=_smooth01((tSec-riseAt)/(turnAt-riseAt));
+    else rise=1;
+    mesh.material.opacity=0.42*fade;
+    const minH=Math.max(0.01, b.h*0.012);
+    const h=minH+(b.h-minH)*rise;
+    mesh.scale.set(b.w, h, b.d);
+    mesh.position.set(b.cx, (b.cy-b.h*0.5)+h*0.5, b.cz);
+    if(tSec<turnAt) gShowcase.revealCam=null;
+    else _interlockEaseCameraToFront(Math.min(1, (tSec-turnAt)/(beatAt-turnAt)));
+    _interlockHeartbeat(tSec>=beatAt ? tSec-beatAt : null);
+  }
+  const phase=tSec<fadeAt?'spin':tSec<riseAt?'fade':tSec<turnAt?'rise':tSec<beatAt?'front':'beat';
+  if(phase!==gShowcase.revealPhase){
+    gShowcase.revealPhase=phase;
+    const lbl=document.getElementById('lblShowcaseStatus');
+    const names={spin:'Spinning', fade:'Red sheet fading in', rise:'Volume rising', front:'Turning to front view', beat:'Heartbeat'};
+    if(lbl) lbl.textContent='Fill reveal · '+(names[phase]||phase);
+  }
+}
+
 function _showcaseApplyExportTime(tSec){
   if(gShowcase.layout==='star_interlock'&&gShowcase.cluster){
-    gShowcase.cluster.rotation.y=gShowcase.clusterSpin*tSec;
     gShowcase.timeS=tSec;
+    _applyInterlockTimeline(tSec);
     return;
   }
   for(const item of gShowcase.items){
@@ -8408,7 +8742,7 @@ function _showcaseStep(nowMs){
   gShowcase.lastMs=nowMs;
   gShowcase.timeS+=dt;
   if(gShowcase.layout==='star_interlock'&&gShowcase.cluster){
-    gShowcase.cluster.rotation.y+=gShowcase.clusterSpin*dt;
+    _applyInterlockTimeline(gShowcase.timeS);
     return;
   }
   for(const item of gShowcase.items){
@@ -8578,29 +8912,13 @@ function initThreeScene(){
   gPickMarker.renderOrder=999;
   gScene.add(gPickMarker);
 
-  {
-    // World-space sized edges (not a unit box + scale) so dash/gap stay
-    // identical on short and long sides under non-uniform box dimensions.
-    gVolumeOutline=new THREE.LineSegments(
-      _makeVolumeOutlineGeometry(false,1,1,1),
-      new THREE.LineDashedMaterial({
-        color:_vizAccentHex(),
-        dashSize:0.55,
-        gapSize:0.35,
-        transparent:true,
-        opacity:0.9,
-        depthTest:true,
-        depthWrite:false,
-        linewidth:1}));
-    gVolumeOutline.computeLineDistances();
-    gVolumeOutline.visible=false;
-    gVolumeOutline.renderOrder=2;
-    gVolumeOutline.userData.openBottom=false;
-    gVolumeOutline.userData.boxW=1;
-    gVolumeOutline.userData.boxH=1;
-    gVolumeOutline.userData.boxD=1;
-    gScene.add(gVolumeOutline);
-  }
+  gBoundsMat=new THREE.MeshBasicMaterial({
+    color:_vizAccentHex(),
+    transparent:true,
+    opacity:0.9,
+    depthTest:true,
+    depthWrite:false,
+  });
 
   gCamCtrl.addEventListener('start', ()=>{
     const sel=document.getElementById('selIsoView');
@@ -8692,144 +9010,267 @@ function _focusTarget(x,y,z, keepDistance=true){
   gCamCtrl.update();
 }
 
-/** Wireframe for volume box preview; sized in world units (scale stays 1). Open bottom omits the floor square. */
-function _makeVolumeOutlineGeometry(openBottom,w=1,h=1,d=1){
-  const bw=Math.max(1e-4,+w||1e-4);
-  const bh=Math.max(1e-4,+h||1e-4);
-  const bd=Math.max(1e-4,+d||1e-4);
-  if(!openBottom){
-    const box=new THREE.BoxGeometry(bw,bh,bd);
-    const geo=new THREE.EdgesGeometry(box);
-    box.dispose();
-    return geo;
+function _readBoundsStyle(){
+  const pct=(id,fallback)=>Math.max(0, +document.getElementById(id)?.value||fallback)/100;
+  return {
+    dash:Math.max(0.02, pct('sBoundsDash',12)),
+    gap:Math.max(0.01, pct('sBoundsGap',8)),
+    thick:Math.max(0.002, pct('sBoundsStroke',1.5)),
+    pad:Math.max(0, pct('sBoundsPad',0)),
+    opacity:Math.max(0.05, Math.min(1, (+document.getElementById('sBoundsOpacity')?.value||90)/100)),
+    whileRunning:!!document.getElementById('chkBoundsWhileRunning')?.checked,
+  };
+}
+
+function onBoundsStyleChange(){
+  const st=_readBoundsStyle();
+  const set=(id,txt)=>{const el=document.getElementById(id); if(el) el.textContent=txt;};
+  set('lblBoundsDash',(st.dash*100).toFixed(1).replace(/\.0$/,'')+'%');
+  set('lblBoundsGap',(st.gap*100).toFixed(1).replace(/\.0$/,'')+'%');
+  set('lblBoundsStroke',(st.thick*100).toFixed(1).replace(/\.0$/,'')+'%');
+  set('lblBoundsPad',(st.pad*100).toFixed(1).replace(/\.0$/,'')+'%');
+  set('lblBoundsOpacity',Math.round(st.opacity*100)+'%');
+  gBoundsSignature='';
+  syncVolumeOutlinePreview();
+}
+
+function _boundsBoxFromAabb(minX,minY,minZ,maxX,maxY,maxZ,openBottom){
+  const w=Math.max(1e-4, maxX-minX);
+  const h=Math.max(1e-4, maxY-minY);
+  const d=Math.max(1e-4, maxZ-minZ);
+  return {
+    cx:(minX+maxX)*0.5, cy:(minY+maxY)*0.5, cz:(minZ+maxZ)*0.5,
+    w, h, d, openBottom:!!openBottom, parent:null,
+  };
+}
+
+function _syringeBoundsBox(sy){
+  if(!sy||!Number.isFinite(sy.barrelOutR)) return null;
+  const r=Math.max(sy.barrelOutR||0, sy.needleOutR||0);
+  let minX=-r, maxX=r, minZ=-r, maxZ=r;
+  let minY=0, maxY=Math.max(sy._barrelTop||0, 1e-4);
+  if(sy.catchTrayTopY!=null && Number.isFinite(+sy.catchTrayRadius) && sy.catchTrayRadius>0){
+    minY=Math.min(minY, sy.catchTrayTopY-2);
+    const tr=sy.catchTrayRadius;
+    minX=Math.min(minX,-tr); maxX=Math.max(maxX,tr);
+    minZ=Math.min(minZ,-tr); maxZ=Math.max(maxZ,tr);
   }
-  const hx=bw*0.5, hy=bh*0.5, hz=bd*0.5;
-  const verts=new Float32Array([
-    -hx, hy,-hz,  hx, hy,-hz,
-     hx, hy,-hz,  hx, hy, hz,
-     hx, hy, hz, -hx, hy, hz,
-    -hx, hy, hz, -hx, hy,-hz,
-    -hx, hy,-hz, -hx,-hy,-hz,
-     hx, hy,-hz,  hx,-hy,-hz,
-     hx, hy, hz,  hx,-hy, hz,
-    -hx, hy, hz, -hx,-hy, hz,
-  ]);
-  const geo=new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
-  return geo;
+  const ox=sy.offsetX||0, oz=sy.offsetZ||0;
+  return _boundsBoxFromAabb(ox+minX, minY, oz+minZ, ox+maxX, maxY, oz+maxZ, false);
 }
 
-function _refreshVolumeOutlineDashes(){
-  if(!gVolumeOutline) return;
-  gVolumeOutline.computeLineDistances();
+function _meshLocalBoundsBox(mesh){
+  const geo=mesh?.geometry;
+  if(!geo) return null;
+  if(!geo.boundingBox) geo.computeBoundingBox();
+  const bb=geo.boundingBox;
+  if(!bb||bb.isEmpty()) return null;
+  const s=mesh.scale;
+  const w=Math.max(1e-4, (bb.max.x-bb.min.x)*Math.abs(s.x||1));
+  const h=Math.max(1e-4, (bb.max.y-bb.min.y)*Math.abs(s.y||1));
+  const d=Math.max(1e-4, (bb.max.z-bb.min.z)*Math.abs(s.z||1));
+  return {
+    cx:((bb.min.x+bb.max.x)*0.5)*(s.x||1)+mesh.position.x,
+    cy:((bb.min.y+bb.max.y)*0.5)*(s.y||1)+mesh.position.y,
+    cz:((bb.min.z+bb.max.z)*0.5)*(s.z||1)+mesh.position.z,
+    w, h, d, openBottom:false, parent:mesh.parent||null,
+  };
 }
 
-/** Rebuild outline at world size so dashes match on every edge. */
-function _setVolumeOutlineBox(w,h,d,openBottom){
-  if(!gVolumeOutline)return;
-  const open=!!openBottom;
-  const bw=Math.max(1e-4,+w||1e-4);
-  const bh=Math.max(1e-4,+h||1e-4);
-  const bd=Math.max(1e-4,+d||1e-4);
-  const ud=gVolumeOutline.userData;
-  if(ud.openBottom===open && ud.boxW===bw && ud.boxH===bh && ud.boxD===bd
-     && gVolumeOutline.scale.x===1 && gVolumeOutline.scale.y===1 && gVolumeOutline.scale.z===1){
-    return;
+/** Cluster AABB in the cluster's local space, ignoring the spin so the box stays tight. */
+function _interlockLocalBoundsBox(){
+  const cluster=gShowcase?.cluster;
+  if(!cluster) return null;
+  // The drawn box is a child of the cluster; leave it out so the fit cannot grow each rebuild.
+  const parked=[];
+  for(const entry of gBoundsBoxes){
+    if(entry.object.parent===cluster){
+      cluster.remove(entry.object);
+      parked.push(entry.object);
+    }
   }
-  ud.openBottom=open;
-  ud.boxW=bw; ud.boxH=bh; ud.boxD=bd;
-  const old=gVolumeOutline.geometry;
-  gVolumeOutline.geometry=_makeVolumeOutlineGeometry(open,bw,bh,bd);
-  if(old)old.dispose();
-  gVolumeOutline.scale.set(1,1,1);
-  _refreshVolumeOutlineDashes();
-}
-
-function _detachVolumeOutlineToScene(){
-  if(!gVolumeOutline||!gScene) return;
-  if(gVolumeOutline.parent===gScene) return;
-  if(gVolumeOutline.parent) gVolumeOutline.parent.remove(gVolumeOutline);
-  gVolumeOutline.rotation.set(0,0,0);
-  gScene.add(gVolumeOutline);
-}
-
-/** Local AABB of star-interlock cluster; outline parented so it spins with the object. */
-function _syncStarInterlockVolumeOutline(){
-  if(!gVolumeOutline||!gShowcase.cluster) return false;
-  const cluster=gShowcase.cluster;
-  if(gVolumeOutline.parent!==cluster){
-    if(gVolumeOutline.parent) gVolumeOutline.parent.remove(gVolumeOutline);
-    const savedY=cluster.rotation.y;
-    cluster.rotation.y=0;
-    cluster.updateMatrixWorld(true);
-    const box=new THREE.Box3().setFromObject(cluster);
-    if(box.isEmpty()){
-      cluster.rotation.y=savedY;
-      cluster.updateMatrixWorld(true);
-      gScene.add(gVolumeOutline);
-      return false;
-    }
-    const center=new THREE.Vector3();
-    const size=new THREE.Vector3();
-    box.getCenter(center);
-    box.getSize(size);
-    if(size.x<1e-6||size.y<1e-6||size.z<1e-6){
-      cluster.rotation.y=savedY;
-      cluster.updateMatrixWorld(true);
-      gScene.add(gVolumeOutline);
-      return false;
-    }
-    cluster.worldToLocal(center);
-    _setVolumeOutlineBox(size.x,size.y,size.z,false);
-    gVolumeOutline.position.copy(center);
-    gVolumeOutline.rotation.set(0,0,0);
-    cluster.add(gVolumeOutline);
+  const fill=gShowcase?.fillMesh;
+  if(fill && fill.parent===cluster){
+    cluster.remove(fill);
+    parked.push(fill);
+  }
+  const savedY=cluster.rotation.y;
+  cluster.rotation.y=0;
+  cluster.updateMatrixWorld(true);
+  const box=new THREE.Box3().setFromObject(cluster);
+  if(box.isEmpty()){
     cluster.rotation.y=savedY;
     cluster.updateMatrixWorld(true);
-    gVolumeOutline.userData.interlockBound=true;
+    for(const obj of parked) cluster.add(obj);
+    return null;
   }
-  return true;
+  const center=new THREE.Vector3();
+  const size=new THREE.Vector3();
+  box.getCenter(center);
+  box.getSize(size);
+  cluster.worldToLocal(center);
+  cluster.rotation.y=savedY;
+  cluster.updateMatrixWorld(true);
+  for(const obj of parked) cluster.add(obj);
+  if(size.x<1e-6||size.y<1e-6||size.z<1e-6) return null;
+  return {cx:center.x, cy:center.y, cz:center.z, w:size.x, h:size.y, d:size.z, openBottom:false, parent:cluster};
 }
 
-/** Show wireframe box from sidebar volume fields when paused; star interlock while active. */
-function syncVolumeOutlinePreview(){
-  if(!gVolumeOutline)return;
-  const mv=_containerModeRaw();
-  const volMode=_isVolumeContainerMode();
-  const airwayMode=mv==='airway';
-  const interlockMode=_isShowcaseStarInterlockMode()&&gShowcase.active&&!!gShowcase.cluster;
-  const wantOutline=!!(document.getElementById('chkVolumeOutlineShow')?.checked);
-  const show=wantOutline && !gPerfSkipDraw && (
-    (gPaused && (volMode||airwayMode)) || interlockMode
-  );
-  if(!show){
-    gVolumeOutline.visible=false;
-    if(gVolumeOutline.userData.interlockBound){
-      _detachVolumeOutlineToScene();
-      gVolumeOutline.userData.interlockBound=false;
+/** One box description per container. Same fields in every mode. */
+function _collectBoundsBoxes(){
+  const out=[];
+  if(_isShowcaseMode()&&gShowcase?.active){
+    if(_isShowcaseStarInterlockMode()){
+      const b=_interlockLocalBoundsBox();
+      if(b) out.push(b);
+    }else if(gShowcase.items?.length){
+      for(const item of gShowcase.items){
+        const b=_meshLocalBoundsBox(item?.mesh);
+        if(b) out.push(b);
+      }
     }
-    return;
+    return out;
   }
-  if(interlockMode){
-    gVolumeOutline.visible=_syncStarInterlockVolumeOutline();
-    return;
+  if(gSimulator?.lanes?.length){
+    for(const lane of gSimulator.lanes){
+      const b=_syringeBoundsBox(lane?.syringe);
+      if(b) out.push(b);
+    }
+    return out;
   }
-  if(gVolumeOutline.userData.interlockBound){
-    _detachVolumeOutlineToScene();
-    gVolumeOutline.userData.interlockBound=false;
-  }
-  gVolumeOutline.visible=true;
-  if(airwayMode&&gSimulator&&gSimulator.syringe&&gSimulator.syringe._airwayVolume){
-    const b=gSimulator.syringe;
-    _setVolumeOutlineBox(b.halfX*2,b.halfY*2,b.halfZ*2,false);
-    gVolumeOutline.position.set(b.centerX,b.centerY,b.centerZ);
-  }else{
+  if(_isVolumeContainerMode()){
     const vb=readVolumeBoxParams();
-    _setVolumeOutlineBox(
-      vb.widthMm,vb.heightMm,vb.depthMm,
-      !!document.getElementById('chkVolumeOpenBottom')?.checked);
-    gVolumeOutline.position.set(vb.centerX_mm,vb.centerY_mm,vb.centerZ_mm);
+    out.push({
+      cx:vb.centerX_mm, cy:vb.centerY_mm, cz:vb.centerZ_mm,
+      w:Math.max(1e-4, vb.widthMm), h:Math.max(1e-4, vb.heightMm), d:Math.max(1e-4, vb.depthMm),
+      openBottom:!!document.getElementById('chkVolumeOpenBottom')?.checked,
+      parent:null,
+    });
+    return out;
   }
+  const sy=gSimulator?.syringe;
+  if(sy?._boxVolume||sy?._airwayVolume){
+    out.push({
+      cx:sy.centerX, cy:sy.centerY, cz:sy.centerZ,
+      w:Math.max(1e-4, sy.halfX*2), h:Math.max(1e-4, sy.halfY*2), d:Math.max(1e-4, sy.halfZ*2),
+      openBottom:!!sy.openBottom,
+      parent:null,
+    });
+  }else{
+    const b=_syringeBoundsBox(sy);
+    if(b) out.push(b);
+  }
+  return out;
+}
+
+function _disposeBoundsBoxes(){
+  for(const entry of gBoundsBoxes){
+    const obj=entry.object;
+    if(obj.parent) obj.parent.remove(obj);
+    obj.traverse(ch=>{
+      if(ch.geometry && typeof ch.geometry.dispose==='function') ch.geometry.dispose();
+    });
+  }
+  gBoundsBoxes=[];
+  gVolumeOutline=null;
+}
+
+const _boundsUp=new THREE.Vector3(0,1,0);
+const _boundsDir=new THREE.Vector3();
+const _boundsQuat=new THREE.Quaternion();
+
+function _addDashedEdge(group, ax,ay,az, bx,by,bz, dash, gap, radius){
+  const dx=bx-ax, dy=by-ay, dz=bz-az;
+  const len=Math.hypot(dx,dy,dz);
+  if(len<1e-5) return;
+  _boundsDir.set(dx/len, dy/len, dz/len);
+  _boundsQuat.setFromUnitVectors(_boundsUp, _boundsDir);
+  const period=Math.max(1e-4, dash+gap);
+  let t=0, n=0;
+  while(t<len-1e-4 && n<80){
+    const seg=Math.min(dash, len-t);
+    if(seg<1e-4) break;
+    const mid=t+seg*0.5;
+    const geo=new THREE.CylinderGeometry(radius, radius, Math.max(seg, 1e-4), 6, 1, false);
+    const mesh=new THREE.Mesh(geo, gBoundsMat);
+    mesh.position.set(ax+_boundsDir.x*mid, ay+_boundsDir.y*mid, az+_boundsDir.z*mid);
+    mesh.quaternion.copy(_boundsQuat);
+    mesh.renderOrder=3;
+    mesh.frustumCulled=false;
+    group.add(mesh);
+    t+=period;
+    n++;
+  }
+}
+
+/** Dashed stroke in the box's local space. Proportions come from the shortest side. */
+function _buildBoundsObject(box, style){
+  const minE=Math.min(box.w, box.h, box.d);
+  const pad=minE*style.pad;
+  const w=box.w+2*pad, h=box.h+2*pad, d=box.d+2*pad;
+  const basis=Math.min(w,h,d);
+  const dash=Math.max(0.01, basis*style.dash);
+  const gap=Math.max(0.005, basis*style.gap);
+  const radius=Math.max(0.002, basis*style.thick*0.5);
+  const hx=w*0.5, hy=h*0.5, hz=d*0.5;
+  const group=new THREE.Group();
+  group.frustumCulled=false;
+  const yLo=box.openBottom?-hy:null;
+  const corners=[];
+  for(const y of [hy, -hy]){
+    if(yLo!=null && y===yLo) continue;
+    corners.push([-hx,y,-hz, hx,y,-hz]);
+    corners.push([hx,y,-hz, hx,y, hz]);
+    corners.push([hx,y, hz,-hx,y, hz]);
+    corners.push([-hx,y, hz,-hx,y,-hz]);
+  }
+  const ys=[-hy, hy];
+  for(const x of [-hx, hx]) for(const z of [-hz, hz])
+    corners.push([x,ys[0],z, x,ys[1],z]);
+  for(const e of corners) _addDashedEdge(group, e[0],e[1],e[2], e[3],e[4],e[5], dash, gap, radius);
+  group.position.set(box.cx, box.cy, box.cz);
+  return group;
+}
+
+function _boundsSignature(boxes, style){
+  const parts=[
+    style.dash, style.gap, style.thick, style.pad, style.opacity, _vizAccentHex()];
+  for(const b of boxes){
+    parts.push(b.parent?.uuid||'scene', b.openBottom?1:0,
+      b.cx.toFixed(4), b.cy.toFixed(4), b.cz.toFixed(4),
+      b.w.toFixed(4), b.h.toFixed(4), b.d.toFixed(4));
+  }
+  return parts.join('|');
+}
+
+/** Same dashed box, in every mode. Padding only affects the drawing. */
+function syncVolumeOutlinePreview(){
+  if(!gScene||!gBoundsMat) return;
+  const want=!!document.getElementById('chkVolumeOutlineShow')?.checked;
+  const style=_readBoundsStyle();
+  const show=want && !gPerfSkipDraw && (style.whileRunning || gPaused);
+  if(!show){
+    for(const entry of gBoundsBoxes) entry.object.visible=false;
+    syncFillMeshPreviewVisibility();
+    return;
+  }
+  const boxes=_collectBoundsBoxes();
+  const sig=_boundsSignature(boxes, style);
+  if(sig!==gBoundsSignature){
+    _disposeBoundsBoxes();
+    gBoundsMat.opacity=style.opacity;
+    gBoundsMat.transparent=style.opacity<0.999;
+    gBoundsMat.color.setHex(_vizAccentHex());
+    for(const b of boxes){
+      const object=_buildBoundsObject(b, style);
+      const parent=b.parent||gScene;
+      parent.add(object);
+      gBoundsBoxes.push({object, parent});
+    }
+    gVolumeOutline=gBoundsBoxes[0]?.object||null;
+    gBoundsSignature=sig;
+  }
+  for(const entry of gBoundsBoxes) entry.object.visible=true;
   syncFillMeshPreviewVisibility();
 }
 
@@ -8839,13 +9280,6 @@ function onIsoViewSnap(mode){
   const key=String(mode||'free');
   if(key==='free') return;
   if(gContainerOrbitState) _stopContainerOrbit();
-  const target=gCamCtrl.target.clone();
-  let dist=gCamera.position.distanceTo(target);
-  if(!Number.isFinite(dist)||dist<0.5){
-    const c=_containerOrbitCenter();
-    const diag=Math.sqrt(c.w*c.w+c.h*c.h+c.d*c.d);
-    dist=Math.max(6, diag*1.25);
-  }
   const dirs={
     iso:new THREE.Vector3(1,1,1),
     iso_nw:new THREE.Vector3(-1,1,1),
@@ -8858,6 +9292,13 @@ function onIsoViewSnap(mode){
     top:new THREE.Vector3(0.001,1,0.001),
     bottom:new THREE.Vector3(0.001,-1,0.001),
   };
+  const target=gCamCtrl.target.clone();
+  let dist=gCamera.position.distanceTo(target);
+  if(!Number.isFinite(dist)||dist<0.5){
+    const c=_containerOrbitCenter();
+    const dir=dirs[key]||dirs.iso;
+    dist=_cameraFitDistanceForBox(c.w,c.h,c.d, gCamera.fov, gCamera.aspect, dir);
+  }
   const dir=(dirs[key]||dirs.iso).clone().normalize();
   gCamera.position.copy(target).addScaledVector(dir, dist);
   gCamera.up.set(0,1,0);
@@ -8943,7 +9384,7 @@ function applyVizBackgroundTheme(){
     else gScene.background=new THREE.Color(bg);
     if(gScene.fog) gScene.fog.color.setHex(bg);
   }
-  if(gVolumeOutline?.material?.color) gVolumeOutline.material.color.setHex(accent);
+  if(gBoundsMat?.color) gBoundsMat.color.setHex(accent);
   const meshes=gSimulator?.syringe?.meshes;
   if(meshes){
     for(const entry of meshes){
@@ -9055,16 +9496,75 @@ function clearFillVolumeObj(){
   onRestart();
 }
 
+const _FIT_BOX_CORNERS=[
+  [-1,-1,-1],[1,-1,-1],[-1,1,-1],[1,1,-1],
+  [-1,-1,1],[1,-1,1],[-1,1,1],[1,1,1],
+];
+const _fitBoxV=new THREE.Vector3();
+const _fitBoxRight=new THREE.Vector3();
+const _fitBoxUp=new THREE.Vector3();
+const _fitBoxViewDir=new THREE.Vector3();
+const _DEFAULT_CONTAINER_VIEW=new THREE.Vector3(0.82,0.5,0.95).normalize();
+
+function _defaultContainerViewDir(out){
+  return (out||new THREE.Vector3()).copy(_DEFAULT_CONTAINER_VIEW);
+}
+
+/** Min camera distance so an axis-aligned box fills a perspective frustum. */
+function _cameraFitDistanceForBox(w,h,d, fovDeg, aspect, viewDir, margin=CAMERA_FIT_MARGIN){
+  const hw=Math.max(1e-4,w*0.5), hh=Math.max(1e-4,h*0.5), hd=Math.max(1e-4,d*0.5);
+  const fovRad=fovDeg*Math.PI/180;
+  const tanHalfV=Math.tan(fovRad*0.5);
+  const tanHalfH=tanHalfV*Math.max(1e-4, aspect);
+  const dir=_fitBoxViewDir.copy(viewDir).normalize();
+  _fitBoxUp.set(0,1,0);
+  _fitBoxRight.crossVectors(_fitBoxUp, dir);
+  if(_fitBoxRight.lengthSq()<1e-8) _fitBoxRight.set(1,0,0);
+  else _fitBoxRight.normalize();
+  _fitBoxUp.crossVectors(dir, _fitBoxRight).normalize();
+  let maxDist=0.5;
+  for(const c of _FIT_BOX_CORNERS){
+    _fitBoxV.set(c[0]*hw, c[1]*hh, c[2]*hd);
+    const dx=_fitBoxV.dot(_fitBoxRight);
+    const dy=_fitBoxV.dot(_fitBoxUp);
+    const dz=_fitBoxV.dot(dir);
+    maxDist=Math.max(maxDist, Math.abs(dx)/tanHalfH+dz, Math.abs(dy)/tanHalfV+dz);
+  }
+  return maxDist*margin;
+}
+
+function _fitCameraToBox(cx,cy,cz,w,h,d, viewDir, margin=CAMERA_FIT_MARGIN){
+  if(!gCamCtrl||!gCamera) return;
+  if(gContainerOrbitState) _stopContainerOrbit();
+  const sel=document.getElementById('selIsoView');
+  if(sel) sel.value='free';
+  const dir=_fitBoxViewDir.copy(viewDir);
+  if(dir.lengthSq()<1e-6) _defaultContainerViewDir(dir);
+  else dir.normalize();
+  const dist=_cameraFitDistanceForBox(
+    w,h,d, gCamera.fov, gCamera.aspect, dir, margin);
+  gCamCtrl.target.set(cx,cy,cz);
+  gCamera.position.set(cx+dir.x*dist, cy+dir.y*dist, cz+dir.z*dist);
+  gCamCtrl.update();
+}
+
 function focusNeedleTip(){ _focusTarget(0,0,0,true); }
 function focusBarrel(){
+  if(gShowcase.active&&gShowcase.root){
+    _showcaseFocusCamera();
+    return;
+  }
   if(!gSimulator||!gSimulator.syringe)return;
   const sp=gSimulator.syringe;
   if(sp._boxVolume||sp._airwayVolume){
     focusVolumeBox();
     return;
   }
-  const mid=(sp._taperEnd+sp._barrelTop)*0.5;
-  _focusTarget(0,mid,0,true);
+  const r=Math.max(sp.barrelOutR||5, sp.needleOutR||1);
+  const h=Math.max(sp._barrelTop||60, 1);
+  const mid=h*0.5;
+  const viewDir=gCamera.position.clone().sub(gCamCtrl?.target||new THREE.Vector3(0,mid,0));
+  _fitCameraToBox(0, mid, 0, r*2.4, h, r*2.4, viewDir);
 }
 
 /** Frame the invisible box from current sidebar / simulator bounds (mm space). */
@@ -9080,16 +9580,51 @@ function focusVolumeBox(){
     cx=vb.centerX_mm; cy=vb.centerY_mm; cz=vb.centerZ_mm;
     w=vb.widthMm; h=vb.heightMm; d=vb.depthMm;
   }
-  const diag=Math.sqrt(w*w+h*h+d*d);
-  const dist=Math.max(6, diag*1.25);
-  gCamCtrl.target.set(cx,cy,cz);
-  const dir=new THREE.Vector3(0.82,0.5,0.95).normalize();
-  gCamera.position.set(cx+dir.x*dist, cy+dir.y*dist, cz+dir.z*dist);
+  const viewDir=gCamera.position.clone().sub(gCamCtrl.target);
+  _fitCameraToBox(cx,cy,cz,w,h,d, viewDir);
+}
+
+/** Step zoom toward/away from the current look-at target. */
+function _zoomCenter(stepFactor){
+  if(!gCamCtrl||!gCamera) return;
+  if(gContainerOrbitState) _stopContainerOrbit();
+  const sel=document.getElementById('selIsoView');
+  if(sel) sel.value='free';
+  const target=gCamCtrl.target.clone();
+  const offset=gCamera.position.clone().sub(target);
+  let dist=offset.length();
+  if(dist<1e-6){
+    const c=_containerOrbitCenter();
+    dist=_cameraFitDistanceForBox(
+      c.w,c.h,c.d, gCamera.fov, gCamera.aspect, _defaultContainerViewDir());
+    offset.copy(_defaultContainerViewDir()).multiplyScalar(dist);
+  }
+  const newDist=Math.max(
+    gCamCtrl.minDistance, Math.min(gCamCtrl.maxDistance, dist*stepFactor));
+  gCamera.position.copy(target).add(offset.normalize().multiplyScalar(newDist));
   gCamCtrl.update();
+}
+function zoomInCenter(){ _zoomCenter(CAMERA_ZOOM_IN_FACTOR); }
+function zoomOutCenter(){ _zoomCenter(1/CAMERA_ZOOM_IN_FACTOR); }
+
+function _syringeOrbitBounds(){
+  if(gSimulator?.syringe&&!gSimulator.syringe._boxVolume&&!gSimulator.syringe._airwayVolume){
+    const sp=gSimulator.syringe;
+    const r=Math.max(sp.barrelOutR||5, sp.needleOutR||1);
+    const h=Math.max(sp._barrelTop||60, 1);
+    return{cx:0, cy:h*0.5, cz:0, w:r*2.4, h, d:r*2.4};
+  }
+  const p=readSyringeParams();
+  const barrelOutR=p.barrelDiam/2+0.38;
+  const needleOutR=p.needleDiam/2+0.15;
+  const r=Math.max(barrelOutR, needleOutR);
+  const h=Math.max(p.needleLen+p.taperH+p.barrelLen, 1);
+  return{cx:0, cy:h*0.5, cz:0, w:r*2.4, h, d:r*2.4};
 }
 
 /** Center + framing for invisible box / bronchial tree (sidebar or live sim). */
 function _containerOrbitCenter(){
+  if(_containerModeRaw()==='syringe') return _syringeOrbitBounds();
   if(gShowcase.active&&gShowcase.root){
     const box=new THREE.Box3().setFromObject(gShowcase.root);
     const center=new THREE.Vector3();
@@ -9110,7 +9645,7 @@ function _containerOrbitCenter(){
 
 function _isContainerOrbitContentMode(){
   const mv=_containerModeRaw();
-  return _isVolumeContainerMode()||mv==='airway'||_isShowcaseMode();
+  return mv==='syringe'||_isVolumeContainerMode()||mv==='airway'||_isShowcaseMode();
 }
 
 function _beginContainerOrbit(){
@@ -9125,8 +9660,9 @@ function _beginContainerOrbit(){
   let offset=gCamera.position.clone().sub(pivot);
   if(offset.lengthSq()<1e-4){
     const c=_containerOrbitCenter();
-    const diag=Math.sqrt(c.w*c.w+c.h*c.h+c.d*c.d);
-    offset.set(0.82,0.5,0.95).normalize().multiplyScalar(Math.max(6,diag*1.25));
+    const dir=_defaultContainerViewDir();
+    offset.copy(dir).multiplyScalar(
+      _cameraFitDistanceForBox(c.w,c.h,c.d, gCamera.fov, gCamera.aspect, dir));
   }
   const speedRaw=+document.getElementById('pContainerOrbitDegS')?.value;
   const degPerSec=Number.isFinite(speedRaw)?Math.max(1,Math.min(180,speedRaw)):18;
@@ -9785,6 +10321,8 @@ function readSyringeParams(){
     needleDiam  :+document.getElementById('pNeedleDiam').value,
     needleLen   :+document.getElementById('pNeedleLen').value,
     taperH      :+document.getElementById('pTaperH').value,
+    barrelOutlineMm:_readOutlineInputs().barrel,
+    needleOutlineMm:_readOutlineInputs().needle,
     capActive   :document.getElementById('chkCap')?.checked ?? true,
     needleInletCapActive:document.getElementById('chkNeedleInlet')?.checked ?? false,
     filamentGuideRadiusMm:_filamentGuideRadiusFromUi(),
@@ -10170,6 +10708,38 @@ function lockFromPicked(){
     q.volCompliance=0;
   }
   updatePickedVisual();
+}
+
+function _readOutlineInputs(){
+  const barrel=Math.max(0.02, Math.min(2, +document.getElementById('sBarrelOutline')?.value||0.14));
+  const needle=Math.max(0.02, Math.min(2, +document.getElementById('sNeedleOutline')?.value||0.16));
+  return {barrel, needle};
+}
+
+function _forEachLiveSyringe(fn){
+  const sim=gSimulator;
+  if(!sim) return;
+  if(sim.lanes?.length){
+    for(const lane of sim.lanes){
+      if(lane?.syringe && typeof lane.syringe.rebuildOutlines==='function') fn(lane.syringe);
+    }
+    return;
+  }
+  if(sim.syringe && typeof sim.syringe.rebuildOutlines==='function') fn(sim.syringe);
+}
+
+function onSyringeOutlineChange(){
+  const {barrel, needle}=_readOutlineInputs();
+  const lb=document.getElementById('lblBarrelOutline');
+  const ln=document.getElementById('lblNeedleOutline');
+  if(lb) lb.textContent=barrel.toFixed(2);
+  if(ln) ln.textContent=needle.toFixed(2);
+  if(typeof gScene==='undefined' || !gScene) return;
+  _forEachLiveSyringe(s=>{
+    s.barrelOutlineMm=barrel;
+    s.needleOutlineMm=needle;
+    s.rebuildOutlines(gScene);
+  });
 }
 
 function onWallMuChange(v){
@@ -10597,6 +11167,14 @@ async function loadUIConfig(){
       if(cfg.viz.stressDepthMix!==undefined) gTuningOverrides.stressDepthMix=Math.max(0,Math.min(1,+cfg.viz.stressDepthMix));
       if(cfg.viz.stressSampleEveryNFrames!==undefined) gTuningOverrides.stressSampleEveryNFrames=+cfg.viz.stressSampleEveryNFrames;
       if(cfg.viz.normalSampleEveryNFrames!==undefined) gTuningOverrides.normalSampleEveryNFrames=+cfg.viz.normalSampleEveryNFrames;
+      if(cfg.viz.boundsDashPct!==undefined) setNum('sBoundsDash', cfg.viz.boundsDashPct);
+      if(cfg.viz.boundsGapPct!==undefined) setNum('sBoundsGap', cfg.viz.boundsGapPct);
+      if(cfg.viz.boundsStrokePct!==undefined) setNum('sBoundsStroke', cfg.viz.boundsStrokePct);
+      if(cfg.viz.boundsPadPct!==undefined) setNum('sBoundsPad', cfg.viz.boundsPadPct);
+      if(cfg.viz.boundsOpacityPct!==undefined) setNum('sBoundsOpacity', cfg.viz.boundsOpacityPct);
+      if(cfg.viz.boundsWhileRunning!==undefined) setBool('chkBoundsWhileRunning', cfg.viz.boundsWhileRunning);
+      if(cfg.viz.syringeBorderMm!==undefined) setNum('sBarrelOutline', cfg.viz.syringeBorderMm);
+      if(cfg.viz.needleBorderMm!==undefined) setNum('sNeedleOutline', cfg.viz.needleBorderMm);
       if(cfg.viz.showVolumeBox!==undefined) setBool('chkVolumeOutlineShow', cfg.viz.showVolumeBox);
       if(cfg.viz.darkBackground!==undefined) setBool('chkDarkBackground', cfg.viz.darkBackground);
       if(cfg.viz.background!==undefined){
@@ -10633,6 +11211,8 @@ async function loadUIConfig(){
     onToggleParticleLock(document.getElementById('chkParticleLock')?.checked ?? false);
     onPickModeChange(document.getElementById('selPickMode')?.value ?? 'inspect');
     onWallMuChange(document.getElementById('sWallMu')?.value ?? 65);
+    onSyringeOutlineChange();
+    onBoundsStyleChange();
     onStressGainChange(document.getElementById('sStressGain')?.value ?? 120);
     syncVolumeOutlinePreview();
 
@@ -10711,6 +11291,40 @@ function _readBoxFillPlayFps(){
   return Math.max(15, Math.min(240, +document.getElementById('pBoxFillPlayFps')?.value||60));
 }
 
+/** Playback fps for export — always read from the active UI control, not stale bake state. */
+function _readVideoExportPlayFps(src){
+  const kind=src?.kind;
+  if(kind==='box_fill' || _boxFillSequenceEnabled()) return _readBoxFillPlayFps();
+  if(kind==='syringe') return _readSyringe4kPlayFps();
+  if(kind==='volume_live') return BAKED_SIM_HZ;
+  if(kind==='showcase') return _readShowcaseExportFps();
+  return _airwayReadPlayFps();
+}
+
+/**
+ * Re-time hold-frame runs for the chosen export playback fps so pauses last pauseS seconds
+ * of video (bakes always capture physics at BAKED_SIM_HZ but hold count may differ).
+ */
+function _videoExportPrepareBoxFillFrames(frames, pauseS, exportFps){
+  if(!frames?.length) return frames;
+  const holdOut=Math.max(0, Math.round(Math.max(0, pauseS)*exportFps));
+  const out=[];
+  let i=0;
+  while(i<frames.length){
+    const fr=frames[i];
+    if(fr?.hold){
+      let j=i+1;
+      while(j<frames.length && frames[j]?.hold) j++;
+      for(let k=0; k<holdOut; k++) out.push(fr);
+      i=j;
+    }else{
+      out.push(fr);
+      i++;
+    }
+  }
+  return out;
+}
+
 function _readSyringe4kDurS(){
   return Math.max(1, Math.min(600, +document.getElementById('pSyringe4kDurS')?.value||10));
 }
@@ -10770,6 +11384,21 @@ function _syringe4kProgressUpdate(pb, simDurationS){
   }
 }
 
+function onBoxFillPlayFpsChange(){
+  const pb=gAirwayPlayback;
+  pb.playFps=_readBoxFillPlayFps();
+  if(!pb._rawFrames?.length) return;
+  pb.frames=_videoExportPrepareBoxFillFrames(
+    pb._rawFrames, _readBoxFillPauseS(), pb.playFps);
+  pb.frameIdx=0;
+  pb.playhead=0;
+  pb._lastPlayMs=performance.now();
+  if(pb.mode==='playing'){
+    _setBoxFillBakeLabel(
+      `Playback ${pb.frames.length} frames · ${pb.playFps|0} fps · Run = live physics`);
+  }
+}
+
 function _syncBoxFillSequenceUi(){
   const on=_boxFillSequenceEnabled();
   const wrap=document.getElementById('wrapBoxFillSequence');
@@ -10804,8 +11433,8 @@ function onBoxFillSequenceModeChange(on){
  * Returns without restarting so callers can batch several changes; pass restart=true for
  * the interactive path.
  */
-function applyMetricsExportDefaults(restart){
-  const d=METRICS_EXPORT_DEFAULTS;
+function applyMetricsExportDefaults(restart, overrides){
+  const d=Object.assign({}, METRICS_EXPORT_DEFAULTS, overrides||{});
   const boxFill=document.getElementById('chkBoxFillSequence');
   if(boxFill&&boxFill.checked){
     boxFill.checked=false;
@@ -11083,6 +11712,17 @@ const METRICS_EXPORT_DEFAULTS={
   meshDriveP2PColumns:false,
 };
 
+/**
+ * Contact-range compare test: same settle/equal-volume protocol as metrics export, but in a
+ * nearly-cubic box (1.165 × 1.165 × 1.175 mm). Used to read absolute particle-contact
+ * min/max that the Contacts color map normalizes against (per shape, excluding sphere).
+ */
+const CONTACT_RANGE_COMPARE_DEFAULTS={
+  widthMm:1.165,
+  heightMm:1.175,
+  depthMm:1.165,
+};
+
 function applyBoxFillUiDefaults(overrides){
   const d=Object.assign({}, BOX_FILL_UI_DEFAULTS, overrides||{});
   const set=(id,v)=>{
@@ -11220,7 +11860,12 @@ function _videoExportFrameSource(){
   if(gAirwayPlayback.frames.length){
     const mv=_containerModeRaw();
     const kind=_boxFillSequenceEnabled() ? 'box_fill' : mv==='syringe' ? 'syringe' : 'airway';
-    return {frames:gAirwayPlayback.frames, playFps:gAirwayPlayback.playFps, kind};
+    return {
+      frames:gAirwayPlayback.frames,
+      rawFrames:gAirwayPlayback._rawFrames,
+      playFps:gAirwayPlayback.playFps,
+      kind,
+    };
   }
   return null;
 }
@@ -12702,6 +13347,326 @@ async function onExportMetricsAllBase(){
   }
 }
 
+/**
+ * Unique neighbor counts for the Contacts color map's physics meaning (one pair = one
+ * contact, no substep/iteration inflation). Returns Int32Array aligned with particles[].
+ */
+function _uniqueNeighborCounts(sim){
+  const ps=sim.particles;
+  const n=ps.length;
+  const counts=new Int32Array(n);
+  if(n<2) return counts;
+  const restF=Math.max(0.5, Math.min(1.2, sim.contactRestDistFactor||1.0));
+  const touch=(i,j)=>{
+    const A=ps[i], B=ps[j];
+    const dx=A.center[0]-B.center[0];
+    const dy=A.center[1]-B.center[1];
+    const dz=A.center[2]-B.center[2];
+    const d2=dx*dx+dy*dy+dz*dz;
+    const rA=sim._contactRadiusForMeasure(A);
+    const rB=sim._contactRadiusForMeasure(B);
+    const minD=(rA+rB)*restF;
+    if(d2>=minD*minD||d2<1e-14) return;
+    counts[i]++; counts[j]++;
+  };
+  let activeCount=0;
+  for(let i=0;i<n;i++) if(ps[i].active) activeCount++;
+  if(activeCount<=64){
+    for(let i=0;i<n;i++){
+      if(!ps[i].active) continue;
+      for(let j=i+1;j<n;j++){
+        if(!ps[j].active) continue;
+        touch(i,j);
+      }
+    }
+    return counts;
+  }
+  for(let i=0;i<n;i++){
+    sim.centroids[3*i]  =ps[i].active?ps[i].center[0]:1e9;
+    sim.centroids[3*i+1]=ps[i].active?ps[i].center[1]:1e9;
+    sim.centroids[3*i+2]=ps[i].active?ps[i].center[2]:1e9;
+  }
+  const qr=sim._broadphaseQueryRadius();
+  sim.centroidHash.spacing=qr;
+  sim.centroidHash.create(sim.centroids);
+  for(let i=0;i<n;i++){
+    if(!ps[i].active) continue;
+    sim.centroidHash.query(sim.centroids,i,qr);
+    for(let nr=0;nr<sim.centroidHash.querySize;nr++){
+      const j=sim.centroidHash.queryIds[nr];
+      if(j<=i||!ps[j]?.active) continue;
+      touch(i,j);
+    }
+  }
+  return counts;
+}
+
+/** Min / max / mean of a per-particle count array over active particles. */
+function _minmaxActiveCounts(sim, counts){
+  let minC=Infinity, maxC=-Infinity, sum=0, n=0, zeros=0;
+  const ps=sim.particles;
+  for(let i=0;i<ps.length;i++){
+    if(!ps[i].active) continue;
+    const c=(counts?counts[i]:ps[i].contactCount)|0;
+    if(c<minC) minC=c;
+    if(c>maxC) maxC=c;
+    sum+=c; n++;
+    if(c===0) zeros++;
+  }
+  if(n===0) return {min:0,max:0,mean:0,n:0,zeros:0};
+  return {min:minC,max:maxC,mean:sum/n,n,zeros};
+}
+
+/** Min / max of p2p_contacts_count across logged metrics rows (column index 2). */
+function _minmaxP2PFromMetricsCSV(csv){
+  const lines=String(csv||'').trim().split(/\r?\n/);
+  let minV=Infinity, maxV=-Infinity, n=0, last=0;
+  for(let i=1;i<lines.length;i++){
+    const cols=lines[i].split(',');
+    if(cols.length<3) continue;
+    const v=+cols[2];
+    if(!Number.isFinite(v)) continue;
+    if(v<minV) minV=v;
+    if(v>maxV) maxV=v;
+    last=v; n++;
+  }
+  if(n===0) return {min:0,max:0,last:0,rows:0};
+  return {min:minV,max:maxV,last,rows:n};
+}
+
+function _formatContactRangeTable(rows){
+  const hdr='shape            | nbr min/max | colorCnt min/max | p2p pairs min/max | final avg nbr | active';
+  const sep='------------------+-------------+------------------+-------------------+---------------+-------';
+  const lines=[hdr,sep];
+  for(const r of rows){
+    const name=(r.stem||'').padEnd(17).slice(0,17);
+    const nbr=`${r.nbrMin}/${r.nbrMax}`.padStart(11);
+    const col=`${r.colorMin}/${r.colorMax}`.padStart(16);
+    const p2p=`${r.p2pMin}/${r.p2pMax}`.padStart(17);
+    const avg=Number(r.nbrMean).toFixed(2).padStart(13);
+    const act=String(r.active|0).padStart(5);
+    lines.push(`${name} |${nbr} |${col} |${p2p} |${avg} |${act}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Box-volume contact-range compare: run the five default library shapes (no sphere) in a
+ * 1.165×1.165×1.175 mm box and report particle-contact min/max for each.
+ *
+ * - nbr min/max: unique tip-aware neighbor counts (true coordination range)
+ * - colorCnt min/max: solver contactCount used by the Contacts heatmap that frame
+ *   (inflated by substeps×iterations; red = this max, relative per frame)
+ * - p2p pairs min/max: unique contacting pairs over the timed-capture CSV
+ */
+async function onContactRangeCompareAllBase(){
+  const btn=document.getElementById('btnContactRangeCompare');
+  const lbl=document.getElementById('lblContactRangeCompare');
+  const tbl=document.getElementById('tblContactRangeCompare');
+  const say=t=>{ if(lbl) lbl.textContent=t; };
+
+  if(gMetricsBatch.running){
+    gMetricsBatch.cancel=true;
+    if(btn) btn.textContent='Cancelling…';
+    return;
+  }
+  gMetricsBatch.running=true;
+  gMetricsBatch.cancel=false;
+  if(btn) btn.textContent='Cancel contact compare';
+  if(tbl){ tbl.style.display='none'; tbl.textContent=''; }
+
+  const files=SHOWCASE_LIBRARY_FILES.slice();
+  const savedLibrary=document.getElementById('particleLibrary')?.value;
+  const savedAutoCsv=document.getElementById('chkTimerAutoCsv')?.checked;
+  const protocol=Object.assign({}, METRICS_EXPORT_DEFAULTS, CONTACT_RANGE_COMPARE_DEFAULTS);
+  const results=[];
+  const summaryRows=[];
+
+  try{
+    const timer=document.getElementById('chkTimerExport');
+    if(timer&&!timer.checked){
+      timer.checked=true;
+      onTimerExportModeChange(true);
+    }
+    applyMetricsExportDefaults(true, CONTACT_RANGE_COMPARE_DEFAULTS);
+    onColorModeChange('contact');
+    await _sleepMs(150);
+
+    for(let i=0;i<files.length;i++){
+      if(gMetricsBatch.cancel) break;
+      const fname=files[i];
+      const value=`assets/${fname}`;
+      const stem=fname.replace(/\.json$/i,'');
+      say(`Loading ${stem} (${i+1}/${files.length})…`);
+
+      if(!gPaused) onPauseToggle();
+
+      const selLib=document.getElementById('particleLibrary');
+      if(selLib){
+        let found=false;
+        for(const opt of selLib.options){ if(opt.value===value){ found=true; break; } }
+        if(!found){
+          const opt=document.createElement('option');
+          opt.value=value;
+          opt.textContent=stem;
+          selLib.appendChild(opt);
+        }
+        selLib.value=value;
+      }
+      await onSelectLibrary(value);
+      await _sleepMs(150);
+      if(gMetricsBatch.cancel) break;
+
+      // Re-assert equal-volume + the contact-range box after the shape load restart.
+      applyMetricsExportDefaults(false, CONTACT_RANGE_COMPARE_DEFAULTS);
+      if(gParticleSizeBasis!=='volume' || Math.abs(gNominalRadiusMm-protocol.radiusMm)>1e-6){
+        const basis=document.getElementById('selSizeBasis');
+        if(basis) basis.value='volume';
+        gParticleSizeBasis='volume';
+        _syncSizeBasisCaptions();
+        gNominalRadiusMm=protocol.radiusMm;
+        const rEl=document.getElementById('sRadius');
+        if(rEl) rEl.value=String(protocol.radiusMm);
+        const lblR=document.getElementById('lblNomRadius');
+        if(lblR) lblR.textContent=protocol.radiusMm.toFixed(3);
+        if(gParticleTemplateBase){
+          gParticleTemplate=_buildScaledTemplateFromBase(
+            gParticleTemplateBase,
+            _targetBoundingRadiusForBasis(gParticleTemplateBase, protocol.radiusMm));
+        }
+      }
+      onContainerModeChange(true);
+      await _sleepMs(80);
+      if(!gSimulator) throw new Error(`${stem}: simulator failed to build`);
+
+      gSimulator.timerExportMode=true;
+      gSimulator.timerAutoExportCsv=false;
+      gSimulator.timerCaptureSimS=protocol.captureWindowSimS;
+      gSimulator.timerHoldSimS=protocol.holdSimS;
+      gSimulator.timerDropMode=protocol.dropMode||'settle';
+      gSimulator.timerDropBatch=Math.max(1,protocol.dropMore|0);
+      gSimulator.timerDropSettleSpeed=protocol.dropSettleSpeed;
+      gSimulator.timerDropSettleFrames=protocol.dropSettleFrames;
+      gSimulator.timerDropMinWaitS=protocol.dropMinWaitS;
+      gSimulator.timerMaxSimS=protocol.maxCaptureSimS;
+      gSimulator.meshInterlockEnabled=!!protocol.meshInterlockEnabled;
+      gSimulator.meshInterlockEveryNFrames=Math.max(1,protocol.meshInterlockSampleEveryN|0);
+      gSimulator.meshInterlockBusyEveryNFrames=Math.max(1,protocol.meshInterlockBusyEveryN|0);
+      gSimulator.meshComputeDepth=!!protocol.meshComputeDepth;
+      gSimulator.meshFastInside=protocol.meshFastInside!==false;
+      gSimulator.meshDriveP2PColumns=!!protocol.meshDriveP2PColumns;
+      gSimulator.timerTargetParticles=protocol.targetParticles;
+      gSimulator.timerDropIntervalSimS=protocol.dropIntervalSimS;
+      gSimulator._timerAnchorSim=null;
+      gSimulator._timerWallAnchorMs=null;
+      gSimulator._timerCaptureDone=false;
+      gSimulator._packHoldStartSim=null;
+      gSimulator._timerQuietFrames=0;
+      gSimulator._resetMetricsLog();
+      gSimulator.colorMode='contact';
+      const blend=document.getElementById('sContactBoundWeight');
+      if(blend){
+        blend.value=String(protocol.contactBoundWeightPct);
+        onContactBoundWeightChange(protocol.contactBoundWeightPct);
+      }
+      const dropModeEl=document.getElementById('selTimerDropMode');
+      if(dropModeEl) dropModeEl.value=gSimulator.timerDropMode;
+      onColorModeChange('contact');
+
+      if(gPaused) onRun();
+
+      const STALL_LIMIT_MS=20000;
+      let lastSim=-1, lastProgressMs=performance.now();
+      let outcome='done';
+      while(!gSimulator._timerCaptureDone){
+        await _sleepMs(120);
+        if(gMetricsBatch.cancel){ outcome='cancel'; break; }
+        if(!gSimulator){ outcome='lost'; break; }
+        const t=gSimulator.simTime;
+        if(t>lastSim+1e-6){ lastSim=t; lastProgressMs=performance.now(); }
+        else if(performance.now()-lastProgressMs>STALL_LIMIT_MS){ outcome='stalled'; break; }
+        const nActive=gSimulator.spawnCursor|0;
+        const target=gSimulator.timerTargetParticles|0;
+        const hold=gSimulator._packHoldStartSim!=null
+          ? `hold ${(t-gSimulator._packHoldStartSim).toFixed(1)}/${(gSimulator.timerHoldSimS||4).toFixed(1)}`
+          : 'filling';
+        say(`${stem}: n=${nActive}/${target}, t=${t.toFixed(1)}s (${hold}) (${i+1}/${files.length})`);
+      }
+      if(!gPaused) onPauseToggle();
+
+      if(outcome==='stalled'){
+        console.error(`[contact range] ${stem}: stalled — skipped.`);
+        results.push(`${stem}: STALLED`);
+        continue;
+      }
+      if(outcome==='cancel') break;
+
+      // One more color update so contactCount reflects the settled frame we sample.
+      if(gSimulator._updateColors) gSimulator._updateColors();
+      const nbrCounts=_uniqueNeighborCounts(gSimulator);
+      const nbr=_minmaxActiveCounts(gSimulator, nbrCounts);
+      const color=_minmaxActiveCounts(gSimulator, null);
+      const csv=gSimulator.getMetricsCSV();
+      const p2p=_minmaxP2PFromMetricsCSV(csv);
+      const row={
+        stem,
+        nbrMin:nbr.min, nbrMax:nbr.max, nbrMean:nbr.mean,
+        colorMin:color.min, colorMax:color.max,
+        p2pMin:p2p.min, p2pMax:p2p.max, p2pLast:p2p.last,
+        active:nbr.n, zeros:nbr.zeros, metricsRows:p2p.rows,
+        simTime:gSimulator.simTime,
+      };
+      summaryRows.push(row);
+      results.push(`${stem}: nbr ${nbr.min}–${nbr.max}`);
+      console.log('[contact range]', row);
+      await _sleepMs(200);
+    }
+
+    if(summaryRows.length){
+      const table=_formatContactRangeTable(summaryRows);
+      if(tbl){
+        tbl.style.display='block';
+        tbl.textContent=table;
+      }
+      const csvLines=[
+        'shape,box_w_mm,box_h_mm,box_d_mm,'+
+        'neighbor_min,neighbor_max,neighbor_mean,neighbor_zeros,'+
+        'colormap_contactCount_min,colormap_contactCount_max,'+
+        'p2p_pairs_min,p2p_pairs_max,p2p_pairs_final,active_particles,metrics_rows,sim_time_s',
+      ];
+      for(const r of summaryRows){
+        csvLines.push([
+          r.stem,
+          protocol.widthMm, protocol.heightMm, protocol.depthMm,
+          r.nbrMin, r.nbrMax, r.nbrMean.toFixed(4), r.zeros,
+          r.colorMin, r.colorMax,
+          r.p2pMin, r.p2pMax, r.p2pLast, r.active, r.metricsRows,
+          Number(r.simTime).toFixed(4),
+        ].join(','));
+      }
+      _download(csvLines.join('\n'), `contact_range_compare_${Date.now()}.csv`, 'text/csv');
+      say(gMetricsBatch.cancel
+        ? `Cancelled — ${results.join('; ')||'nothing'}.`
+        : `Done — contacts min/max for ${summaryRows.length} shapes (CSV downloaded).`);
+    }else{
+      say(gMetricsBatch.cancel ? 'Cancelled — nothing exported.' : 'No shapes completed.');
+    }
+  }catch(err){
+    console.error('[contact range] failed', err);
+    say('Contact range compare failed — see console.');
+    alert('Contact range compare failed:'+String.fromCharCode(10,10)+err);
+  }finally{
+    gMetricsBatch.running=false;
+    gMetricsBatch.cancel=false;
+    if(btn) btn.textContent='Contact range compare (5 shapes)';
+    if(gSimulator) gSimulator.timerAutoExportCsv=savedAutoCsv ?? true;
+    const autoEl=document.getElementById('chkTimerAutoCsv');
+    if(autoEl&&savedAutoCsv!=null) autoEl.checked=savedAutoCsv;
+    const sel=document.getElementById('particleLibrary');
+    if(sel&&savedLibrary!=null) sel.value=savedLibrary;
+  }
+}
+
 async function onSelectLibrary(value){
   if(value==="__default__"){
     gParticleTemplate=null;
@@ -12820,10 +13785,42 @@ function _videoExportOutputSequence(sourceFrameCount, exportLoops){
   return seq;
 }
 
-function _canvasToJpegBlob(canvas, quality=0.92){
+function _canvasToJpegBlob(canvas, quality=VIDEO_EXPORT_JPEG_QUALITY){
   return new Promise((resolve, reject)=>{
     canvas.toBlob(b=>b?resolve(b):reject(new Error('canvas toBlob failed')), 'image/jpeg', quality);
   });
+}
+
+function _createExportRenderer(canvas){
+  const offRend=new THREE.WebGLRenderer({
+    canvas, antialias:true, preserveDrawingBuffer:true, powerPreference:'high-performance',
+  });
+  offRend.shadowMap.enabled=gRenderer?.shadowMap?.enabled??true;
+  offRend.shadowMap.type=gRenderer?.shadowMap?.type??THREE.PCFSoftShadowMap;
+  offRend.setPixelRatio(1);
+  offRend.setSize(VIDEO_EXPORT_4K_W, VIDEO_EXPORT_4K_H, false);
+  return offRend;
+}
+
+/** Match export framing to a tight box fit at 4K aspect (same view angle). */
+function _applyExportCameraFraming(expCam){
+  const exportAspect=VIDEO_EXPORT_4K_W/VIDEO_EXPORT_4K_H;
+  expCam.aspect=exportAspect;
+  expCam.near=gCamera.near;
+  expCam.far=gCamera.far;
+  expCam.updateProjectionMatrix();
+  const mv=_containerModeRaw();
+  if(mv!=='volume' && mv!=='volume_fill' && mv!=='airway') return;
+  const c=_containerOrbitCenter();
+  const center=new THREE.Vector3(c.cx,c.cy,c.cz);
+  const viewDir=expCam.position.clone().sub(center);
+  if(viewDir.lengthSq()<1e-6) _defaultContainerViewDir(viewDir);
+  else viewDir.normalize();
+  const dist=_cameraFitDistanceForBox(
+    c.w,c.h,c.d, expCam.fov, exportAspect, viewDir, CAMERA_FIT_MARGIN);
+  expCam.position.copy(center).addScaledVector(viewDir, dist);
+  expCam.lookAt(center);
+  expCam.updateMatrixWorld();
 }
 
 function _videoExportSetProgress(src, btn, phase, pct, detail){
@@ -12847,10 +13844,13 @@ async function _videoEncodeJpegBlobs(jpegs, fps, mime, btn, progressSrc){
   const blitCtx=blitCanvas.getContext('2d',{alpha:false});
   if(!blitCtx) throw new Error('2D canvas unavailable for video encode');
 
-  const stream=blitCanvas.captureStream(0);
+  const stream=blitCanvas.captureStream(fps);
   const track=stream.getVideoTracks()[0];
+  if(track?.applyConstraints){
+    try{ await track.applyConstraints({frameRate:fps}); }catch(_e){}
+  }
   const chunks=[];
-  const recorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:60_000_000});
+  const recorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:VIDEO_EXPORT_BITRATE});
   recorder.ondataavailable=e=>{if(e.data?.size>0) chunks.push(e.data);};
   const stopped=new Promise(resolve=>{recorder.onstop=resolve;});
 
@@ -12932,7 +13932,7 @@ async function _videoExport4KTwoPhase(opts){
     _airwayApplyFrameBlend(i0, alpha, exportNorm, exportFrames);
     advanceOrbit();
     offRend.render(gScene, expCam);
-    jpegs[f]=await _canvasToJpegBlob(offCanvas, 0.88);
+    jpegs[f]=await _canvasToJpegBlob(offCanvas);
     if(f%15===0 || f===totalOut-1){
       const pct=((f+1)/totalOut*100)|0;
       _videoExportSetProgress(src, btn, 'pre-render', pct,
@@ -13402,7 +14402,7 @@ async function onBoxFillSequenceBake(){
   const targetFill=gBoxFillSequence.targetFill;
   const pauseS=gBoxFillSequence.pauseS;
   const dropN=Math.max(1,+document.getElementById('pDropCount')?.value|0);
-  const holdFrames=Math.max(0, Math.round(pauseS*60));
+  const holdFrames=Math.max(0, Math.round(pauseS*_readBoxFillPlayFps()));
   let segmentIdx=0;
   let doneReason='';
 
@@ -13450,6 +14450,7 @@ async function onBoxFillSequenceBake(){
       _boxFillBakeProgressShow(false);
       _setBoxFillBakeLabel(msg+' · Run = live physics');
       if(gBoxFillSequence.autoExport4k){
+        focusVolumeBox();
         await onExportAirwayVideo4K();
       }
     }else{
@@ -13481,6 +14482,7 @@ function _airwayBakeReset(){
   gAirwayPlayback._multiSegmentBake=false;
   gAirwayPlayback._segmentDone=false;
   gAirwayPlayback._boxFillSegmentIdx=0;
+  gAirwayPlayback._rawFrames=null;
   gAirwayPlayback.mode='off';
   gAirwayPlayback.frames=[];
   gAirwayPlayback.frameIdx=0;
@@ -13644,6 +14646,13 @@ function _airwayBakeFinish(msg){
   gPerfDeadlineMs=null;
   const perfChk=document.getElementById('chkPerfMode');
   if(perfChk) perfChk.checked=false;
+  if(_boxFillSequenceEnabled()){
+    pb._rawFrames=pb.frames.slice();
+    pb.frames=_videoExportPrepareBoxFillFrames(
+      pb._rawFrames, _readBoxFillPauseS(), pb.playFps);
+  }else{
+    pb._rawFrames=null;
+  }
   syncTransportButtons();
   const f0=pb.frames[0];
   const setLbl=_boxFillSequenceEnabled()?_setBoxFillBakeLabel
@@ -13732,11 +14741,7 @@ async function onShowcaseExport4K(){
   const offCanvas=document.createElement('canvas');
   offCanvas.width=VIDEO_EXPORT_4K_W;
   offCanvas.height=VIDEO_EXPORT_4K_H;
-  const offRend=new THREE.WebGLRenderer({canvas:offCanvas, antialias:true, preserveDrawingBuffer:true});
-  offRend.shadowMap.enabled=true;
-  offRend.shadowMap.type=THREE.PCFSoftShadowMap;
-  offRend.setPixelRatio(1);
-  offRend.setSize(VIDEO_EXPORT_4K_W, VIDEO_EXPORT_4K_H, false);
+  const offRend=_createExportRenderer(offCanvas);
 
   const expCam=new THREE.PerspectiveCamera(
     gCamera.fov, VIDEO_EXPORT_4K_W/VIDEO_EXPORT_4K_H, gCamera.near, gCamera.far);
@@ -13767,7 +14772,7 @@ async function onShowcaseExport4K(){
         expCam.updateMatrixWorld();
       }
       offRend.render(gScene, expCam);
-      jpegs[f]=await _canvasToJpegBlob(offCanvas, 0.88);
+      jpegs[f]=await _canvasToJpegBlob(offCanvas);
       if(f%15===0 || f===totalOut-1){
         const pct=((f+1)/totalOut*100)|0;
         _videoExportSetProgress(src, topBtn||panelBtn, 'pre-render', pct,
@@ -13824,7 +14829,16 @@ async function onExportAirwayVideo4K(){
           : 'No baked frames yet. In Bronchial tree mode, run Pre-compute & play (or Run with pre-compute enabled), then export.');
     return;
   }
-  const exportFrames=src.frames;
+  const fps=_readVideoExportPlayFps(src);
+  gAirwayPlayback.playFps=fps;
+  const baseFrames=src.kind==='box_fill' ? (src.rawFrames||src.frames) : src.frames;
+  const exportFrames=src.kind==='box_fill'
+    ? _videoExportPrepareBoxFillFrames(baseFrames, _readBoxFillPauseS(), fps)
+    : baseFrames;
+  if(!exportFrames.length){
+    alert('No frames to export.');
+    return;
+  }
   if(!gSimulator||!gScene||!gCamera){
     alert('Simulation not ready.');
     return;
@@ -13836,7 +14850,6 @@ async function onExportAirwayVideo4K(){
   }
   const btn=document.getElementById('btnExport4kVideo');
   const n=exportFrames.length;
-  const fps=Math.max(15, src.playFps||_airwayReadPlayFps());
   const framesPerLoop=Math.max(1, n-1);
   const exportLoops=_videoExportLoopCount();
   const totalOutFrames=framesPerLoop*exportLoops;
@@ -13854,11 +14867,7 @@ async function onExportAirwayVideo4K(){
   const offCanvas=document.createElement('canvas');
   offCanvas.width=VIDEO_EXPORT_4K_W;
   offCanvas.height=VIDEO_EXPORT_4K_H;
-  const offRend=new THREE.WebGLRenderer({canvas:offCanvas, antialias:true, preserveDrawingBuffer:true});
-  offRend.shadowMap.enabled=true;
-  offRend.shadowMap.type=THREE.PCFSoftShadowMap;
-  offRend.setPixelRatio(1);
-  offRend.setSize(VIDEO_EXPORT_4K_W, VIDEO_EXPORT_4K_H, false);
+  const offRend=_createExportRenderer(offCanvas);
 
   // Clone the current camera; set aspect ratio to match 16:10 export resolution.
   const expCam=new THREE.PerspectiveCamera(
@@ -13866,6 +14875,7 @@ async function onExportAirwayVideo4K(){
   expCam.position.copy(gCamera.position);
   expCam.quaternion.copy(gCamera.quaternion);
   expCam.updateMatrixWorld();
+  _applyExportCameraFraming(expCam);
 
   const orbitSrc=gContainerOrbitState;
   const orbitPivot=orbitSrc ? orbitSrc.pivot.clone() : null;
